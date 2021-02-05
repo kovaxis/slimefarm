@@ -1,0 +1,13 @@
+[package]
+name = "slimefarm"
+version = "0.1.0"
+authors = ["negamartin <martin.andrighetti@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+glium = "0.29"
+rlua = "0.17"
+anyhow = "1"
+uv = { package = "ultraviolet", version = "0.7" }
