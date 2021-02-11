@@ -140,19 +140,7 @@ fn interp(a: f32, b: f32, w: f32) -> f32 {
     a + (b - a) * w
 }
 
-fn calc_dot(salt: u32, base: [i32; 3], offset: [i32; 3], frac: [f32; 3]) -> f32 {
-    let grad = gradient_for(
-        [
-            base[0] + offset[0],
-            base[1] + offset[1],
-            base[2] + offset[2],
-        ],
-        salt,
-    );
-    grad.dot(Vec3::from(frac) - Vec3::new(offset[0] as f32, offset[1] as f32, offset[2] as f32))
-}
-
-fn calc_dot_precomp(grad: Vec3, offset: [f32; 3], frac: [f32; 3]) -> f32 {
+fn calc_dot(grad: Vec3, offset: [f32; 3], frac: [f32; 3]) -> f32 {
     grad.dot(Vec3::from(frac) - Vec3::new(offset[0] as f32, offset[1] as f32, offset[2] as f32))
 }
 
@@ -249,14 +237,14 @@ impl PerlinLayer {
                 let sz = smooth(block_pos_frac[2]);
                 macro_rules! calc_dot {
                     (last[$grad_n:expr], $x:expr, $y:expr, $z:expr) => {{
-                        calc_dot_precomp(
+                        calc_dot(
                             last_4_grads[$grad_n],
                             [$x as f32, $y as f32, $z as f32],
                             block_pos_frac,
                         )
                     }};
                     (new[$grad_n:expr], $x:expr, $y:expr, $z:expr) => {{
-                        calc_dot_precomp(
+                        calc_dot(
                             new_4_grads[$grad_n],
                             [$x as f32, $y as f32, $z as f32],
                             block_pos_frac,
@@ -341,41 +329,6 @@ impl PerlinLayer {
             }
         }
     }
-
-    pub fn noise_at(&self, pos: [f64; 3]) -> f32 {
-        let pos = [
-            pos[0].mul_add(self.freq, self.offset[0]),
-            pos[1].mul_add(self.freq, self.offset[1]),
-            pos[2].mul_add(self.freq, self.offset[2]),
-        ];
-        let base = [
-            pos[0].floor() as i32,
-            pos[1].floor() as i32,
-            pos[2].floor() as i32,
-        ];
-        let frac = [
-            (pos[0] - base[0] as f64) as f32,
-            (pos[1] - base[1] as f64) as f32,
-            (pos[2] - base[2] as f64) as f32,
-        ];
-        let sx = smooth(frac[0]);
-        let sy = smooth(frac[1]);
-        let sz = smooth(frac[2]);
-        let calc_dot = |x, y, z| calc_dot(self.salt, base, [x, y, z], frac);
-        interp(
-            interp(
-                interp(calc_dot(0, 0, 0), calc_dot(1, 0, 0), sx),
-                interp(calc_dot(0, 1, 0), calc_dot(1, 1, 0), sx),
-                sy,
-            ),
-            interp(
-                interp(calc_dot(0, 0, 1), calc_dot(1, 0, 1), sx),
-                interp(calc_dot(0, 1, 1), calc_dot(1, 1, 1), sx),
-                sy,
-            ),
-            sz,
-        ) * self.scale
-    }
 }
 
 pub struct PerlinNoise {
@@ -395,14 +348,6 @@ impl PerlinNoise {
                 })
                 .collect(),
         }
-    }
-
-    pub fn noise_at(&self, pos: [f64; 3]) -> f32 {
-        let mut noise = 0.;
-        for oct in self.octaves.iter() {
-            noise += oct.noise_at(pos);
-        }
-        noise
     }
 
     /// Generates a cubic grid of noise sampled from a cubic grid.

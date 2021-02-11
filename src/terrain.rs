@@ -56,17 +56,17 @@ impl BlockPos {
     fn offset(&self, x: i32, y: i32, z: i32) -> BlockPos {
         BlockPos([self[0] + x, self[1] + y, self[2] + z])
     }
-    fn from_float(pos: [f64; 3]) -> BlockPos {
+    fn _from_float(pos: [f64; 3]) -> BlockPos {
         BlockPos([
             pos[0].floor() as i32,
             pos[1].floor() as i32,
             pos[2].floor() as i32,
         ])
     }
-    fn to_float_floor(&self) -> [f64; 3] {
+    fn _to_float_floor(&self) -> [f64; 3] {
         [self[0] as f64, self[1] as f64, self[2] as f64]
     }
-    fn to_float_center(&self) -> [f64; 3] {
+    fn _to_float_center(&self) -> [f64; 3] {
         [
             self[0] as f64 + 0.5,
             self[1] as f64 + 0.5,
@@ -92,10 +92,14 @@ impl BlockData {
     }
 }
 
+const MIN_CHUNKS_MESHED_PER_SEC: f32 = 20.;
+
 struct Terrain {
     state: Rc<State>,
     chunks: HashMap<ChunkPos, Box<Chunk>>,
     meshes: MeshKeeper,
+    meshing_time_estimate: f32,
+    last_meshing: Instant,
     generator: GeneratorHandle,
 }
 impl Terrain {
@@ -104,21 +108,40 @@ impl Terrain {
             state: state.clone(),
             chunks: default(),
             meshes: MeshKeeper::new(8., ChunkPos([0, 0, 0])),
+            meshing_time_estimate: 0.,
+            last_meshing: Instant::now(),
             generator: GeneratorHandle::new(gen_cfg),
         }
     }
 
     fn book_keep(&mut self, center: BlockPos, limit: Duration) {
+        //Keep track of time
+        let now = Instant::now();
         let deadline = Instant::now() + limit;
+        //Adjust center
         let center = center
             .offset(CHUNK_SIZE / 2, CHUNK_SIZE / 2, CHUNK_SIZE / 2)
             .to_chunk();
         self.meshes.set_center(center);
         //Receive chunks from the generator
-        for (pos, chunk) in self.generator.chunks.try_recv() {
-            self.chunks.insert(pos, chunk);
+        {
+            let mut req = self.generator.request.lock();
+            //Mark which chunks are in-progress, so as to not request them again
+            for chunk_pos in req.in_progress.drain() {
+                if let Some(slot) = self.meshes.get_mut(chunk_pos) {
+                    slot.generating = true;
+                }
+            }
+            //Receive chunks
+            for (pos, chunk) in req.ready.drain(..) {
+                self.chunks.insert(pos, chunk);
+            }
         }
         //Look for candidate chunks
+        let meshing_time_estimate = Duration::from_secs_f32(self.meshing_time_estimate);
+        let mut force_mesh =
+            ((now - self.last_meshing).as_secs_f32() * MIN_CHUNKS_MESHED_PER_SEC).floor() as i32;
+        let mut chunks_meshed = 0;
         let mut request_queue = self.generator.swap_request_vec(default());
         let request_count = self.generator.request_hint();
         request_queue.clear();
@@ -127,14 +150,19 @@ impl Terrain {
         while order_idx < self.meshes.render_order.len() {
             let idx = self.meshes.render_order[order_idx];
             order_idx += 1;
-            if self.meshes.get_by_idx(idx).mesh.is_none() {
-                let pos = self.meshes.sub_idx_to_pos(idx);
-                let mut chunk_exists = false;
-                let could_mesh = (|| {
-                    //measure_time!(start render_chunk);
-                    let chunk = self.chunks.get(&pos)?;
+            let mesh_slot = self.meshes.get_by_idx(idx);
+            let pos = self.meshes.sub_idx_to_pos(idx);
+            let mut should_generate = !mesh_slot.generating;
+            if mesh_slot.mesh.is_none()
+                && (force_mesh > 0 || Instant::now() + meshing_time_estimate < deadline)
+            {
+                (|| {
+                    let start_time = Instant::now();
                     let mesh_slot = self.meshes.get_by_idx_mut(idx);
-                    chunk_exists = true;
+                    let chunk = self.chunks.get(&pos)?;
+                    //Don't generate, it already exists
+                    should_generate = false;
+                    //Get all of its adjacent neighbors
                     let neighbors = [
                         &**self.chunks.get(&pos.offset(-1, 0, 0))?,
                         &**self.chunks.get(&pos.offset(1, 0, 0))?,
@@ -143,7 +171,9 @@ impl Terrain {
                         &**self.chunks.get(&pos.offset(0, 0, -1))?,
                         &**self.chunks.get(&pos.offset(0, 0, 1))?,
                     ];
+                    //Mesh the chunk
                     let mesh = chunk.make_mesh(neighbors);
+                    //Upload the chunk
                     let mesh = ChunkMesh {
                         buf: if mesh.indices.is_empty() {
                             None
@@ -152,22 +182,30 @@ impl Terrain {
                         },
                     };
                     mesh_slot.mesh = Some(mesh);
-                    //measure_time!(end render_chunk);
+                    force_mesh -= 1;
+                    chunks_meshed += 1;
+                    //Use the time measure to estimate the time meshing a chunk takes
+                    let time_taken = start_time.elapsed().as_secs_f32();
+                    const RAISE_WEIGHT: f32 = 0.25;
+                    const LOWER_WEIGHT: f32 = 0.1;
+                    let weight = if time_taken > self.meshing_time_estimate {
+                        RAISE_WEIGHT
+                    } else {
+                        LOWER_WEIGHT
+                    };
+                    self.meshing_time_estimate = self.meshing_time_estimate
+                        + (time_taken - self.meshing_time_estimate) * weight;
                     Some(())
-                })()
-                .is_some();
-                if could_mesh {
-                    //Respect the deadline
-                    if Instant::now() >= deadline {
-                        return;
-                    }
-                } else {
-                    if !chunk_exists && request_queue.len() < request_count {
-                        //Having this chunk'd be pretty pog
-                        request_queue.push(pos);
-                    }
-                }
+                })();
             }
+            if should_generate && request_queue.len() < request_count {
+                //Having this chunk'd be pretty pog
+                request_queue.push(pos);
+            }
+        }
+        //Keep track of average meshes per sec
+        if chunks_meshed > 0 {
+            self.last_meshing = Instant::now();
         }
         //Request missing chunks from generator
         self.generator.request(&request_queue);
@@ -250,6 +288,41 @@ impl MeshKeeper {
 
     fn total_len(&self) -> i32 {
         1 << (self.size_log2 * 3)
+    }
+
+    pub fn _get(&self, pos: ChunkPos) -> Option<&ChunkMeshSlot> {
+        if pos[0] >= self.corner_pos[0]
+            && pos[0] < self.corner_pos[0] + self.size()
+            && pos[1] >= self.corner_pos[1]
+            && pos[1] < self.corner_pos[1] + self.size()
+            && pos[2] >= self.corner_pos[2]
+            && pos[2] < self.corner_pos[2] + self.size()
+        {
+            Some(self._sub_get([
+                pos[0] - self.corner_pos[0],
+                pos[1] - self.corner_pos[1],
+                pos[2] - self.corner_pos[2],
+            ]))
+        } else {
+            None
+        }
+    }
+    pub fn get_mut(&mut self, pos: ChunkPos) -> Option<&mut ChunkMeshSlot> {
+        if pos[0] >= self.corner_pos[0]
+            && pos[0] < self.corner_pos[0] + self.size()
+            && pos[1] >= self.corner_pos[1]
+            && pos[1] < self.corner_pos[1] + self.size()
+            && pos[2] >= self.corner_pos[2]
+            && pos[2] < self.corner_pos[2] + self.size()
+        {
+            Some(self.sub_get_mut([
+                pos[0] - self.corner_pos[0],
+                pos[1] - self.corner_pos[1],
+                pos[2] - self.corner_pos[2],
+            ]))
+        } else {
+            None
+        }
     }
 
     pub fn get_by_idx(&self, idx: i32) -> &ChunkMeshSlot {
@@ -336,6 +409,7 @@ impl MeshKeeper {
 #[derive(Default)]
 struct ChunkMeshSlot {
     mesh: Option<ChunkMesh>,
+    generating: bool,
 }
 
 struct ChunkMesh {

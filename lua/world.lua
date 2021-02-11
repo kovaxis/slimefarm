@@ -59,7 +59,7 @@ function World:new()
     self.cam_yaw = 0
     self.cam_pitch = 0
 
-    self.tick_period = 1/100
+    self.tick_period = 1/64
     self.next_tick = os.clock()
 end
 
@@ -70,7 +70,8 @@ function World:tick()
     end
 
     --Bookkeep terrain
-    self.terrain:book_keep(self.cam_x, self.cam_y, self.cam_z, 0.010)
+    local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
+    self.terrain:book_keep(self.cam_x, self.cam_y, self.cam_z, time_limit)
 end
 
 function World:update()
@@ -80,8 +81,8 @@ function World:update()
         if now < self.next_tick then
             break
         end
-        self:tick()
         self.next_tick = self.next_tick + self.tick_period
+        self:tick()
     end
 end
 

@@ -12,26 +12,20 @@ pub struct GeneratorHandle {
     last_send: Instant,
     last_send_count: usize,
     tmp_vec: Vec<ChunkPos>,
-    request: Arc<Mutex<RequestPriority>>,
-    pub chunks: Receiver<(ChunkPos, Box<Chunk>)>,
+    pub request: Arc<Mutex<RequestPriority>>,
     threads: Vec<JoinHandle<()>>,
 }
 impl GeneratorHandle {
     pub fn new(cfg: GenConfig) -> Self {
         let request = Arc::new(Mutex::new(RequestPriority::new()));
-        let (chunk_send, chunk_recv) = channel::bounded(64);
         let thread_count = (num_cpus::get() / 2).max(1);
         eprintln!("using {} worldgen threads", thread_count);
         let mut threads = Vec::with_capacity(thread_count);
         for _ in 0..thread_count {
             let request = request.clone();
-            let chunk_send = chunk_send.clone();
             let cfg = cfg.clone();
             let join_handle = thread::spawn(move || {
-                let state = GenState {
-                    request,
-                    chunks: chunk_send,
-                };
+                let state = GenState { request };
                 gen_thread(state, cfg)
             });
             threads.push(join_handle);
@@ -39,9 +33,8 @@ impl GeneratorHandle {
         Self {
             request,
             last_send: Instant::now(),
-            last_send_count: 16,
+            last_send_count: 32,
             tmp_vec: default(),
-            chunks: chunk_recv,
             threads,
         }
     }
@@ -61,15 +54,26 @@ impl GeneratorHandle {
         let mut req = self.request.lock();
         let now = Instant::now();
         req.wanted.clear();
-        req.wanted.extend(chunks);
+        {
+            let req = &mut *req;
+            let in_progress = &req.in_progress;
+            req.wanted.extend(
+                chunks
+                    .iter()
+                    .copied()
+                    .filter(|pos| !in_progress.contains(pos)),
+            );
+        }
         self.last_send_count = chunks.len();
         if req.last_idle > self.last_send {
             //The last request was too small, send more now
             self.last_send_count *= 2;
-        } else if self.last_send - req.last_idle >= Duration::from_millis(1000) {
+        } else if self.last_send - req.last_idle >= Duration::from_millis(2000) {
             //Too long without idling, try lowering the send count gradually
-            self.last_send_count = (self.last_send_count as isize - 1).max(2) as usize;
+            self.last_send_count = (self.last_send_count as isize - 1).max(1) as usize;
+            req.last_idle = self.last_send;
         }
+        self.last_send_count = self.last_send_count.max(2);
         self.last_send = now;
         drop(req);
         self.unpark_all();
@@ -84,7 +88,6 @@ impl GeneratorHandle {
 impl Drop for GeneratorHandle {
     fn drop(&mut self) {
         self.request.lock().close = true;
-        self.chunks = channel::never();
         self.unpark_all();
         for join in self.threads.drain(..) {
             join.join().unwrap();
@@ -95,6 +98,8 @@ impl Drop for GeneratorHandle {
 pub struct RequestPriority {
     close: bool,
     wanted: VecDeque<ChunkPos>,
+    pub in_progress: HashSet<ChunkPos>,
+    pub ready: Vec<(ChunkPos, Box<Chunk>)>,
     last_idle: Instant,
 }
 impl RequestPriority {
@@ -102,6 +107,8 @@ impl RequestPriority {
         Self {
             close: false,
             wanted: default(),
+            in_progress: default(),
+            ready: default(),
             last_idle: Instant::now(),
         }
     }
@@ -110,7 +117,6 @@ impl RequestPriority {
 #[derive(Clone)]
 struct GenState {
     request: Arc<Mutex<RequestPriority>>,
-    chunks: Sender<(ChunkPos, Box<Chunk>)>,
 }
 
 fn gen_thread(gen: GenState, cfg: GenConfig) {
@@ -120,11 +126,14 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
         cfg.seed,
         &[(128., 1.), (64., 0.5), (32., 0.25), (16., 0.125)],
     );
-    let mut noise_buf = vec![0.; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize];
     let mut noise_scaler = NoiseScaler::new(CHUNK_SIZE / 4, CHUNK_SIZE as f32);
+    let mut send_chunk = None;
     'outer: loop {
         //Acquire the next most prioritized chunk coordinate
         let mut req = gen.request.lock();
+        if let Some(send_chunk) = send_chunk.take() {
+            req.ready.push(send_chunk);
+        }
         let pos = 'inner: loop {
             match req.wanted.pop_front() {
                 Some(pos) => {
@@ -139,6 +148,7 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
                     if req.close {
                         break 'outer;
                     } else {
+                        req.last_idle = Instant::now();
                         drop(req);
                         thread::park();
                         continue 'outer;
@@ -146,6 +156,7 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
                 }
             }
         };
+        req.in_progress.insert(pos);
         drop(req);
         //Generate this chunk
         //measure_time!(start gen_chunk);
@@ -196,6 +207,6 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
         }
         //measure_time!(end gen_chunk);
         //Send chunk back to main thread
-        let _ = gen.chunks.send((pos, chunk));
+        send_chunk = Some((pos, chunk));
     }
 }
