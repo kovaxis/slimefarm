@@ -1,16 +1,15 @@
 
-local mesh = {}
-mesh.__index = mesh
+local class = require 'class'
 
-function mesh:new()
+local Mesh = class{}
+
+function Mesh:new()
     self.vertices = {}
     self.colors = {}
     self.indices = {}
-    setmetatable(self, mesh)
-    return self
 end
 
-function mesh:add_vertex(x, y, z, r, g, b, a)
+function Mesh:add_vertex(x, y, z, r, g, b, a)
     local v = self.vertices
     local len = #v
     v[len + 1] = x
@@ -25,7 +24,7 @@ function mesh:add_vertex(x, y, z, r, g, b, a)
     return self
 end
 
-function mesh:add_cube(x, y, z, w, h, d, r, g, b, a)
+function Mesh:add_cube(x, y, z, w, h, d, r, g, b, a)
     r = r or 1
     g = g or 1
     b = b or 1
@@ -98,8 +97,8 @@ function mesh:add_cube(x, y, z, w, h, d, r, g, b, a)
     i[l + 36] = base + 7
 end
 
-function mesh:as_buffer()
+function Mesh:as_buffer()
     return gfx.buffer(self.vertices, self.colors, self.indices)
 end
 
-return mesh
+return Mesh

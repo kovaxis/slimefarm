@@ -9,5 +9,13 @@ edition = "2018"
 [dependencies]
 glium = "0.29"
 rlua = "0.17"
+rlua_serde = "0.4"
 anyhow = "1"
 uv = { package = "ultraviolet", version = "0.7" }
+fxhash = "0.2"
+rand = "0.8"
+rand_xoshiro = "0.6"
+crossbeam = "0.8"
+parking_lot = "0.11"
+num_cpus = "1"
+serde = { version = "1", features = ["derive"] }

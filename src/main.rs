@@ -1,46 +1,226 @@
+//! Game about enslaving slimes in a voxel world.
+//!
+//! Nice smoothed approximation of x/tan(x) for the range [-2, 2]:
+//!     1 - 0.212834*min(abs(x),2)^2 - 0.287166*min(abs(x),2)^3 + 0.134292*min(abs(x),2)^4
+//!
+//! The idea is that instead of using min(x, pi/2) to calculate an angle from a mouse distance,
+//! x/f(x) can be used instead (where f(x) is the above approximation).
+
 #![allow(unused_imports)]
 
-use anyhow::{anyhow, bail, ensure, Context, Error, Result};
-use glium::{
-    glutin::{
-        event::{DeviceEvent, Event, KeyboardInput, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
-        window::WindowBuilder,
-        ContextBuilder,
-    },
-    implement_vertex,
-    index::PrimitiveType,
-    program,
-    uniforms::{UniformValue, Uniforms},
-    Display, DrawParameters, Frame, IndexBuffer, Program, Surface, VertexBuffer,
-};
-use rlua::prelude::*;
-use std::{
-    cell::{Cell, RefCell},
-    fs, mem, ops,
-    rc::Rc,
-};
-use uv::{Mat4, Vec2, Vec3, Vec4};
-pub fn default<T>() -> T
-where
-    T: Default,
-{
-    T::default()
-}
+use crate::prelude::*;
 
-#[derive(Copy, Clone, Debug, Default)]
-struct AssertSync<T>(pub T);
-unsafe impl<T> Send for AssertSync<T> {}
-unsafe impl<T> Sync for AssertSync<T> {}
-impl<T> ops::Deref for AssertSync<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
+#[macro_use]
+pub mod prelude {
+    pub(crate) use crate::{
+        gen::GeneratorHandle,
+        mesh::Mesh,
+        terrain::{BlockPos, Chunk, ChunkPos, CHUNK_SIZE},
+        Buffer, LuaDrawParams, ShaderRef, SimpleVertex, State, UniformStorage,
+    };
+    pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
+    pub use crossbeam::{
+        channel::{self, Receiver, Sender},
+        sync::{Parker, Unparker},
+    };
+    pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
+    pub use glium::{
+        glutin::{
+            event::{DeviceEvent, Event, KeyboardInput, WindowEvent},
+            event_loop::{ControlFlow, EventLoop},
+            window::WindowBuilder,
+            ContextBuilder,
+        },
+        implement_vertex,
+        index::PrimitiveType,
+        program,
+        uniforms::{UniformValue, Uniforms},
+        Display, DrawParameters, Frame, IndexBuffer, Program, Surface, VertexBuffer,
+    };
+    pub use parking_lot::{Mutex, MutexGuard};
+    pub use rand::{Rng, SeedableRng};
+    pub use rand_xoshiro::Xoshiro128Plus as FastRng;
+    pub use rlua::prelude::*;
+    pub use serde::{Deserialize, Serialize};
+    pub use std::{
+        cell::{Cell, RefCell},
+        cmp,
+        collections::VecDeque,
+        f32::consts as f32,
+        f64::consts as f64,
+        fs,
+        mem::{self, MaybeUninit as Uninit},
+        ops,
+        rc::Rc,
+        sync::Arc,
+        thread::{self, JoinHandle},
+        time::{Duration, Instant},
+    };
+    pub use uv::{Mat4, Vec2, Vec3, Vec4};
+
+    pub fn default<T>() -> T
+    where
+        T: Default,
+    {
+        T::default()
     }
-}
-impl<T> ops::DerefMut for AssertSync<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.0
+
+    #[derive(Copy, Clone, Default, Debug)]
+    pub struct Sortf32(pub f32);
+    impl Ord for Sortf32 {
+        fn cmp(&self, rhs: &Self) -> cmp::Ordering {
+            match (self.0.is_nan(), rhs.0.is_nan()) {
+                (false, false) => {
+                    if self.0 < rhs.0 {
+                        cmp::Ordering::Less
+                    } else if self.0 > rhs.0 {
+                        cmp::Ordering::Greater
+                    } else {
+                        cmp::Ordering::Equal
+                    }
+                }
+                (false, true) => cmp::Ordering::Greater,
+                (true, false) => cmp::Ordering::Less,
+                (true, true) => cmp::Ordering::Equal,
+            }
+        }
+    }
+    impl PartialOrd for Sortf32 {
+        fn partial_cmp(&self, rhs: &Self) -> Option<cmp::Ordering> {
+            Some(self.cmp(rhs))
+        }
+    }
+    impl PartialEq for Sortf32 {
+        fn eq(&self, rhs: &Self) -> bool {
+            self.cmp(rhs) == cmp::Ordering::Equal
+        }
+    }
+    impl Eq for Sortf32 {}
+
+    #[allow(unused_macros)]
+    macro_rules! measure_time {
+        (@start $now:ident $name:ident) => {
+            let $name = $now;
+        };
+        (@end $now:ident $name:ident) => {{
+            let elapsed: Duration = $now - $name;
+            eprintln!("{}: {}ms", stringify!($name), (elapsed.as_micros() as f32/100.).round() / 10.);
+        }};
+        ($($method:ident $name:ident),*) => {
+            let now = Instant::now();
+            $(
+                measure_time!(@$method now $name);
+            )*
+        };
+    }
+
+    macro_rules! lua_bail {
+        ($err:expr) => {{
+            return Err($err).to_lua_err();
+        }};
+    }
+
+    macro_rules! lua_assert {
+        ($cond:expr, $err:expr) => {{
+            if !$cond {
+                lua_bail!($err);
+            }
+        }};
+    }
+
+    macro_rules! lua_type {
+        (@$m:ident fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
+            $m.add_method(stringify!($fn_name), |lua, this, $($args)*| {
+                #[allow(unused_variables)]
+                let $lua = lua;
+                #[allow(unused_variables)]
+                let $this = this;
+                Ok($fn_code)
+            });
+            lua_type!(@$m $($rest)*);
+        }};
+        (@$m:ident mut fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
+            $m.add_method_mut(stringify!($fn_name), |lua, this, $($args)*| {
+                #[allow(unused_variables)]
+                let $lua = lua;
+                #[allow(unused_variables)]
+                let $this = this;
+                Ok($fn_code)
+            });
+            lua_type!(@$m $($rest)*);
+        }};
+        (@$m:ident) => {};
+        ($ty:ty, $($rest:tt)*) => {
+            impl LuaUserData for $ty {
+                fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(m: &mut M) {
+                    lua_type!(@m $($rest)*);
+                }
+            }
+        };
+    }
+
+    macro_rules! lua_func {
+        ($lua:ident, $state:ident, fn($($fn_args:tt)*) $fn_code:block) => {{
+            let state = AssertSync($state.clone());
+            $lua.create_function(move |ctx, $($fn_args)*| {
+                #[allow(unused_variables)]
+                let $lua = ctx;
+                #[allow(unused_variables)]
+                let $state = &*state;
+                Ok($fn_code)
+            }).unwrap()
+        }};
+    }
+
+    macro_rules! lua_lib {
+        ($lua:ident, $state:ident, $( fn $fn_name:ident($($fn_args:tt)*) $fn_code:block )*) => {{
+            let lib = $lua.create_table().unwrap();
+            $(
+                lib.set(stringify!($fn_name), lua_func!($lua, $state, fn($($fn_args)*) $fn_code)).unwrap();
+            )*
+            lib
+        }};
+    }
+
+    pub trait ResultExt {
+        type Inner;
+        fn unwrap_lua(self) -> Self::Inner;
+        fn expect_lua(self, msg: &str) -> Self::Inner;
+    }
+    impl<T> ResultExt for LuaResult<T> {
+        type Inner = T;
+        fn unwrap_lua(self) -> T {
+            match self {
+                Ok(t) => t,
+                Err(err) => {
+                    panic!("{}", err);
+                }
+            }
+        }
+        fn expect_lua(self, msg: &str) -> T {
+            match self {
+                Ok(t) => t,
+                Err(err) => {
+                    panic!("{}: {}", msg, err);
+                }
+            }
+        }
+    }
+
+    #[derive(Copy, Clone, Debug, Default)]
+    pub(crate) struct AssertSync<T>(pub T);
+    unsafe impl<T> Send for AssertSync<T> {}
+    unsafe impl<T> Sync for AssertSync<T> {}
+    impl<T> ops::Deref for AssertSync<T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            &self.0
+        }
+    }
+    impl<T> ops::DerefMut for AssertSync<T> {
+        fn deref_mut(&mut self) -> &mut T {
+            &mut self.0
+        }
     }
 }
 
@@ -53,61 +233,10 @@ fn elem_state_to_bool(elem_state: glium::glutin::event::ElementState) -> bool {
     }
 }
 
-macro_rules! lua_assert {
-    ($cond:expr, $err:expr) => {{
-        if !$cond {
-            return Err($err).to_lua_err();
-        }
-    }};
-}
-
-macro_rules! lua_type {
-    (@$m:ident fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
-        $m.add_method(stringify!($fn_name), |lua, this, $($args)*| {
-            #[allow(unused_variables)]
-            let $lua = lua;
-            #[allow(unused_variables)]
-            let $this = this;
-            Ok($fn_code)
-        });
-        lua_type!(@$m $($rest)*);
-    }};
-    (@$m:ident mut fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
-        $m.add_method_mut(stringify!($fn_name), |lua, this, $($args)*| {
-            #[allow(unused_variables)]
-            let $lua = lua;
-            #[allow(unused_variables)]
-            let $this = this;
-            Ok($fn_code)
-        });
-        lua_type!(@$m $($rest)*);
-    }};
-    (@$m:ident) => {};
-    ($ty:ty, $($rest:tt)*) => {
-        impl LuaUserData for $ty {
-            fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(m: &mut M) {
-                lua_type!(@m $($rest)*);
-            }
-        }
-    };
-}
-
-macro_rules! lua_lib {
-    ($lua:ident, $state:ident, $( fn $fn_name:ident($($fn_args:tt)*) $fn_code:block )*) => {{
-        let lib = $lua.create_table().unwrap();
-        $(
-            let state = AssertSync($state.clone());
-            lib.set(stringify!($fn_name), $lua.create_function(move |ctx, $($fn_args)*| {
-                #[allow(unused_variables)]
-                let $lua = ctx;
-                #[allow(unused_variables)]
-                let $state = &*state.0;
-                Ok($fn_code)
-            }).unwrap()).unwrap();
-        )*
-        lib
-    }};
-}
+mod gen;
+mod mesh;
+mod perlin;
+mod terrain;
 
 struct State {
     display: Display,
@@ -142,6 +271,112 @@ struct BufferRef {
     rc: AssertSync<Rc<Buffer>>,
 }
 impl LuaUserData for BufferRef {}
+
+#[derive(Clone, Default)]
+struct LuaDrawParams {
+    params: AssertSync<DrawParameters<'static>>,
+}
+lua_type! {LuaDrawParams,
+    mut fn set_depth(lua, this, (test, write): (LuaString, bool)) {
+        use glium::draw_parameters::DepthTest::*;
+        let test = match test.as_bytes() {
+            b"ignore" => Ignore,
+            b"overwrite" => Overwrite,
+            b"if_equal" => IfEqual,
+            b"if_not_equal" => IfNotEqual,
+            b"if_more" => IfMore,
+            b"if_more_or_equal" => IfMoreOrEqual,
+            b"if_less" => IfLess,
+            b"if_less_or_equal" => IfLessOrEqual,
+            _ => lua_bail!("unknown depth test"),
+        };
+        this.params.depth.test = test;
+        this.params.depth.write = write;
+    }
+
+    mut fn set_color_blend(lua, this, (func, src, dst): (LuaString, LuaString, LuaString)) {
+        use glium::draw_parameters::{BlendingFunction::*, LinearBlendingFactor::{self, *}};
+        fn map_factor(s: LuaString) -> LuaResult<LinearBlendingFactor> {
+            Ok(match s.as_bytes() {
+                b"zero" => Zero,
+                b"one" => One,
+                b"src_color" => SourceColor,
+                b"one_minus_src_color" => OneMinusSourceColor,
+                b"dst_color" => DestinationColor,
+                b"one_minus_dst_color" => OneMinusDestinationColor,
+                b"src_alpha" => SourceAlpha,
+                b"src_alpha_saturate" => SourceAlphaSaturate,
+                b"one_minus_src_alpha" => OneMinusSourceAlpha,
+                b"dst_alpha" => DestinationAlpha,
+                b"one_minus_dst_alpha" => OneMinusDestinationAlpha,
+                b"constant_color" => ConstantColor,
+                b"one_minus_constant_color" => OneMinusConstantColor,
+                b"constant_alpha" => ConstantAlpha,
+                b"one_minus_constant_alpha" => OneMinusConstantAlpha,
+                _ => lua_bail!("unknown blending factor"),
+            })
+        }
+        let source = map_factor(src)?;
+        let destination = map_factor(dst)?;
+        let func = match func.as_bytes() {
+            b"replace" => AlwaysReplace,
+            b"min" => Min,
+            b"max" => Max,
+            b"add" => Addition{source,destination},
+            b"sub" => Subtraction{source,destination},
+            b"reverse_sub" => ReverseSubtraction{source,destination},
+            _ => lua_bail!("unknown depth test"),
+        };
+        this.params.blend.color = func;
+    }
+
+    mut fn set_alpha_blend(lua, this, (func, src, dst): (LuaString, LuaString, LuaString)) {
+        use glium::draw_parameters::{BlendingFunction::*, LinearBlendingFactor::{self, *}};
+        fn map_factor(s: LuaString) -> LuaResult<LinearBlendingFactor> {
+            Ok(match s.as_bytes() {
+                b"zero" => Zero,
+                b"one" => One,
+                b"src_color" => SourceColor,
+                b"one_minus_src_color" => OneMinusSourceColor,
+                b"dst_color" => DestinationColor,
+                b"one_minus_dst_color" => OneMinusDestinationColor,
+                b"src_alpha" => SourceAlpha,
+                b"src_alpha_saturate" => SourceAlphaSaturate,
+                b"one_minus_src_alpha" => OneMinusSourceAlpha,
+                b"dst_alpha" => DestinationAlpha,
+                b"one_minus_dst_alpha" => OneMinusDestinationAlpha,
+                b"constant_color" => ConstantColor,
+                b"one_minus_constant_color" => OneMinusConstantColor,
+                b"constant_alpha" => ConstantAlpha,
+                b"one_minus_constant_alpha" => OneMinusConstantAlpha,
+                _ => lua_bail!("unknown blending factor"),
+            })
+        }
+        let source = map_factor(src)?;
+        let destination = map_factor(dst)?;
+        let func = match func.as_bytes() {
+            b"replace" => AlwaysReplace,
+            b"min" => Min,
+            b"max" => Max,
+            b"add" => Addition{source,destination},
+            b"sub" => Subtraction{source,destination},
+            b"reverse_sub" => ReverseSubtraction{source,destination},
+            _ => lua_bail!("unknown depth test"),
+        };
+        this.params.blend.alpha = func;
+    }
+
+    mut fn set_cull(lua, this, winding: LuaString) {
+        use glium::draw_parameters::BackfaceCullingMode::*;
+        let cull = match winding.as_bytes() {
+            b"cw" => CullClockwise,
+            b"none" => CullingDisabled,
+            b"ccw" => CullCounterClockwise,
+            _ => lua_bail!("unknown cull winding")
+        };
+        this.params.backface_culling = cull;
+    }
+}
 
 #[derive(Clone)]
 struct MatrixStack {
@@ -189,14 +424,7 @@ lua_type! {MatrixStack,
 
     fn scale(lua, this, (x, y, z): (f32, Option<f32>, Option<f32>)) {
         let (_, top) = &mut *this.stack.borrow_mut();
-        match (y, z) {
-            (Some(y), Some(z)) => {
-                *top = *top * Mat4::from_nonuniform_scale(Vec3::new(x, y, z));
-            }
-            _ => {
-                *top = *top * Mat4::from_scale(x);
-            }
-        }
+        *top = *top * Mat4::from_nonuniform_scale(Vec3::new(x, y.unwrap_or(1.), z.unwrap_or(1.)));
     }
 
     fn rotate_x(lua, this, angle: f32) {
@@ -215,6 +443,10 @@ lua_type! {MatrixStack,
     fn perspective(lua, this, (fov, aspect, near, far): (f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * uv::projection::perspective_gl(fov, aspect, near, far);
+    }
+    fn orthographic(lua, this, (xleft, xright, ydown, yup, znear, zfar): (f32, f32, f32, f32, f32, f32)) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        *top = *top * uv::projection::orthographic_gl(xleft, xright, ydown, yup, znear, zfar);
     }
 }
 
@@ -238,7 +470,7 @@ lua_type! {UniformStorage,
     }
 
     fn set_float(lua, this, (idx, val): (usize, f32)) {
-        let mut vars = this.vars.0.borrow_mut();
+        let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
             .ok_or("index out of range")
@@ -246,7 +478,7 @@ lua_type! {UniformStorage,
             .1 = UniformValue::Float(val);
     }
     fn set_vec2(lua, this, (idx, x, y): (usize, f32, f32)) {
-        let mut vars = this.vars.0.borrow_mut();
+        let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
             .ok_or("index out of range")
@@ -254,7 +486,7 @@ lua_type! {UniformStorage,
             .1 = UniformValue::Vec2([x, y]);
     }
     fn set_vec3(lua, this, (idx, x, y, z): (usize, f32, f32, f32)) {
-        let mut vars = this.vars.0.borrow_mut();
+        let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
             .ok_or("index out of range")
@@ -262,7 +494,7 @@ lua_type! {UniformStorage,
             .1 = UniformValue::Vec3([x, y, z]);
     }
     fn set_vec4(lua, this, (idx, x, y, z, w): (usize, f32, f32, f32, f32)) {
-        let mut vars = this.vars.0.borrow_mut();
+        let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
             .ok_or("index out of range")
@@ -272,7 +504,7 @@ lua_type! {UniformStorage,
 
     fn set_matrix(lua, this, (idx, mat): (usize, MatrixStack)) {
         let (_, top) = *mat.stack.borrow();
-        let mut vars = this.vars.0.borrow_mut();
+        let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
             .ok_or("index out of range")
@@ -281,26 +513,20 @@ lua_type! {UniformStorage,
     }
 }
 
-fn main() {
-    let evloop = EventLoop::new();
-    let wb = WindowBuilder::new()
-        .with_resizable(true)
-        .with_title("Slime Farm")
-        .with_visible(true);
-    let cb = ContextBuilder::new();
-    let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
-    let state = Rc::new(State {
-        frame: RefCell::new(display.draw()),
-        display,
-    });
-
-    std::env::set_current_dir("lua").unwrap();
-    let lua_main = fs::read("main.lua").expect("failed to read main.lua");
-
-    let lua = Lua::new();
-    let mut main_reg_key = None;
-    lua.context(|lua| {
-        lua.globals()
+fn modify_std_lib(state: &Rc<State>, lua: LuaContext) {
+    lua.globals()
+        .get::<_, LuaTable>("os")
+        .unwrap()
+        .set(
+            "sleep",
+            lua_func!(lua, state, fn(secs: f64) {
+                thread::sleep(Duration::from_secs_f64(secs))
+            }),
+        )
+        .unwrap();
+}
+fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
+    lua.globals()
             .set(
                 "gfx",
                 lua_lib! {lua, state,
@@ -334,20 +560,20 @@ fn main() {
                         UniformStorage{vars: AssertSync(Rc::new(RefCell::new(Vec::new())))}
                     }
 
+                    fn draw_params(()) {
+                        LuaDrawParams::default()
+                    }
+
                     fn dimensions(()) {
                         state.frame.borrow().get_dimensions()
                     }
 
                     fn clear(()) {
-                        state.frame.borrow_mut().clear_color_and_depth((0., 0., 0., 0.), 0.);
+                        state.frame.borrow_mut().clear_color_and_depth((0., 0., 0., 0.), 1.);
                     }
 
-                    fn draw((buf, shader, uniforms): (BufferRef, ShaderRef, UniformStorage)) {
-                        let draw_params = DrawParameters {
-                            backface_culling: glium::draw_parameters::BackfaceCullingMode::CullClockwise,
-                            ..default()
-                        };
-                        state.frame.borrow_mut().draw(&buf.rc.vertex, &buf.rc.index, &shader.program, &uniforms, &draw_params).unwrap();
+                    fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {
+                        state.frame.borrow_mut().draw(&buf.rc.vertex, &buf.rc.index, &shader.program, &uniforms, &params.params).unwrap();
                     }
 
                     fn finish(()) {
@@ -357,12 +583,65 @@ fn main() {
                 },
             )
             .unwrap();
-        lua.globals().set("algebra", lua_lib!{lua, state,
-            fn matrix(()) {
-                MatrixStack::from(Mat4::identity())
-            }
-        }).unwrap();
-        let main_chunk = lua.load(&lua_main).set_name("main.lua").unwrap().into_function().expect("parsing main.lua failed");
+}
+fn open_algebra_lib(state: &Rc<State>, lua: LuaContext) {
+    lua.globals()
+        .set(
+            "algebra",
+            lua_lib! {lua, state,
+                fn matrix(()) {
+                    MatrixStack::from(Mat4::identity())
+                }
+            },
+        )
+        .unwrap();
+}
+fn open_terrain_lib(state: &Rc<State>, lua: LuaContext) {
+    lua.globals()
+        .set(
+            "terrain",
+            lua_lib! {lua, state,
+                fn new(cfg: LuaValue) {
+                    let cfg = rlua_serde::from_value(cfg)?;
+                    terrain::TerrainRef::new(state, cfg)
+                }
+            },
+        )
+        .unwrap();
+}
+
+fn main() {
+    //Initialize window
+    let evloop = EventLoop::new();
+    let wb = WindowBuilder::new()
+        .with_resizable(true)
+        .with_title("Slime Farm")
+        .with_visible(true);
+    let cb = ContextBuilder::new().with_vsync(true);
+    let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
+    let state = Rc::new(State {
+        frame: RefCell::new(display.draw()),
+        display,
+    });
+
+    //Load main.lua
+    std::env::set_current_dir("lua").unwrap();
+    let lua_main = fs::read("main.lua").expect("could not find main.lua");
+
+    //Initialize lua environment
+    let lua = Lua::new();
+    let mut main_reg_key = None;
+    lua.context(|lua| {
+        modify_std_lib(&state, lua);
+        open_gfx_lib(&state, lua);
+        open_algebra_lib(&state, lua);
+        open_terrain_lib(&state, lua);
+        let main_chunk = lua
+            .load(&lua_main)
+            .set_name("main.lua")
+            .unwrap()
+            .into_function()
+            .expect_lua("parsing main.lua");
         let main_co = lua.create_thread(main_chunk).unwrap();
         main_reg_key = Some(lua.create_registry_value(main_co).unwrap());
     });
@@ -374,7 +653,7 @@ fn main() {
             let mut exit = false;
             lua.context(|lua| {
                 let co: LuaThread = lua.registry_value(&main_reg_key).unwrap();
-                exit = co.resume($($arg)*).expect("lua error");
+                exit = co.resume($($arg)*).unwrap_lua();
             });
             if exit {
                 *$flow = ControlFlow::Exit;
