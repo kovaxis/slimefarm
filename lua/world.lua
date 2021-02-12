@@ -8,6 +8,7 @@ local Sprite = require 'sprite'
 local World = class{}
 
 function World:new()
+    self.tick_count = 0
     self.terrain = terrain.new{
         seed = 123443,
     }
@@ -40,6 +41,7 @@ function World:new()
         mvp_world = algebra.matrix(),
         mvp_hud = algebra.matrix(),
         s = 0,
+        dt = 0,
     }
     self.frame.params_world:set_cull('cw')
     self.frame.params_world:set_depth('if_less', true)
@@ -64,6 +66,7 @@ function World:new()
     self.fps_counter = 0
     self.fps_next_reset = os.clock()
     self.fps = 0
+    self.last_frame = os.clock()
 
     self.mouse_icon = Sprite{
         path = 'crosshair.png',
@@ -83,6 +86,9 @@ function World:tick()
     --Bookkeep terrain
     local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
     self.terrain:book_keep(self.cam_x, self.cam_y, self.cam_z, time_limit)
+
+    --Advance tick count
+    self.tick_count = self.tick_count + 1
 end
 
 function World:update()
@@ -122,7 +128,9 @@ function World:draw()
     end
 
     --Get interpolation factor `s`, a weight between the previous tick and the current one
+    frame.dt = now - self.last_frame
     frame.s = (now - self.next_tick) / self.tick_period + 1
+    self.last_frame = now
 
     --Find out real camera location
     local cam_x, cam_y, cam_z
@@ -186,37 +194,21 @@ function World:draw()
     self.font:draw("FPS: "..self.fps, frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
 
-    --Draw mouse
+    --Draw crosshair
     frame.mvp_hud:push()
-    frame.mvp_hud:translate(self.mouse_x * frame.w + 0.5, self.mouse_y * frame.h - 0.5, 0)
+    frame.mvp_hud:translate(0.5, 0.5, 0)
     frame.mvp_hud:scale(self.mouse_icon.w, self.mouse_icon.h, 1)
     self.mouse_icon:draw(1, frame.mvp_hud, frame.params_hud)
     frame.mvp_hud:pop()
 end
 
 function World:mousemove(dx, dy)
-    if input.mouse_down.right then
-        self.cam_yaw = (self.cam_yaw + dx * 0.01) % (2*math.pi)
-        self.cam_pitch = self.cam_pitch - dy * 0.01
-        if self.cam_pitch < math.pi / -2 then
-            self.cam_pitch = math.pi / -2
-        elseif self.cam_pitch > math.pi / 2 then
-            self.cam_pitch = math.pi / 2
-        end
-    else
-        local w, h = gfx.dimensions()
-        self.mouse_x = self.mouse_x + 2 * dx / w
-        self.mouse_y = self.mouse_y - 2 * dy / h
-        if self.mouse_x < -1 then
-            self.mouse_x = -1
-        elseif self.mouse_x > 1 then
-            self.mouse_x = 1
-        end
-        if self.mouse_y < -1 then
-            self.mouse_y = -1
-        elseif self.mouse_y > 1 then
-            self.mouse_y = 1
-        end
+    self.cam_yaw = (self.cam_yaw + dx * 0.01) % (2*math.pi)
+    self.cam_pitch = self.cam_pitch - dy * 0.01
+    if self.cam_pitch < math.pi / -2 then
+        self.cam_pitch = math.pi / -2
+    elseif self.cam_pitch > math.pi / 2 then
+        self.cam_pitch = math.pi / 2
     end
 end
 

@@ -124,8 +124,6 @@ struct GenState {
 }
 
 fn gen_thread(gen: GenState, cfg: GenConfig) {
-    const RECENT_COUNT: usize = 16;
-    let mut recent_requests = VecDeque::<ChunkPos>::with_capacity(RECENT_COUNT);
     let noise_gen = PerlinNoise::new(
         cfg.seed,
         &[(128., 1.), (64., 0.5), (32., 0.25), (16., 0.125)],
@@ -141,11 +139,9 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
         let pos = 'inner: loop {
             match req.wanted.pop_front() {
                 Some(pos) => {
-                    if recent_requests.iter().any(|p| p == &pos) {
+                    if req.in_progress.contains(&pos) {
                         continue 'inner;
                     }
-                    recent_requests.truncate(RECENT_COUNT - 1);
-                    recent_requests.push_front(pos);
                     break 'inner pos;
                 }
                 None => {

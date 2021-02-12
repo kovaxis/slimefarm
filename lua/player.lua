@@ -16,11 +16,15 @@ Player.mesh_buf = Player.mesh:as_buffer()
 local bbox_h = 2
 local bbox_v = 1.8
 local gravity = 0.04
-local jump_vel = 0.6
-local friction = 1
+local friction = 0.99
 local walk_speed = 0.13
-local yaw_anim_speed = 0.25
-local yaw_anim_speed_min = 0.04
+local yaw_anim_factor = 0.04
+local yaw_anim_linear = 1.4
+
+local jump_hvel = 0.4
+local jump_vvel = 0.6
+local jump_hnudge_ticks = 4
+local jump_cooldown = 10
 
 function Player:new()
     assert(self.x)
@@ -33,15 +37,15 @@ function Player:new()
     self.prev_y = self.y
     self.prev_z = self.z
     self.on_ground = false
-    self.prev_yaw = 0
+    self.visual_yaw = 0
     self.yaw = 0
-    self.target_yaw = 0
-    self.dst_x = false
-    self.dst_y = false
-    self.dst_z = false
-    self.src_x = false
-    self.src_y = false
-    self.src_z = false
+
+    --Jumping mechanics
+    self.jump_cooldown = 0
+    self.jump_ticks = -1
+    self.jump_dx = 0
+    self.jump_dz = 0
+    self.jump_yaw = 0
 end
 
 function Player:tick(world)
@@ -49,7 +53,6 @@ function Player:tick(world)
     self.prev_x = self.x
     self.prev_y = self.y
     self.prev_z = self.z
-    self.prev_yaw = self.yaw
 
     --Apply friction
     if self.on_ground then
@@ -101,61 +104,63 @@ function Player:tick(world)
     end]]
 
     --Jump around
-    if self.on_ground and self.dst_x then
-        self.dst_x = false
-        self.dst_y = false
-        self.dst_z = false
-        self.src_x = false
-        self.src_y = false
-        self.src_z = false
-    elseif self.on_ground and input.key_down.space and not self.dst_x then
-        --Invert the mouse position using the last render matrix
-        local max_cast_dist = 128
-        local inverse = world.frame.mvp_world
-        inverse:push()
-        inverse:invert()
-        local dx, dy, dz = inverse:transform_point(world.mouse_x, world.mouse_y, 0)
-        inverse:pop()
-        local factor = max_cast_dist*(dx*dx + dy*dy + dz*dz)^-0.5
-        --Cast a ray to find the landing spot
-        local x, y, z = world.terrain:raycast(
-            world.cam_effective_x,
-            world.cam_effective_y,
-            world.cam_effective_z,
-            dx * factor, dy * factor, dz * factor,
-            0, 0, 0
-        )
-        --Determine jump velocity
-        local dx, dy, dz = x - self.x, y - self.y, z - self.z
-        local hdist = (dx*dx + dz*dz)^0.5
-        local v0 = jump_vel
-        local det0 = v0*v0 - 2*dy*gravity*v0 - hdist*hdist*gravity*gravity
-        if det0 >= 0 then
-            local det1 = v0 - dy * gravity + det0^0.5
-            if det1 >= 0 then
-                local dt = 2^0.5 * det1^0.5 / gravity
-                local vy = dy / dt + 0.5 * dt * gravity
-                local vx = hdist / dt
-                self.vel_x = dx * vx / hdist
-                self.vel_y = vy
-                self.vel_z = dz * vx / hdist
-                self.target_yaw = math.atan(dx, -dz)
-                --Set source and target
-                self.src_x = self.x
-                self.src_y = self.y
-                self.src_z = self.z
-                self.dst_x = x
-                self.dst_y = y
-                self.dst_z = z
+    if self.jump_ticks < 0 then
+        if self.on_ground and self.jump_cooldown <= 0 and input.key_down.space then
+            self.jump_dx = 0
+            self.jump_dz = 0
+            self.jump_yaw = world.cam_yaw
+            self.vel_y = jump_vvel
+            self.jump_ticks = 0
+        end
+        if self.jump_cooldown > 0 then
+            self.jump_cooldown = self.jump_cooldown - 1
+        end
+    else
+        --Advance jump ticks
+        if self.jump_ticks < jump_hnudge_ticks then
+            local og_dx, og_dz = self.jump_dx, self.jump_dz
+            local dx, dz = og_dx, og_dz
+            if dx == 0 then
+                if input.key_down.a then
+                    dx = dx - 1
+                end
+                if input.key_down.d then
+                    dx = dx + 1
+                end
+            end
+            if dz == 0 then
+                if input.key_down.w then
+                    dz = dz - 1
+                end
+                if input.key_down.s then
+                    dz = dz + 1
+                end
+            end
+            if dx ~= og_dz or dz ~= og_dz then
+                --Modify
+                self.jump_dx = dx
+                self.jump_dz = dz
+                if og_dx ~= 0 and og_dz ~= 0 then
+                    og_dx = og_dx * 2^-0.5
+                    og_dz = og_dz * 2^-0.5
+                end
+                if dx ~= 0 and dz ~= 0 then
+                    dx = dx * 2^-0.5
+                    dz = dz * 2^-0.5
+                end
+                dx, dz = util.rotate_yaw(dx, dz, self.jump_yaw)
+                og_dx, og_dz = util.rotate_yaw(og_dx, og_dz, self.jump_yaw)
+                self.yaw = util.pos_to_yaw(dx, dz)
+                self.vel_x = self.vel_x + (dx - og_dx) * jump_hvel
+                self.vel_z = self.vel_z + (dz - og_dz) * jump_hvel
             end
         end
-    end
-
-    --Animate yaw
-    do
-        local dyaw = (self.target_yaw - self.yaw + math.pi) % (2*math.pi) - math.pi
-        dyaw = util.abs_min(util.abs_max(dyaw * yaw_anim_speed, yaw_anim_speed_min), math.abs(dyaw))
-        self.yaw = (self.yaw + dyaw) % (2*math.pi)
+        if self.on_ground then
+            self.jump_ticks = -1
+            self.jump_cooldown = jump_cooldown
+        else
+            self.jump_ticks = self.jump_ticks + 1
+        end
     end
 
     --Apply velocity to position
@@ -183,7 +188,10 @@ end
 
 function Player:draw(world)
     local frame = world.frame
-    frame.mvp_world:rotate_y(self.yaw + ((self.yaw - self.prev_yaw + math.pi) % (2*math.pi) - math.pi) * frame.s)
+
+    local dyaw = (self.yaw - self.visual_yaw + math.pi) % (2*math.pi) - math.pi
+    self.visual_yaw = util.approach(self.yaw - dyaw, self.yaw, yaw_anim_factor, yaw_anim_linear, frame.dt) % (2*math.pi)
+    frame.mvp_world:rotate_y(self.visual_yaw)
     world.shaders.basic:set_matrix('mvp', frame.mvp_world)
     world.shaders.basic:set_vec4('tint', 1, 1, 1, 1)
     world.shaders.basic:draw(Player.mesh_buf, frame.params_world)

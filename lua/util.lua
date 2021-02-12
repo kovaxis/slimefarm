@@ -43,6 +43,27 @@ function util.abs_max(x, abs)
     end
 end
 
+function util.rotate_yaw(x, z, yaw)
+    return x * math.cos(yaw) - z * math.sin(yaw), x * math.sin(yaw) + z * math.cos(yaw)
+end
+
+function util.pos_to_yaw(dx, dz)
+    return math.atan(dx, -dz)
+end
+
+function util.approach(cur, target, factor, linear, dt)
+    local og_delta = cur - target
+    if target < cur then
+        linear = -linear
+    end
+    local delta = og_delta * factor ^ dt + linear * dt
+    if og_delta * delta <= 0 then
+        return target
+    else
+        return target + delta
+    end
+end
+
 util.Shader = class{}
 
 function util.Shader:new()
