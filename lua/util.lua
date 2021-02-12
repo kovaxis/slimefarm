@@ -4,10 +4,43 @@ local class = require 'class'
 local util = {}
 
 function util.read_file(path)
-    local file = io.open('../'..path, 'rb')
+    local file = assert(io.open('../'..path, 'rb'))
     local str = file:read('a')
     file:close()
     return str
+end
+
+function util.abs_min(x, abs)
+    if x < 0 then
+        abs = -abs
+        if abs > x then
+            return abs
+        else
+            return x
+        end
+    else
+        if abs < x then
+            return abs
+        else
+            return x
+        end
+    end
+end
+function util.abs_max(x, abs)
+    if x < 0 then
+        abs = -abs
+        if abs < x then
+            return abs
+        else
+            return x
+        end
+    else
+        if abs > x then
+            return abs
+        else
+            return x
+        end
+    end
 end
 
 util.Shader = class{}
@@ -41,6 +74,9 @@ function util.Shader:set_vec4(name, x, y, z, w)
 end
 function util.Shader:set_matrix(name, mat4)
     self.raw_uniforms:set_matrix(self.uniforms[name], mat4)
+end
+function util.Shader:set_texture(name, tex)
+    self.raw_uniforms:set_texture(self.uniforms[name], tex)
 end
 
 function util.Shader:draw(buf, draw_params)

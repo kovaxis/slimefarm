@@ -98,7 +98,7 @@ function Mesh:add_cube(x, y, z, w, h, d, r, g, b, a)
 end
 
 function Mesh:as_buffer()
-    return gfx.buffer(self.vertices, self.colors, self.indices)
+    return gfx.buffer_3d(self.vertices, self.colors, self.indices)
 end
 
 return Mesh

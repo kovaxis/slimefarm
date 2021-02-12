@@ -8,6 +8,8 @@
 
 #![allow(unused_imports)]
 
+use glium::uniforms::SamplerWrapFunction;
+
 use crate::prelude::*;
 
 #[macro_use]
@@ -16,7 +18,7 @@ pub mod prelude {
         gen::GeneratorHandle,
         mesh::Mesh,
         terrain::{BlockPos, Chunk, ChunkPos, CHUNK_SIZE},
-        Buffer, LuaDrawParams, ShaderRef, SimpleVertex, State, UniformStorage,
+        Buffer3d, LuaDrawParams, ShaderRef, SimpleVertex, State, UniformStorage,
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
     pub use crossbeam::{
@@ -37,7 +39,7 @@ pub mod prelude {
         uniforms::{
             MagnifySamplerFilter, MinifySamplerFilter, SamplerBehavior, UniformValue, Uniforms,
         },
-        Display, DrawParameters, Frame, IndexBuffer, Program, Surface, VertexBuffer,
+        Display, DrawParameters, Frame, IndexBuffer, Program, Surface, Texture2d, VertexBuffer,
     };
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
     pub use parking_lot::{Mutex, MutexGuard};
@@ -118,15 +120,18 @@ pub mod prelude {
     }
 
     macro_rules! lua_bail {
+        ($err:expr, $($rest:tt)*) => {{
+            return Err(format!($err, $($rest)*)).to_lua_err();
+        }};
         ($err:expr) => {{
             return Err($err).to_lua_err();
         }};
     }
 
     macro_rules! lua_assert {
-        ($cond:expr, $err:expr) => {{
+        ($cond:expr, $($err:tt)*) => {{
             if !$cond {
-                lua_bail!($err);
+                lua_bail!($($err)*);
             }
         }};
     }
@@ -265,16 +270,92 @@ struct SimpleVertex {
 }
 implement_vertex!(SimpleVertex, pos normalize(false), color normalize(true));
 
-struct Buffer {
+struct Buffer3d {
     vertex: VertexBuffer<SimpleVertex>,
     index: IndexBuffer<u16>,
 }
 
+#[derive(Copy, Clone, Debug)]
+struct TexturedVertex {
+    pos: [f32; 2],
+    tex: [f32; 2],
+}
+implement_vertex!(TexturedVertex, pos, tex);
+
+struct Buffer2d {
+    vertex: VertexBuffer<TexturedVertex>,
+    index: IndexBuffer<u16>,
+}
+
+enum AnyBuffer {
+    Buf2d(Buffer2d),
+    Buf3d(Buffer3d),
+}
+
 #[derive(Clone)]
 struct BufferRef {
-    rc: AssertSync<Rc<Buffer>>,
+    rc: AssertSync<Rc<AnyBuffer>>,
 }
 impl LuaUserData for BufferRef {}
+
+#[derive(Clone)]
+struct TextureRef {
+    tex: AssertSync<Rc<Texture2d>>,
+    sampling: SamplerBehavior,
+}
+impl TextureRef {
+    fn new(tex: Texture2d) -> Self {
+        use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter, SamplerWrapFunction};
+        Self {
+            tex: AssertSync(Rc::new(tex)),
+            sampling: SamplerBehavior {
+                minify_filter: MinifySamplerFilter::Nearest,
+                magnify_filter: MagnifySamplerFilter::Nearest,
+                wrap_function: (
+                    SamplerWrapFunction::Repeat,
+                    SamplerWrapFunction::Repeat,
+                    SamplerWrapFunction::Repeat,
+                ),
+                depth_texture_comparison: None,
+                max_anisotropy: 1,
+            },
+        }
+    }
+}
+lua_type! {TextureRef,
+    fn dimensions(lua, this, ()) {
+        (this.tex.width(), this.tex.height())
+    }
+
+    mut fn set_min(lua, this, filter: LuaString) {
+        use glium::uniforms::MinifySamplerFilter::*;
+        this.sampling.minify_filter = match filter.as_bytes() {
+            b"linear" => Linear,
+            b"nearest" => Nearest,
+            _ => lua_bail!("unknown minify filter '{}'", filter.to_str().unwrap_or_default())
+        };
+    }
+
+    mut fn set_mag(lua, this, filter: LuaString) {
+        use glium::uniforms::MagnifySamplerFilter::*;
+        this.sampling.magnify_filter = match filter.as_bytes() {
+            b"linear" => Linear,
+            b"nearest" => Nearest,
+            _ => lua_bail!("unknown magnify filter '{}'", filter.to_str().unwrap_or_default())
+        };
+    }
+
+    mut fn set_wrap(lua, this, wrap: LuaString) {
+        use glium::uniforms::SamplerWrapFunction::*;
+        let func = match wrap.as_bytes() {
+            b"repeat" => Repeat,
+            b"mirror" => Mirror,
+            b"clamp" => Clamp,
+            _ => lua_bail!("unknown wrap function '{}'", wrap.to_str().unwrap_or_default())
+        };
+        this.sampling.wrap_function = (func, func, func);
+    }
+}
 
 #[derive(Clone, Default)]
 struct LuaDrawParams {
@@ -452,6 +533,11 @@ lua_type! {MatrixStack,
         *top = *top * Mat4::from_rotation_z(angle);
     }
 
+    fn invert(lua, this, ()) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        top.inverse();
+    }
+
     fn perspective(lua, this, (fov, aspect, near, far): (f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * uv::projection::perspective_gl(fov, aspect, near, far);
@@ -460,16 +546,52 @@ lua_type! {MatrixStack,
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * uv::projection::orthographic_gl(xleft, xright, ydown, yup, znear, zfar);
     }
+
+    fn transform_vec(lua, this, (x, y, z): (f32, f32, f32)) {
+        let (_, top) = &*this.stack.borrow();
+        let (x, y, z) = top.transform_vec3(Vec3::new(x, y, z)).into();
+        (x, y, z)
+    }
+    fn transform_point(lua, this, (x, y, z): (f32, f32, f32)) {
+        let (_, top) = &*this.stack.borrow();
+        let (x, y, z) = top.transform_point3(Vec3::new(x, y, z)).into();
+        (x, y, z)
+    }
+}
+
+enum UniformVal {
+    Float(f32),
+    Vec2([f32; 2]),
+    Vec3([f32; 3]),
+    Vec4([f32; 4]),
+    Mat4([[f32; 4]; 4]),
+    Texture2d(TextureRef, SamplerBehavior),
+}
+impl UniformVal {
+    fn as_uniform(&self) -> UniformValue {
+        match self {
+            &Self::Float(v) => UniformValue::Float(v),
+            &Self::Vec2(v) => UniformValue::Vec2(v),
+            &Self::Vec3(v) => UniformValue::Vec3(v),
+            &Self::Vec4(v) => UniformValue::Vec4(v),
+            &Self::Mat4(v) => UniformValue::Mat4(v),
+            Self::Texture2d(tex, sampling) => UniformValue::Texture2d(&tex.tex, Some(*sampling)),
+        }
+    }
 }
 
 #[derive(Clone)]
 struct UniformStorage {
-    vars: AssertSync<Rc<RefCell<Vec<(String, UniformValue<'static>)>>>>,
+    vars: AssertSync<Rc<RefCell<Vec<(String, UniformVal)>>>>,
 }
 impl Uniforms for UniformStorage {
     fn visit_values<'a, F: FnMut(&str, UniformValue<'a>)>(&self, mut visit: F) {
-        for (name, val) in self.vars.0.borrow().iter() {
-            visit(name, *val);
+        for (name, val) in self.vars.borrow().iter() {
+            let as_uniform: UniformValue<'a> = unsafe {
+                let as_uniform: UniformValue = val.as_uniform();
+                mem::transmute(as_uniform)
+            };
+            visit(name, as_uniform);
         }
     }
 }
@@ -477,7 +599,7 @@ lua_type! {UniformStorage,
     fn add(lua, this, name: String) {
         let mut vars = this.vars.0.borrow_mut();
         let idx = vars.len();
-        vars.push((name, UniformValue::Float(0.)));
+        vars.push((name, UniformVal::Float(0.)));
         idx
     }
 
@@ -487,7 +609,7 @@ lua_type! {UniformStorage,
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformValue::Float(val);
+            .1 = UniformVal::Float(val);
     }
     fn set_vec2(lua, this, (idx, x, y): (usize, f32, f32)) {
         let mut vars = this.vars.borrow_mut();
@@ -495,7 +617,7 @@ lua_type! {UniformStorage,
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformValue::Vec2([x, y]);
+            .1 = UniformVal::Vec2([x, y]);
     }
     fn set_vec3(lua, this, (idx, x, y, z): (usize, f32, f32, f32)) {
         let mut vars = this.vars.borrow_mut();
@@ -503,7 +625,7 @@ lua_type! {UniformStorage,
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformValue::Vec3([x, y, z]);
+            .1 = UniformVal::Vec3([x, y, z]);
     }
     fn set_vec4(lua, this, (idx, x, y, z, w): (usize, f32, f32, f32, f32)) {
         let mut vars = this.vars.borrow_mut();
@@ -511,7 +633,7 @@ lua_type! {UniformStorage,
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformValue::Vec4([x, y, z, w]);
+            .1 = UniformVal::Vec4([x, y, z, w]);
     }
 
     fn set_matrix(lua, this, (idx, mat): (usize, MatrixStack)) {
@@ -521,7 +643,17 @@ lua_type! {UniformStorage,
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformValue::Mat4(top.into());
+            .1 = UniformVal::Mat4(top.into());
+    }
+
+    fn set_texture(lua, this, (idx, tex): (usize, TextureRef)) {
+        let mut vars = this.vars.borrow_mut();
+        let sampling = tex.sampling;
+        vars
+            .get_mut(idx)
+            .ok_or("index out of range")
+            .to_lua_err()?
+            .1 = UniformVal::Texture2d(tex, sampling);
     }
 }
 
@@ -601,7 +733,7 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         ShaderRef{program: AssertSync(Rc::new(shader))}
                     }
 
-                    fn buffer((pos, color, indices): (Vec<f32>, Vec<f32>, Vec<u16>)) {
+                    fn buffer_3d((pos, color, indices): (Vec<f32>, Vec<f32>, Vec<u16>)) {
                         lua_assert!(pos.len() % 3 == 0, "positions not multiple of 3");
                         lua_assert!(color.len() % 4 == 0, "colors not multiple of 4");
                         lua_assert!(pos.len() / 3 == color.len() / 4, "not the same amount of positions as colors");
@@ -610,11 +742,44 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                             SimpleVertex {pos: [pos[0], pos[1], pos[2]], color: [q(color[0]), q(color[1]), q(color[2]), q(color[3])]}
                         }).collect::<Vec<_>>();
                         BufferRef {
-                            rc: AssertSync(Rc::new(Buffer {
+                            rc: AssertSync(Rc::new(AnyBuffer::Buf3d(Buffer3d {
                                 vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
                                 index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
-                            }))
+                            })))
                         }
+                    }
+
+                    fn buffer_2d((pos, tex, indices): (Vec<f32>, Vec<f32>, Vec<u16>)) {
+                        lua_assert!(pos.len() % 2 == 0, "positions not multiple of 2");
+                        lua_assert!(tex.len() % 2 == 0, "texcoords not multiple of 4");
+                        lua_assert!(pos.len() == tex.len(), "not the same amount of positions as texcoords");
+                        let vertices = pos.chunks_exact(2).zip(tex.chunks_exact(2)).map(|(pos, tex)| {
+                            TexturedVertex {pos: [pos[0], pos[1]], tex: [tex[0], tex[1]]}
+                        }).collect::<Vec<_>>();
+                        BufferRef {
+                            rc: AssertSync(Rc::new(AnyBuffer::Buf2d(Buffer2d {
+                                vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
+                                index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
+                            })))
+                        }
+                    }
+
+                    fn texture(path: String) {
+                        use glium::texture::RawImage2d;
+
+                        let img = image::io::Reader::open(&path)
+                            .with_context(|| format!("image file \"{}\" not found", path))
+                            .to_lua_err()?
+                            .decode()
+                            .with_context(|| format!("image file \"{}\" invalid or corrupted", path))
+                            .to_lua_err()?
+                            .to_rgba8();
+                        let (w, h) = img.dimensions();
+                        let tex = Texture2d::new(
+                            &state.display,
+                            RawImage2d::from_raw_rgba(img.into_vec(), (w, h))
+                        ).unwrap();
+                        TextureRef::new(tex)
                     }
 
                     fn uniforms(()) {
@@ -640,7 +805,15 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                     }
 
                     fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {
-                        state.frame.borrow_mut().draw(&buf.rc.vertex, &buf.rc.index, &shader.program, &uniforms, &params.params).unwrap();
+                        let mut frame = state.frame.borrow_mut();
+                        match &**buf.rc {
+                            AnyBuffer::Buf2d(buf) => {
+                                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
+                            },
+                            AnyBuffer::Buf3d(buf) => {
+                                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
+                            },
+                        }.unwrap();
                     }
 
                     fn finish(()) {

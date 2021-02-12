@@ -37,8 +37,8 @@ impl Mesh {
     }
 
     /// Upload mesh to GPU.
-    pub fn make_buffer(&self, display: &Display) -> Buffer {
-        Buffer {
+    pub fn make_buffer(&self, display: &Display) -> Buffer3d {
+        Buffer3d {
             vertex: VertexBuffer::new(display, &self.vertices).unwrap(),
             index: IndexBuffer::new(display, PrimitiveType::TrianglesList, &self.indices).unwrap(),
         }

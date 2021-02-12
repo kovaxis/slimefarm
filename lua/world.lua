@@ -3,6 +3,7 @@ local class = require 'class'
 local util = require 'util'
 local Mesh = require 'mesh'
 local input = require 'input'
+local Sprite = require 'sprite'
 
 local World = class{}
 
@@ -54,12 +55,23 @@ function World:new()
     self.cam_rollback = 0
     self.cam_yaw = 0
     self.cam_pitch = 0
+    self.cam_effective_x = 0
+    self.cam_effective_y = 0
+    self.cam_effective_z = 0
 
     self.tick_period = 1/64
     self.next_tick = os.clock()
     self.fps_counter = 0
     self.fps_next_reset = os.clock()
     self.fps = 0
+
+    self.mouse_icon = Sprite{
+        path = 'crosshair.png',
+        w = 16,
+        h = 16,
+    }
+    self.mouse_x = 0
+    self.mouse_y = 0
 end
 
 function World:tick()
@@ -119,13 +131,19 @@ function World:draw()
         local og_cam_x = self.cam_prev_x + (self.cam_x - self.cam_prev_x) * frame.s
         local og_cam_y = self.cam_prev_y + (self.cam_y - self.cam_prev_y) * frame.s
         local og_cam_z = self.cam_prev_z + (self.cam_z - self.cam_prev_z) * frame.s
+        cam_yaw = self.cam_yaw
+        cam_pitch = self.cam_pitch
 
-        local cam_wall_dist = 1.2
+        local cam_wall_dist = 0.4
         local rollback = self.cam_rollback
         local dx = math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dy = math.sin(self.cam_pitch) * rollback
         local dz = -math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
-        cam_x, cam_y, cam_z = self.terrain:collide(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, 0, 0, 0)
+        cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+        self.cam_effective_x = cam_x
+        self.cam_effective_y = cam_y
+        self.cam_effective_z = cam_z
+        --[[
         cam_yaw = math.atan(og_cam_x - cam_x, cam_z - og_cam_z)
         local len = ((og_cam_x - cam_x)^2 + (og_cam_z - cam_z)^2)^0.5
         cam_pitch = math.atan(og_cam_y - cam_y, len)
@@ -137,6 +155,7 @@ function World:draw()
         cam_x = og_cam_x + dx * factor
         cam_y = og_cam_y + dy * factor
         cam_z = og_cam_z + dz * factor
+        ]]
     end
 
     --Setup model-view-projection matrix for world drawing
@@ -166,6 +185,13 @@ function World:draw()
     frame.mvp_hud:scale(self.font_size)
     self.font:draw("FPS: "..self.fps, frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
+
+    --Draw mouse
+    frame.mvp_hud:push()
+    frame.mvp_hud:translate(self.mouse_x * frame.w + 0.5, self.mouse_y * frame.h - 0.5, 0)
+    frame.mvp_hud:scale(self.mouse_icon.w, self.mouse_icon.h, 1)
+    self.mouse_icon:draw(1, frame.mvp_hud, frame.params_hud)
+    frame.mvp_hud:pop()
 end
 
 function World:mousemove(dx, dy)
@@ -176,6 +202,20 @@ function World:mousemove(dx, dy)
             self.cam_pitch = math.pi / -2
         elseif self.cam_pitch > math.pi / 2 then
             self.cam_pitch = math.pi / 2
+        end
+    else
+        local w, h = gfx.dimensions()
+        self.mouse_x = self.mouse_x + 2 * dx / w
+        self.mouse_y = self.mouse_y - 2 * dy / h
+        if self.mouse_x < -1 then
+            self.mouse_x = -1
+        elseif self.mouse_x > 1 then
+            self.mouse_x = 1
+        end
+        if self.mouse_y < -1 then
+            self.mouse_y = -1
+        elseif self.mouse_y > 1 then
+            self.mouse_y = 1
         end
     end
 end

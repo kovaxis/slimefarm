@@ -413,7 +413,7 @@ struct ChunkMeshSlot {
 }
 
 struct ChunkMesh {
-    buf: Option<Buffer>,
+    buf: Option<Buffer3d>,
 }
 
 pub struct Chunk {
@@ -553,6 +553,7 @@ fn check_collisions(
     mut delta: [f64; 3],
     size: [f64; 3],
     mut is_solid: impl FnMut(BlockPos, i32) -> bool,
+    raycast: bool,
 ) -> [f64; 3] {
     if delta == [0.; 3] {
         return from;
@@ -644,6 +645,10 @@ fn check_collisions(
 
         //If there is collision, start ignoring this axis
         if collides {
+            if raycast {
+                limit = frontier;
+                break;
+            }
             limit[closest_axis] = frontier[closest_axis] - safe_gap * dir[closest_axis];
             delta[closest_axis] = 0.;
             if delta == [0., 0., 0.] {
@@ -679,7 +684,15 @@ lua_type! {TerrainRef,
         let terrain = this.rc.borrow();
         let [fx, fy, fz] = check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
             terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
-        });
+        }, false);
+        (fx, fy, fz)
+    }
+
+    fn raycast(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
+        let terrain = this.rc.borrow();
+        let [fx, fy, fz] = check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
+            terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
+        }, true);
         (fx, fy, fz)
     }
 
@@ -692,7 +705,7 @@ lua_type! {TerrainRef,
             if let Some(buf) = &this.meshes.get_by_idx(idx).mesh.as_ref().and_then(|mesh| mesh.buf.as_ref()) {
                 let pos = this.meshes.sub_idx_to_pos(idx).to_block_floor();
                 let offset = Vec3::new((pos[0] as f64 - x) as f32, (pos[1] as f64 - y) as f32, (pos[2] as f64 - z) as f32);
-                uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformValue::Vec3(offset.into());
+                uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = crate::UniformVal::Vec3(offset.into());
                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
             }
         }
