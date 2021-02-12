@@ -87,7 +87,11 @@ impl GeneratorHandle {
 }
 impl Drop for GeneratorHandle {
     fn drop(&mut self) {
-        self.request.lock().close = true;
+        {
+            let mut req = self.request.lock();
+            req.wanted.clear();
+            req.close = true;
+        }
         self.unpark_all();
         for join in self.threads.drain(..) {
             join.join().unwrap();

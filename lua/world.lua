@@ -25,11 +25,8 @@ function World:new()
         },
     }
 
-    do
-        local m = Mesh{}
-        m:add_cube(0, 1, 0, 0.8, 2, 0.8, 0, 0.9, 0.4)
-        self.cube_buf = m:as_buffer()
-    end
+    self.font_size = 6
+    self.font = gfx.font(util.read_file("font/dogicapixel.ttf"), self.font_size)
 
     self.frame = {
         target_res = 240,
@@ -46,7 +43,6 @@ function World:new()
     self.frame.params_world:set_cull('cw')
     self.frame.params_world:set_depth('if_less', true)
     self.frame.params_world:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
-    self.frame.params_hud:set_cull('cw')
     self.frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
 
     self.cam_prev_x = 0
@@ -61,6 +57,9 @@ function World:new()
 
     self.tick_period = 1/64
     self.next_tick = os.clock()
+    self.fps_counter = 0
+    self.fps_next_reset = os.clock()
+    self.fps = 0
 end
 
 function World:tick()
@@ -91,6 +90,14 @@ function World:draw()
     local now = os.clock()
     gfx.clear()
 
+    --Count FPS
+    while now >= self.fps_next_reset do
+        self.fps_next_reset = self.fps_next_reset + 1
+        self.fps = self.fps_counter
+        self.fps_counter = 0
+    end
+    self.fps_counter = self.fps_counter + 1
+
     --Figure out screen dimensions and pixelated scaling
     do
         local pw, ph = gfx.dimensions()
@@ -99,7 +106,7 @@ function World:draw()
         local w, h = math.floor(pw / scale / 2), math.floor(ph / scale / 2)
         frame.w, frame.h = w, h
         frame.mvp_hud:reset()
-        frame.mvp_hud:scale(2*scale/pw, 2*scale/ph)
+        frame.mvp_hud:scale(2*scale/pw, 2*scale/ph, 1)
     end
 
     --Get interpolation factor `s`, a weight between the previous tick and the current one
@@ -154,7 +161,11 @@ function World:draw()
     end
 
     --Draw HUD
-    
+    frame.mvp_hud:push()
+    frame.mvp_hud:translate(-frame.w + 4, frame.h - 16, 0)
+    frame.mvp_hud:scale(self.font_size)
+    self.font:draw("FPS: "..self.fps, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    frame.mvp_hud:pop()
 end
 
 function World:mousemove(dx, dy)

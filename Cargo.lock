@@ -499,6 +499,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "glium_text_rusttype"
+version = "0.3.3"
+dependencies = [
+ "glium",
+ "rusttype",
+]
+
+[[package]]
 name = "glutin"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1168,6 +1176,7 @@ dependencies = [
  "crossbeam",
  "fxhash",
  "glium",
+ "glium_text_rusttype",
  "num_cpus",
  "parking_lot",
  "rand",

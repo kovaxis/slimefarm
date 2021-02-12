@@ -34,9 +34,12 @@ pub mod prelude {
         implement_vertex,
         index::PrimitiveType,
         program,
-        uniforms::{UniformValue, Uniforms},
+        uniforms::{
+            MagnifySamplerFilter, MinifySamplerFilter, SamplerBehavior, UniformValue, Uniforms,
+        },
         Display, DrawParameters, Frame, IndexBuffer, Program, Surface, VertexBuffer,
     };
+    pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
     pub use parking_lot::{Mutex, MutexGuard};
     pub use rand::{Rng, SeedableRng};
     pub use rand_xoshiro::Xoshiro128Plus as FastRng;
@@ -48,7 +51,7 @@ pub mod prelude {
         collections::VecDeque,
         f32::consts as f32,
         f64::consts as f64,
-        fs,
+        fs::{self, File},
         mem::{self, MaybeUninit as Uninit},
         ops,
         rc::Rc,
@@ -240,6 +243,7 @@ mod terrain;
 
 struct State {
     display: Display,
+    text_sys: TextSystem,
     frame: RefCell<Frame>,
 }
 impl Drop for State {
@@ -424,7 +428,15 @@ lua_type! {MatrixStack,
 
     fn scale(lua, this, (x, y, z): (f32, Option<f32>, Option<f32>)) {
         let (_, top) = &mut *this.stack.borrow_mut();
-        *top = *top * Mat4::from_nonuniform_scale(Vec3::new(x, y.unwrap_or(1.), z.unwrap_or(1.)));
+        match (y, z) {
+            (Some(y), Some(z)) => {
+                *top = *top * Mat4::from_nonuniform_scale(Vec3::new(x, y, z));
+            }
+            (None, None) => {
+                *top = *top * Mat4::from_scale(x)
+            }
+            _ => lua_bail!("expected 1 or 3 arguments, not 2")
+        }
     }
 
     fn rotate_x(lua, this, angle: f32) {
@@ -513,6 +525,55 @@ lua_type! {UniformStorage,
     }
 }
 
+struct Font {
+    state: Rc<State>,
+    text: RefCell<TextDisplay<Rc<FontTexture>>>,
+}
+impl Font {
+    fn new(state: &Rc<State>, font_data: &[u8], size: u32) -> Result<Font> {
+        let state = state.clone();
+        let tex = Rc::new(FontTexture::new(
+            &state.display,
+            font_data,
+            size,
+            (0..0x250).filter_map(|i| std::char::from_u32(i)),
+        )?);
+        let text = RefCell::new(TextDisplay::new(&state.text_sys, tex, ""));
+        Ok(Font { state, text })
+    }
+
+    fn draw(&self, text: &str, mvp: Mat4, color: [f32; 4], draw_params: &DrawParameters) {
+        let mut frame = self.state.frame.borrow_mut();
+        let mut text_disp = self.text.borrow_mut();
+        text_disp.set_text(text);
+        glium_text_rusttype::draw_with_params(
+            &text_disp,
+            &self.state.text_sys,
+            &mut *frame,
+            mvp,
+            (color[0], color[1], color[2], color[3]),
+            SamplerBehavior {
+                minify_filter: MinifySamplerFilter::Nearest,
+                magnify_filter: MagnifySamplerFilter::Nearest,
+                ..default()
+            },
+            &draw_params,
+        )
+        .unwrap();
+    }
+}
+
+#[derive(Clone)]
+struct FontRef {
+    rc: AssertSync<Rc<Font>>,
+}
+lua_type! {FontRef,
+    fn draw(lua, this, (text, mvp, draw_params, r, g, b, a): (LuaString, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
+        let (_, mvp) = &*mvp.stack.borrow();
+        this.rc.draw(text.to_str()?, *mvp, [r, g, b, a.unwrap_or(1.)], &draw_params.params);
+    }
+}
+
 fn modify_std_lib(state: &Rc<State>, lua: LuaContext) {
     lua.globals()
         .get::<_, LuaTable>("os")
@@ -564,6 +625,12 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         LuaDrawParams::default()
                     }
 
+                    fn font((font_data, size): (LuaString, u32)) {
+                        FontRef{
+                            rc: AssertSync(Rc::new(Font::new(state, font_data.as_bytes(), size).to_lua_err()?)),
+                        }
+                    }
+
                     fn dimensions(()) {
                         state.frame.borrow().get_dimensions()
                     }
@@ -579,6 +646,28 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                     fn finish(()) {
                         state.frame.borrow_mut().set_finish().unwrap();
                         *state.frame.borrow_mut() = state.display.draw();
+                    }
+
+                    fn toggle_fullscreen(exclusive: bool) {
+                        use glium::glutin::window::Fullscreen;
+                        let win = state.display.gl_window();
+                        let win = win.window();
+                        if win.fullscreen().is_some() {
+                            win.set_fullscreen(None);
+                        }else{
+                            if exclusive {
+                                if let Some(mon) = win.current_monitor() {
+                                    let mode = mon.video_modes().max_by_key(|mode| {
+                                        (mode.bit_depth(), mode.size().width * mode.size().height, mode.refresh_rate())
+                                    });
+                                    if let Some(mode) = mode {
+                                        win.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            win.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                        }
                     }
                 },
             )
@@ -621,6 +710,7 @@ fn main() {
     let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
     let state = Rc::new(State {
         frame: RefCell::new(display.draw()),
+        text_sys: TextSystem::new(&display),
         display,
     });
 

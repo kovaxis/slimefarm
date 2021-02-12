@@ -17,12 +17,15 @@ while true do
     elseif ev == 'key' then
         local scancode, state = input.scancodes[a], b
         if scancode then
+            input.key_down[scancode] = state
             if state then
                 if scancode == 'escape' then
                     coroutine.yield(true)
+                elseif scancode == 'f11' then
+                    --`true` to use exclusive mode
+                    gfx.toggle_fullscreen(false)
                 end
             end
-            input.key_down[scancode] = state
         end
     elseif ev == 'mousemove' then
         local dx, dy = a, b
