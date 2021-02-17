@@ -64,6 +64,40 @@ function util.approach(cur, target, factor, linear, dt)
     end
 end
 
+util.DebugTimer = class{}
+
+function util.DebugTimer:new()
+    self.base = os.clock()
+    self.rope = {}
+end
+
+function util.DebugTimer:start(now)
+    self.base = now or os.clock()
+    for i = #self.rope, 1, -1 do
+        self.rope[i] = nil
+    end
+end
+
+function util.DebugTimer:mark(name, now)
+    now = now or os.clock()
+    local time = now - self.base
+    self.base = now
+    local rope = self.rope
+    local len = #rope
+    rope[len + 1] = "| "
+    rope[len + 2] = name
+    rope[len + 3] = " "
+    rope[len + 4] = time * 1000
+    rope[len + 5] = "ms "
+end
+
+function util.DebugTimer:to_str()
+    local rope = self.rope
+    rope[#rope + 1] = "|"
+    return table.concat(rope)
+end
+
+
 util.Shader = class{}
 
 function util.Shader:new()

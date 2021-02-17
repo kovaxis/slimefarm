@@ -61,7 +61,9 @@ pub mod prelude {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
-    pub use uv::{Mat4, Vec2, Vec3, Vec4};
+    pub use uv::{Mat2, Mat3, Mat4, Vec2, Vec3, Vec4};
+
+    pub type VertIdx = u16;
 
     pub fn default<T>() -> T
     where
@@ -241,6 +243,16 @@ fn elem_state_to_bool(elem_state: glium::glutin::event::ElementState) -> bool {
     }
 }
 
+/// Runs the game on the dedicated GPU in Nvidia systems.
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static NvOptimusEnablement: u32 = 1;
+
+/// Runs the game on the dedicated GPU in AMD systems.
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
+
 mod gen;
 mod mesh;
 mod perlin;
@@ -272,7 +284,7 @@ implement_vertex!(SimpleVertex, pos normalize(false), color normalize(true));
 
 struct Buffer3d {
     vertex: VertexBuffer<SimpleVertex>,
-    index: IndexBuffer<u16>,
+    index: IndexBuffer<VertIdx>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -284,7 +296,7 @@ implement_vertex!(TexturedVertex, pos, tex);
 
 struct Buffer2d {
     vertex: VertexBuffer<TexturedVertex>,
-    index: IndexBuffer<u16>,
+    index: IndexBuffer<VertIdx>,
 }
 
 enum AnyBuffer {
@@ -733,7 +745,7 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         ShaderRef{program: AssertSync(Rc::new(shader))}
                     }
 
-                    fn buffer_3d((pos, color, indices): (Vec<f32>, Vec<f32>, Vec<u16>)) {
+                    fn buffer_3d((pos, color, indices): (Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
                         lua_assert!(pos.len() % 3 == 0, "positions not multiple of 3");
                         lua_assert!(color.len() % 4 == 0, "colors not multiple of 4");
                         lua_assert!(pos.len() / 3 == color.len() / 4, "not the same amount of positions as colors");
@@ -749,7 +761,7 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         }
                     }
 
-                    fn buffer_2d((pos, tex, indices): (Vec<f32>, Vec<f32>, Vec<u16>)) {
+                    fn buffer_2d((pos, tex, indices): (Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
                         lua_assert!(pos.len() % 2 == 0, "positions not multiple of 2");
                         lua_assert!(tex.len() % 2 == 0, "texcoords not multiple of 4");
                         lua_assert!(pos.len() == tex.len(), "not the same amount of positions as texcoords");
@@ -879,7 +891,7 @@ fn main() {
         .with_resizable(true)
         .with_title("Slime Farm")
         .with_visible(true);
-    let cb = ContextBuilder::new().with_vsync(true);
+    let cb = ContextBuilder::new().with_vsync(false);
     let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
     let state = Rc::new(State {
         frame: RefCell::new(display.draw()),

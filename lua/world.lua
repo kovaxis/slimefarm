@@ -12,6 +12,7 @@ function World:new()
     self.terrain = terrain.new{
         seed = 123443,
     }
+    self.terrain:set_view_distance(256)
     self.entities = {}
 
     self.shaders = {
@@ -91,7 +92,10 @@ function World:tick()
     self.tick_count = self.tick_count + 1
 end
 
+local last_tick = os.clock()
+local timer = util.DebugTimer{}
 function World:update()
+    timer:mark("inter")
     --Tick 0 or more times
     while true do
         local now = os.clock()
@@ -101,6 +105,15 @@ function World:update()
         self.next_tick = self.next_tick + self.tick_period
         self:tick()
     end
+    timer:mark("tick")
+    --Draw the updated world
+    self:draw()
+    timer:mark("draw")
+    gfx.finish()
+    timer:mark("finish")
+    
+    --print(timer:to_str())
+    timer:start()
 end
 
 function World:draw()

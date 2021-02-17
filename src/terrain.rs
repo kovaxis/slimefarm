@@ -95,6 +95,7 @@ impl BlockData {
 const MIN_CHUNKS_MESHED_PER_SEC: f32 = 20.;
 
 struct Terrain {
+    mesher: Mesher,
     state: Rc<State>,
     chunks: HashMap<ChunkPos, Box<Chunk>>,
     meshes: MeshKeeper,
@@ -105,16 +106,22 @@ struct Terrain {
 impl Terrain {
     fn new(state: &Rc<State>, gen_cfg: crate::gen::GenConfig) -> Terrain {
         Terrain {
+            mesher: Mesher::new(),
             state: state.clone(),
             chunks: default(),
-            meshes: MeshKeeper::new(8., ChunkPos([0, 0, 0])),
+            meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
             meshing_time_estimate: 0.,
             last_meshing: Instant::now(),
             generator: GeneratorHandle::new(gen_cfg),
         }
     }
 
+    fn set_view_radius(&mut self, radius: f32) {
+        self.meshes = MeshKeeper::new(radius / CHUNK_SIZE as f32, self.meshes.center());
+    }
+
     fn book_keep(&mut self, center: BlockPos, limit: Duration) {
+        measure_time!(start book_keep);
         //Keep track of time
         let now = Instant::now();
         let deadline = Instant::now() + limit;
@@ -163,16 +170,60 @@ impl Terrain {
                     //Don't generate, it already exists
                     should_generate = false;
                     //Get all of its adjacent neighbors
-                    let neighbors = [
+                    /*let neighbors = [
                         &**self.chunks.get(&pos.offset(-1, 0, 0))?,
                         &**self.chunks.get(&pos.offset(1, 0, 0))?,
                         &**self.chunks.get(&pos.offset(0, -1, 0))?,
                         &**self.chunks.get(&pos.offset(0, 1, 0))?,
                         &**self.chunks.get(&pos.offset(0, 0, -1))?,
                         &**self.chunks.get(&pos.offset(0, 0, 1))?,
+                    ];*/
+                    macro_rules! build_neighbors {
+                        (@1, 1, 1) => {{
+                            &**chunk
+                        }};
+                        (@$x:expr, $y:expr, $z:expr) => {{
+                            &**self.chunks.get(&pos.offset($x-1, $y-1, $z-1))?
+                        }};
+                        ($($x:tt, $y:tt, $z:tt;)*) => {{
+                            [$(
+                                build_neighbors!(@$x, $y, $z),
+                            )*]
+                        }};
+                    }
+                    let neighbors = build_neighbors![
+                        0, 0, 0;
+                        1, 0, 0;
+                        2, 0, 0;
+                        0, 1, 0;
+                        1, 1, 0;
+                        2, 1, 0;
+                        0, 2, 0;
+                        1, 2, 0;
+                        2, 2, 0;
+
+                        0, 0, 1;
+                        1, 0, 1;
+                        2, 0, 1;
+                        0, 1, 1;
+                        1, 1, 1;
+                        2, 1, 1;
+                        0, 2, 1;
+                        1, 2, 1;
+                        2, 2, 1;
+
+                        0, 0, 2;
+                        1, 0, 2;
+                        2, 0, 2;
+                        0, 1, 2;
+                        1, 1, 2;
+                        2, 1, 2;
+                        0, 2, 2;
+                        1, 2, 2;
+                        2, 2, 2;
                     ];
                     //Mesh the chunk
-                    let mesh = chunk.make_mesh(neighbors);
+                    let mesh = self.mesher.make_mesh(&neighbors);
                     //Upload the chunk
                     let mesh = ChunkMesh {
                         buf: if mesh.indices.is_empty() {
@@ -186,7 +237,7 @@ impl Terrain {
                     chunks_meshed += 1;
                     //Use the time measure to estimate the time meshing a chunk takes
                     let time_taken = start_time.elapsed().as_secs_f32();
-                    const RAISE_WEIGHT: f32 = 0.25;
+                    const RAISE_WEIGHT: f32 = 0.75;
                     const LOWER_WEIGHT: f32 = 0.1;
                     let weight = if time_taken > self.meshing_time_estimate {
                         RAISE_WEIGHT
@@ -207,9 +258,21 @@ impl Terrain {
         if chunks_meshed > 0 {
             self.last_meshing = Instant::now();
         }
+        unsafe {
+            static mut LAST_UPDATE: std::time::SystemTime = std::time::UNIX_EPOCH;
+            if chunks_meshed > 0 {
+                LAST_UPDATE = std::time::SystemTime::now();
+            }
+            let since = LAST_UPDATE.elapsed().unwrap();
+            if since > Duration::from_millis(500) {
+                eprintln!("no chunks meshed");
+                LAST_UPDATE = std::time::SystemTime::now();
+            }
+        }
         //Request missing chunks from generator
         self.generator.request(&request_queue);
         self.generator.swap_request_vec(request_queue);
+        measure_time!(end book_keep);
     }
 
     fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
@@ -220,6 +283,14 @@ impl Terrain {
                 pos[2].rem_euclid(CHUNK_SIZE),
             ])
         })
+    }
+}
+impl Drop for Terrain {
+    fn drop(&mut self) {
+        eprintln!("dropping terrain");
+        measure_time!(start drop_chunks);
+        self.chunks = default();
+        measure_time!(end drop_chunks);
     }
 }
 
@@ -233,6 +304,10 @@ struct MeshKeeper {
 }
 impl MeshKeeper {
     pub fn new(radius: f32, center: ChunkPos) -> Self {
+        //Chunks right at the border are not renderable, because chunks need their neighbors
+        //in order to be meshed
+        //Therefore, must add 1 to the radius to make it effective
+        let radius = radius + 1.;
         //Make sure length is a power of two
         let size = (radius.ceil() * 2.).max(2.) as i32;
         let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
@@ -243,7 +318,7 @@ impl MeshKeeper {
         meshes.resize_with(total, default);
         //Precalculate the render order
         let max_dist_sq = radius * radius;
-        let flatten_factor = 1.5;
+        let flatten_factor = 1.;
         let mut distances = Vec::<(Sortf32, u32, i32)>::with_capacity(total);
         let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
         let mut idx = 0;
@@ -263,7 +338,8 @@ impl MeshKeeper {
             }
         }
         distances.sort_unstable();
-        let render_order = distances.into_iter().map(|(_, _, idx)| idx).collect();
+        let render_order: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
+        eprintln!("{} chunks to render", render_order.len());
         //Group em up
         Self {
             corner_pos: center.offset(
@@ -276,6 +352,11 @@ impl MeshKeeper {
             meshes,
             render_order,
         }
+    }
+
+    fn center(&self) -> ChunkPos {
+        self.corner_pos
+            .offset(self.half_size(), self.half_size(), self.half_size())
     }
 
     fn size(&self) -> i32 {
@@ -420,7 +501,7 @@ pub struct Chunk {
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
 }
 impl Chunk {
-    pub fn new() -> Chunk {
+    pub fn _new() -> Chunk {
         Chunk {
             //blocks: unsafe { Uninit::uninit().assume_init() },
             blocks: [BlockData { data: 0 }; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
@@ -440,111 +521,226 @@ impl Chunk {
             ),
         }
     }
+}
 
-    fn make_mesh(&self, neighbors: [&Chunk; 6]) -> Mesh {
-        let color_for = |data: BlockData| [data.data, 0, data.data, 255];
-        let mut mesh = Mesh::default();
-        const AXIS_X: [usize; 2] = [2, 1];
-        const AXIS_Y: [usize; 2] = [0, 2];
-        const AXIS_Z: [usize; 2] = [1, 0];
-        let quad = |mesh: &mut Mesh, axes: [usize; 2], [x, y, z]: [i32; 3], data: BlockData| {
-            let v0 = Vec3::new(x as f32, y as f32, z as f32);
-            let mut v1 = v0;
-            v1[axes[0]] += 1.;
-            let mut v2 = v1;
-            v2[axes[1]] += 1.;
-            let mut v3 = v0;
-            v3[axes[1]] += 1.;
-            mesh.add_quad(v0, v1, v2, v3, color_for(data));
-        };
-        let check_pair =
-            |mesh: &mut Mesh, axes: [usize; 2], pos: [i32; 3], blocks: [BlockData; 2]| {
-                if blocks[1].is_solid() != blocks[0].is_solid() {
-                    if blocks[1].is_solid() {
-                        //This block is exposed to prevx
-                        quad(mesh, [axes[0], axes[1]], pos, blocks[1]);
-                    } else {
-                        //Prevx is exposed to this block
-                        quad(mesh, [axes[1], axes[0]], pos, blocks[0]);
-                    }
-                }
-            };
-        //Place quads in the X axis (YZ plane)
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                let mut last_data = self.sub_get([0, y, z]);
-                check_pair(
-                    &mut mesh,
-                    AXIS_X,
-                    [0, y, z],
-                    [neighbors[0].sub_get([CHUNK_SIZE - 1, y, z]), last_data],
-                );
-                for x in 1..CHUNK_SIZE {
-                    let this = self.sub_get([x, y, z]);
-                    check_pair(&mut mesh, AXIS_X, [x, y, z], [last_data, this]);
-                    last_data = this;
-                }
-                check_pair(
-                    &mut mesh,
-                    AXIS_X,
-                    [CHUNK_SIZE, y, z],
-                    [last_data, neighbors[1].sub_get([0, y, z])],
-                );
-            }
+struct Transform {
+    x: [i32; 3],
+    y: [i32; 3],
+    mov: [i32; 3],
+    flip: bool,
+}
+
+struct Mesher {
+    vert_cache: [VertIdx; Self::VERT_COUNT],
+    block_buf: [BlockData; Self::BLOCK_COUNT * 2],
+    front: i32,
+    back: i32,
+    mesh: Mesh,
+}
+impl Mesher {
+    const VERT_COUNT: usize = ((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1)) as usize;
+    const BLOCK_COUNT: usize = ((CHUNK_SIZE + 2) * (CHUNK_SIZE + 2)) as usize;
+
+    const ADV_X: i32 = 1;
+    const ADV_Y: i32 = CHUNK_SIZE + 2;
+
+    pub fn new() -> Self {
+        Self {
+            vert_cache: [0; Self::VERT_COUNT],
+            block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
+            front: Self::BLOCK_COUNT as i32,
+            back: 0,
+            mesh: default(),
         }
-        //Place quads in the Y axis (XZ plane)
-        for z in 0..CHUNK_SIZE {
-            for x in 0..CHUNK_SIZE {
-                let mut last_data = self.sub_get([x, 0, z]);
-                check_pair(
-                    &mut mesh,
-                    AXIS_Y,
-                    [x, 0, z],
-                    [neighbors[2].sub_get([x, CHUNK_SIZE - 1, z]), last_data],
-                );
-                for y in 1..CHUNK_SIZE {
-                    let this = self.sub_get([x, y, z]);
-                    check_pair(&mut mesh, AXIS_Y, [x, y, z], [last_data, this]);
-                    last_data = this;
-                }
-                check_pair(
-                    &mut mesh,
-                    AXIS_Y,
-                    [x, CHUNK_SIZE, z],
-                    [last_data, neighbors[3].sub_get([x, 0, z])],
-                );
+    }
+
+    fn flip_bufs(&mut self) {
+        mem::swap(&mut self.front, &mut self.back);
+    }
+
+    fn front_mut(&mut self, idx: i32) -> &mut BlockData {
+        &mut self.block_buf[(self.front + idx) as usize]
+    }
+
+    fn front(&self, idx: i32) -> BlockData {
+        self.block_buf[(self.front + idx) as usize]
+    }
+
+    fn back(&self, idx: i32) -> BlockData {
+        self.block_buf[(self.back + idx) as usize]
+    }
+
+    fn get_vert(&mut self, trans: &Transform, x: i32, y: i32, idx: i32) -> VertIdx {
+        let cache_idx = (x + y * (CHUNK_SIZE + 1)) as usize;
+        let mut cached = self.vert_cache[cache_idx];
+        if cached == VertIdx::max_value() {
+            //Create vertex
+            //[NONE, BACK_ONLY, FRONT_ONLY, BOTH]
+            const LIGHT_TABLE: [f32; 4] = [0.02, 0.0, -0.11, -0.11];
+            let mut lightness = 1.;
+            {
+                let mut process = |idx| {
+                    lightness += LIGHT_TABLE[(self.front(idx).is_solid() as usize) << 1
+                        | self.back(idx).is_solid() as usize];
+                };
+                process(idx);
+                process(idx - Self::ADV_X);
+                process(idx - Self::ADV_Y);
+                process(idx - Self::ADV_X - Self::ADV_Y);
             }
+            let color = [
+                (128. * lightness) as u8,
+                (128. * lightness) as u8,
+                (128. * lightness) as u8,
+                255,
+            ];
+            //Apply transform
+            let vert = Vec3::new(
+                (x & trans.x[0] | y & trans.y[0] | trans.mov[0]) as f32,
+                (x & trans.x[1] | y & trans.y[1] | trans.mov[1]) as f32,
+                (x & trans.x[2] | y & trans.y[2] | trans.mov[2]) as f32,
+            );
+            cached = self.mesh.add_vertex(vert, color);
+            self.vert_cache[cache_idx] = cached;
         }
-        //Place quads in the Z axis (XY plane)
+        cached
+    }
+
+    fn layer(&mut self, trans: &Transform) {
+        let mut idx = Self::ADV_X + Self::ADV_Y;
+        for vidx in self.vert_cache.iter_mut() {
+            *vidx = VertIdx::max_value();
+        }
         for y in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                let mut last_data = self.sub_get([x, y, 0]);
-                check_pair(
-                    &mut mesh,
-                    AXIS_Z,
-                    [x, y, 0],
-                    [neighbors[4].sub_get([x, y, CHUNK_SIZE - 1]), last_data],
-                );
-                for z in 1..CHUNK_SIZE {
-                    let this = self.sub_get([x, y, z]);
-                    check_pair(&mut mesh, AXIS_Z, [x, y, z], [last_data, this]);
-                    last_data = this;
+                if self.back(idx).is_solid() && !self.front(idx).is_solid() {
+                    //Place a face here
+                    let v00 = self.get_vert(trans, x, y, idx);
+                    let v01 = self.get_vert(trans, x, y + 1, idx + Self::ADV_Y);
+                    let v10 = self.get_vert(trans, x + 1, y, idx + Self::ADV_X);
+                    let v11 = self.get_vert(trans, x + 1, y + 1, idx + Self::ADV_X + Self::ADV_Y);
+                    if trans.flip {
+                        self.mesh.add_face(v01, v11, v00);
+                        self.mesh.add_face(v00, v11, v10);
+                    } else {
+                        self.mesh.add_face(v01, v00, v11);
+                        self.mesh.add_face(v00, v10, v11);
+                    }
                 }
-                check_pair(
-                    &mut mesh,
-                    AXIS_Z,
-                    [x, y, CHUNK_SIZE],
-                    [last_data, neighbors[5].sub_get([x, y, 0])],
-                );
+                idx += 1;
+            }
+            idx += 2;
+        }
+    }
+
+    pub fn make_mesh(&mut self, chunks: &[&Chunk; 3 * 3 * 3]) -> Mesh {
+        let block_at = |pos: [i32; 3]| {
+            let chunk_pos = [
+                pos[0] as u32 / CHUNK_SIZE as u32,
+                pos[1] as u32 / CHUNK_SIZE as u32,
+                pos[2] as u32 / CHUNK_SIZE as u32,
+            ];
+            let sub_pos = [
+                (pos[0] as u32 % CHUNK_SIZE as u32) as i32,
+                (pos[1] as u32 % CHUNK_SIZE as u32) as i32,
+                (pos[2] as u32 % CHUNK_SIZE as u32) as i32,
+            ];
+            chunks
+                [(chunk_pos[0] + chunk_pos[1] * 3 as u32 + chunk_pos[2] * (3 * 3) as u32) as usize]
+                .sub_get(sub_pos)
+        };
+
+        // X
+        for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+            let mut idx = 0;
+            for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+                for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+                    *self.front_mut(idx) = block_at([x, y, z]);
+                    idx += 1;
+                }
+            }
+            if x > CHUNK_SIZE {
+                //Facing `+`
+                self.layer(&Transform {
+                    x: [0, -1, 0],
+                    y: [0, 0, -1],
+                    mov: [x - CHUNK_SIZE, 0, 0],
+                    flip: false,
+                });
+            }
+            self.flip_bufs();
+            if x >= CHUNK_SIZE && x < 2 * CHUNK_SIZE {
+                //Facing `-`
+                self.layer(&Transform {
+                    x: [0, -1, 0],
+                    y: [0, 0, -1],
+                    mov: [x - CHUNK_SIZE, 0, 0],
+                    flip: true,
+                });
             }
         }
-        if mesh.vertices.len() > (1 << 16) {
-            eprintln!(
-                "WARNING: over 65536 vertices in mesh ({} vertices)",
-                mesh.vertices.len()
-            );
+
+        // Y
+        for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+            let mut idx = 0;
+            for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+                for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+                    *self.front_mut(idx) = block_at([x, y, z]);
+                    idx += 1;
+                }
+            }
+            if y > CHUNK_SIZE {
+                //Facing `+`
+                self.layer(&Transform {
+                    x: [-1, 0, 0],
+                    y: [0, 0, -1],
+                    mov: [0, y - CHUNK_SIZE, 0],
+                    flip: true,
+                });
+            }
+            self.flip_bufs();
+            if y >= CHUNK_SIZE && y < 2 * CHUNK_SIZE {
+                //Facing `-`
+                self.layer(&Transform {
+                    x: [-1, 0, 0],
+                    y: [0, 0, -1],
+                    mov: [0, y - CHUNK_SIZE, 0],
+                    flip: false,
+                });
+            }
         }
-        mesh
+
+        // Z
+        for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+            let mut idx = 0;
+            for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+                for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+                    *self.front_mut(idx) = block_at([x, y, z]);
+                    idx += 1;
+                }
+            }
+            if z > CHUNK_SIZE {
+                //Facing `+`
+                self.layer(&Transform {
+                    x: [-1, 0, 0],
+                    y: [0, -1, 0],
+                    mov: [0, 0, z - CHUNK_SIZE],
+                    flip: false,
+                });
+            }
+            self.flip_bufs();
+            if z >= CHUNK_SIZE && z < 2 * CHUNK_SIZE {
+                //Facing `-`
+                self.layer(&Transform {
+                    x: [-1, 0, 0],
+                    y: [0, -1, 0],
+                    mov: [0, 0, z - CHUNK_SIZE],
+                    flip: true,
+                });
+            }
+        }
+
+        mem::replace(&mut self.mesh, default())
     }
 }
 
@@ -646,6 +842,8 @@ fn check_collisions(
         //If there is collision, start ignoring this axis
         if collides {
             if raycast {
+                //Unless we're raycasting
+                //In this case, abort immediately
                 limit = frontier;
                 break;
             }
@@ -680,6 +878,10 @@ lua_type! {TerrainRef,
         this.rc.borrow_mut().book_keep(BlockPos([x, y, z]), Duration::from_secs_f64(secs));
     }
 
+    fn set_view_distance(lua, this, dist: f32) {
+        this.rc.borrow_mut().set_view_radius(dist)
+    }
+
     fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
         let [fx, fy, fz] = check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
@@ -697,6 +899,7 @@ lua_type! {TerrainRef,
     }
 
     fn draw(lua, this, (shader, uniforms, offset_uniform, params, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, f64, f64, f64)) {
+        //measure_time!(start draw_terrain);
         let this = this.rc.borrow();
         let mut frame = this.state.frame.borrow_mut();
         //Rendering in this order has the nice property that closer chunks are rendered first,
@@ -709,5 +912,6 @@ lua_type! {TerrainRef,
                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
             }
         }
+        //measure_time!(end draw_terrain);
     }
 }

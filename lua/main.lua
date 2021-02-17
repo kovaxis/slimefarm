@@ -38,11 +38,6 @@ while true do
         end
         input.mouse_down[button] = state
     elseif ev == 'update' then
-        --Update (0 or more ticks)
         world:update()
-        --Draw
-        world:draw()
-        --Finish
-        gfx.finish()
     end
 end

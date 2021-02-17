@@ -21,13 +21,17 @@ impl GeneratorHandle {
         let thread_count = (num_cpus::get() / 2).max(1);
         eprintln!("using {} worldgen threads", thread_count);
         let mut threads = Vec::with_capacity(thread_count);
-        for _ in 0..thread_count {
+        for i in 0..thread_count {
             let request = request.clone();
             let cfg = cfg.clone();
-            let join_handle = thread::spawn(move || {
-                let state = GenState { request };
-                gen_thread(state, cfg)
-            });
+
+            let join_handle = thread::Builder::new()
+                .name(format!("worldgen_{}", i))
+                .spawn(move || {
+                    let state = GenState { request };
+                    gen_thread(state, cfg)
+                })
+                .unwrap();
             threads.push(join_handle);
         }
         Self {
@@ -87,6 +91,7 @@ impl GeneratorHandle {
 }
 impl Drop for GeneratorHandle {
     fn drop(&mut self) {
+        measure_time!(start close_worldgen);
         {
             let mut req = self.request.lock();
             req.wanted.clear();
@@ -96,6 +101,7 @@ impl Drop for GeneratorHandle {
         for join in self.threads.drain(..) {
             join.join().unwrap();
         }
+        measure_time!(end close_worldgen);
     }
 }
 
@@ -160,7 +166,15 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
         drop(req);
         //Generate this chunk
         //measure_time!(start gen_chunk);
-        let mut chunk = Box::new(Chunk::new());
+        //Illegal shit in order to avoid unstable features
+        let mut chunk = unsafe {
+            let mut vec = Vec::with_capacity(1);
+            vec.set_len(1);
+            let mut boxed_slice: Box<[Chunk]> = vec.into_boxed_slice();
+            let chunk = Box::from_raw(boxed_slice.as_mut_ptr());
+            mem::forget(boxed_slice);
+            chunk
+        };
         //Generate noise in bulk for the entire chunk
         /*
         noise_gen.noise_block(
