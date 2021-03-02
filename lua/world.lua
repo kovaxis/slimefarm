@@ -19,7 +19,7 @@ function World:new()
         terrain = util.Shader{
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
-            uniforms = {'mvp', 'offset'},
+            uniforms = {'mvp', 'mv', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular'},
         },
         basic = util.Shader{
             vertex = 'basic.vert',
@@ -40,6 +40,7 @@ function World:new()
         params_world = gfx.draw_params(),
         params_hud = gfx.draw_params(),
         mvp_world = algebra.matrix(),
+        mv_world = algebra.matrix(),
         mvp_hud = algebra.matrix(),
         s = 0,
         dt = 0,
@@ -62,6 +63,8 @@ function World:new()
     self.cam_effective_y = 0
     self.cam_effective_z = 0
 
+    self.day_cycle = 0.25
+
     self.tick_period = 1/64
     self.next_tick = os.clock()
     self.fps_counter = 0
@@ -83,6 +86,8 @@ function World:tick()
     for _, ent in ipairs(self.entities) do
         ent:tick(self)
     end
+
+    self.day_cycle = (self.day_cycle + 1 / (64*120)) % 1
 
     --Bookkeep terrain
     local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
@@ -115,6 +120,16 @@ function World:update()
     --print(timer:to_str())
     timer:start()
 end
+
+local amb_lo = 0
+local amb_hi = 0.10
+local dif_lo = 0
+local dif_hi = 0.80
+local spe_lo = 0
+local spe_hi = 0.03
+local specular_curve = util.Curve{ 0, spe_lo, 0.23, spe_lo, 0.27, spe_hi, 0.73, spe_hi, 0.77, spe_lo }
+local diffuse_curve  = util.Curve{ 0, dif_lo, 0.23, dif_lo, 0.27, dif_hi, 0.73, dif_hi, 0.77, dif_lo }
+local ambience_curve = util.Curve{ 0, amb_lo, 0.30, amb_lo, 0.40, amb_hi, 0.60, amb_hi, 0.70, amb_lo }
 
 function World:draw()
     local frame = self.frame
@@ -182,12 +197,31 @@ function World:draw()
     --Setup model-view-projection matrix for world drawing
     frame.mvp_world:reset()
     frame.mvp_world:perspective(1.1, frame.physical_w / frame.physical_h, 0.1, 1000)
-    frame.mvp_world:rotate_x(-cam_pitch)
-    frame.mvp_world:rotate_y(-cam_yaw)
+    frame.mv_world:reset()
+    frame.mv_world:rotate_x(-cam_pitch)
+    frame.mv_world:rotate_y(-cam_yaw)
+    frame.mvp_world:mul_right(frame.mv_world)
 
     --Draw terrain
-    self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
-    self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, cam_x, cam_y, cam_z)
+    do
+        local cycle = self.day_cycle
+        local ambience = ambience_curve:at(cycle)
+        local diffuse  = diffuse_curve:at(cycle)
+        local specular = specular_curve:at(cycle)
+        local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), -math.sin((cycle - 0.25) * 2 * math.pi), 0
+        --ambience = 0
+        --diffuse = 0.2
+        --specular = 0.03
+        --dx, dy, dz = 2^-0.5, -2^-0.5, 0
+        dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
+        self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
+        self.shaders.terrain:set_matrix('mv', frame.mv_world)
+        self.shaders.terrain:set_vec3('ambience', ambience, ambience, ambience)
+        self.shaders.terrain:set_vec3('diffuse', diffuse, diffuse, diffuse)
+        self.shaders.terrain:set_vec3('specular', specular, specular, specular)
+        self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
+        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, cam_x, cam_y, cam_z)
+    end
     
     --Draw entities
     for _, ent in ipairs(self.entities) do

@@ -278,9 +278,9 @@ impl LuaUserData for ShaderRef {}
 #[derive(Copy, Clone, Debug)]
 struct SimpleVertex {
     pos: [f32; 3],
-    color: [u8; 4],
+    color: u32,
 }
-implement_vertex!(SimpleVertex, pos normalize(false), color normalize(true));
+implement_vertex!(SimpleVertex, pos, color);
 
 struct Buffer3d {
     vertex: VertexBuffer<SimpleVertex>,
@@ -498,6 +498,17 @@ lua_type! {MatrixStack,
         let (_, other) = &*other.stack.borrow();
         stack.clear();
         *top = *other;
+    }
+
+    fn mul_right(lua, this, other: MatrixStack) {
+        let (_, this) = &mut *this.stack.borrow_mut();
+        let (_, other) = &*other.stack.borrow();
+        *this = *this * *other;
+    }
+    fn mul_left(lua, this, other: MatrixStack) {
+        let (_, this) = &mut *this.stack.borrow_mut();
+        let (_, other) = &*other.stack.borrow();
+        *this = *other * *this;
     }
 
     fn push(lua, this, ()) {
@@ -750,8 +761,11 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         lua_assert!(color.len() % 4 == 0, "colors not multiple of 4");
                         lua_assert!(pos.len() / 3 == color.len() / 4, "not the same amount of positions as colors");
                         let vertices = pos.chunks_exact(3).zip(color.chunks_exact(4)).map(|(pos, color)| {
-                            let q = |f| (f*255.) as u8;
-                            SimpleVertex {pos: [pos[0], pos[1], pos[2]], color: [q(color[0]), q(color[1]), q(color[2]), q(color[3])]}
+                            let q = |f| (f*255.) as u8 as u32;
+                            SimpleVertex {
+                                pos: [pos[0], pos[1], pos[2]],
+                                color: (q(color[0]) << 24) | (q(color[1]) << 16) | (q(color[2]) << 8) | q(color[3]),
+                            }
                         }).collect::<Vec<_>>();
                         BufferRef {
                             rc: AssertSync(Rc::new(AnyBuffer::Buf3d(Buffer3d {

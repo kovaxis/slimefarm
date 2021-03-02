@@ -9,7 +9,7 @@ pub(crate) struct Mesh {
 fn vert(pos: Vec3, color: [u8; 4]) -> SimpleVertex {
     SimpleVertex {
         pos: pos.into(),
-        color,
+        color: u32::from_be_bytes(color),
     }
 }
 

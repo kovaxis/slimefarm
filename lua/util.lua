@@ -64,6 +64,51 @@ function util.approach(cur, target, factor, linear, dt)
     end
 end
 
+function util.smoothstep(x)
+    if x < 0 then
+        return 0
+    elseif x > 1 then
+        return 1
+    else
+        local sq = x * x
+        return 3 * sq - 2 * sq * x
+    end
+end
+
+util.Curve = class{}
+
+function util.Curve:new()
+    assert(#self % 2 == 0, "curve values must come in pairs")
+    assert(#self >= 2, "curves must have at least one point")
+    local last = -math.huge
+    for i = 1, #self, 2 do
+        if self[i] < last then
+            error("curve points must be ordered", 2)
+        end
+        last = self[i]
+    end
+    self.smooth = self.smooth or util.smoothstep
+end
+
+function util.Curve:at(x)
+    local prev, next = #self - 1, #self - 1
+    for i = 1, #self, 2 do
+        if self[i] > x then
+            prev = i - 2
+            if prev < 1 then
+                prev = 1
+            end
+            next = i
+            break
+        end
+    end
+    local x0 = self[prev]
+    local y0 = self[prev + 1]
+    local x1 = self[next]
+    local y1 = self[next + 1]
+    return y0 + self.smooth((x - x0) / (x1 - x0)) * (y1 - y0)
+end
+
 util.DebugTimer = class{}
 
 function util.DebugTimer:new()

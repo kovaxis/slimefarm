@@ -1,11 +1,11 @@
-#version 110
+#version 130
 
 uniform mat4 mvp;
 
-attribute vec2 pos;
-attribute vec2 tex;
+in vec2 pos;
+in vec2 tex;
 
-varying vec2 tex_coords;
+out vec2 tex_coords;
 
 void main() {
     tex_coords = tex;

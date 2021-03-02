@@ -272,7 +272,7 @@ impl Terrain {
         //Request missing chunks from generator
         self.generator.request(&request_queue);
         self.generator.swap_request_vec(request_queue);
-        measure_time!(end book_keep);
+        //measure_time!(end book_keep);
     }
 
     fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
@@ -528,6 +528,7 @@ struct Transform {
     y: [i32; 3],
     mov: [i32; 3],
     flip: bool,
+    normal: u8,
 }
 
 struct Mesher {
@@ -588,11 +589,11 @@ impl Mesher {
                 process(idx - Self::ADV_Y);
                 process(idx - Self::ADV_X - Self::ADV_Y);
             }
-            let color = [
+            let color_normal = [
                 (128. * lightness) as u8,
                 (128. * lightness) as u8,
                 (128. * lightness) as u8,
-                255,
+                trans.normal,
             ];
             //Apply transform
             let vert = Vec3::new(
@@ -600,7 +601,7 @@ impl Mesher {
                 (x & trans.x[1] | y & trans.y[1] | trans.mov[1]) as f32,
                 (x & trans.x[2] | y & trans.y[2] | trans.mov[2]) as f32,
             );
-            cached = self.mesh.add_vertex(vert, color);
+            cached = self.mesh.add_vertex(vert, color_normal);
             self.vert_cache[cache_idx] = cached;
         }
         cached
@@ -666,6 +667,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [x - CHUNK_SIZE, 0, 0],
                     flip: false,
+                    normal: 0,
                 });
             }
             self.flip_bufs();
@@ -676,6 +678,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [x - CHUNK_SIZE, 0, 0],
                     flip: true,
+                    normal: 1,
                 });
             }
         }
@@ -696,6 +699,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [0, y - CHUNK_SIZE, 0],
                     flip: true,
+                    normal: 2,
                 });
             }
             self.flip_bufs();
@@ -706,6 +710,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [0, y - CHUNK_SIZE, 0],
                     flip: false,
+                    normal: 3,
                 });
             }
         }
@@ -726,6 +731,7 @@ impl Mesher {
                     y: [0, -1, 0],
                     mov: [0, 0, z - CHUNK_SIZE],
                     flip: false,
+                    normal: 4,
                 });
             }
             self.flip_bufs();
@@ -736,6 +742,7 @@ impl Mesher {
                     y: [0, -1, 0],
                     mov: [0, 0, z - CHUNK_SIZE],
                     flip: true,
+                    normal: 5,
                 });
             }
         }
