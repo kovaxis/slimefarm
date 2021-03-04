@@ -262,6 +262,7 @@ struct State {
     display: Display,
     text_sys: TextSystem,
     frame: RefCell<Frame>,
+    base_time: Instant,
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -730,16 +731,21 @@ lua_type! {FontRef,
 }
 
 fn modify_std_lib(state: &Rc<State>, lua: LuaContext) {
-    lua.globals()
-        .get::<_, LuaTable>("os")
-        .unwrap()
-        .set(
-            "sleep",
-            lua_func!(lua, state, fn(secs: f64) {
-                thread::sleep(Duration::from_secs_f64(secs))
-            }),
-        )
-        .unwrap();
+    let os = lua.globals().get::<_, LuaTable>("os").unwrap();
+    os.set(
+        "sleep",
+        lua_func!(lua, state, fn(secs: f64) {
+            thread::sleep(Duration::from_secs_f64(secs))
+        }),
+    )
+    .unwrap();
+    os.set(
+        "clock",
+        lua_func!(lua, state, fn(()) {
+            (Instant::now() - state.base_time).as_secs_f64()
+        }),
+    )
+    .unwrap();
 }
 fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
     lua.globals()
@@ -911,6 +917,7 @@ fn main() {
         frame: RefCell::new(display.draw()),
         text_sys: TextSystem::new(&display),
         display,
+        base_time: Instant::now(),
     });
 
     //Load main.lua

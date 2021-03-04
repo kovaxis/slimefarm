@@ -52,6 +52,7 @@ function util.pos_to_yaw(dx, dz)
 end
 
 function util.approach(cur, target, factor, linear, dt)
+    dt = dt or 1
     local og_delta = cur - target
     if target < cur then
         linear = -linear

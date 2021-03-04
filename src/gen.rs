@@ -208,7 +208,7 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
                     let real_y = pos[1] * CHUNK_SIZE + y;
                     //let noise = noise_buf[idx] - real_y as f32 * 0.04;
                     let noise = noise_scaler.get(Vec3::new(x as f32, y as f32, z as f32))
-                        - real_y as f32 * 0.0; //0.021;
+                        - real_y as f32 * 0.008;
                     let normalized = noise / (0.4 + noise.abs());
                     if normalized > 0. {
                         chunk.blocks[idx].data = 15 + (normalized * 240.) as u8;

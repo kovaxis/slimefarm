@@ -121,15 +121,15 @@ function World:update()
     timer:start()
 end
 
-local amb_lo = 0
-local amb_hi = 0.10
+local amb_lo = 0.02
+local amb_hi = 0.75
 local dif_lo = 0
-local dif_hi = 0.80
+local dif_hi = 0.20
 local spe_lo = 0
-local spe_hi = 0.03
+local spe_hi = 0.02
 local specular_curve = util.Curve{ 0, spe_lo, 0.23, spe_lo, 0.27, spe_hi, 0.73, spe_hi, 0.77, spe_lo }
 local diffuse_curve  = util.Curve{ 0, dif_lo, 0.23, dif_lo, 0.27, dif_hi, 0.73, dif_hi, 0.77, dif_lo }
-local ambience_curve = util.Curve{ 0, amb_lo, 0.30, amb_lo, 0.40, amb_hi, 0.60, amb_hi, 0.70, amb_lo }
+local ambience_curve = util.Curve{ 0, amb_lo, 0.23, amb_lo, 0.40, amb_hi, 0.60, amb_hi, 0.77, amb_lo }
 
 function World:draw()
     local frame = self.frame

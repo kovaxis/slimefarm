@@ -27,7 +27,11 @@ local jump_vvel = 0.7
 local jump_keepup = 0.014
 local jump_keepdown = 0.016
 local jump_keepup_ticks = 14
-local jump_cooldown = 0
+local jump_cooldown_start = 10
+local jump_cooldown_land = 0
+
+local lag_vel_y_add = 1.2
+local lag_vel_y_mul = 0.0012
 
 local air_maneuver = 0.011
 local air_maneuver_max = 0.17
@@ -67,6 +71,11 @@ function Player:new()
     self.visual_yaw = 0
     self.yaw = 0
     self.idle_ticks = 0
+    self.visual_lag_vel_y = 0
+    self.visual_fall_time = 0
+
+    self.jumps_left = 0
+    self.jump_was_down = false
 
     --Jumping mechanics
     self.jump_cooldown = 0
@@ -87,6 +96,9 @@ function Player:tick(world)
         self.vel_x = 0
         self.vel_y = 0
         self.vel_z = 0
+        if self.jump_ticks < 0 or self.jump_ticks >= jump_charge then
+            self.jumps_left = 2
+        end
     else
         self.vel_x = self.vel_x * friction
         self.vel_y = self.vel_y * friction
@@ -132,28 +144,30 @@ function Player:tick(world)
     end]]
 
     --Jump around
-    if self.jump_ticks < 0 then
-        if self.on_ground and self.jump_cooldown <= 0 and input.key_down.space then
-            self.jump_ticks = 0
-        end
-        if self.jump_cooldown > 0 then
-            self.jump_cooldown = self.jump_cooldown - 1
-        end
-    else
+    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and not self.jump_was_down then
+        self.jump_ticks = 0
+        self.jump_cooldown = jump_cooldown_start
+        self.jumps_left = self.jumps_left - 1
+    end
+    self.jump_was_down = input.key_down.space
+    if self.jump_cooldown > 0 then
+        self.jump_cooldown = self.jump_cooldown - 1
+    end
+    if self.jump_ticks >= 0 then
         --Advance jump ticks
         if self.jump_ticks < jump_charge then
             self.jump_ticks = self.jump_ticks + 1
             if self.jump_ticks >= jump_charge then
                 --Start jumping
                 local dx, dz = wasd_delta(world.cam_yaw)
-                self.vel_x = self.vel_x + dx * jump_hvel
-                self.vel_z = self.vel_z + dz * jump_hvel
+                self.vel_x = dx * jump_hvel
+                self.vel_z = dz * jump_hvel
                 self.vel_y = jump_vvel
             end
         else
             if self.on_ground then
                 self.jump_ticks = -1
-                self.jump_cooldown = jump_cooldown
+                self.jump_cooldown = jump_cooldown_land
             else
                 if self.jump_ticks < jump_charge + jump_keepup_ticks then
                     if input.key_down.space then
@@ -227,21 +241,34 @@ function Player:draw(world)
     self.visual_yaw = util.approach(self.yaw - dyaw, self.yaw, yaw_anim_factor, yaw_anim_linear, frame.dt) % (2*math.pi)
     frame.mvp_world:rotate_y(self.visual_yaw)
 
+    self.visual_lag_vel_y = util.approach(self.visual_lag_vel_y, self.vel_y, lag_vel_y_mul, lag_vel_y_add, frame.dt)
+
     local sy = 1
     if self.jump_ticks >= 0 and self.jump_ticks < jump_charge then
         --Jump charge animation
         local x = (self.jump_ticks + frame.s) / jump_charge
         sy = 0.8 + 0.2*(1+3.4*(x-1)*x)^2
     elseif self.idle_ticks > 0 then
-        --Idle animation
-        local x = (self.idle_ticks + frame.s) + 56
-        sy = 1 - 0.03 * math.sin(x*0.04) / (1+2^(30 - x*0.4))
+        --On-ground animation
+        local acc = self.vel_y - self.visual_lag_vel_y
+        if self.vel_y <= 0 and acc > 0.0 then
+            --Squash animation
+            sy = 1 + 0.35 * (1/(1+2^(2.2*acc)) - 0.5)
+        else
+            --Idle animation
+            local x = (self.idle_ticks + frame.s) + 56
+            sy = 1 - 0.03 * math.sin(x*0.04) / (1+2^(30 - x*0.4))
+        end
     elseif self.vel_y > 0 then
         --Rise animation
         sy = 1 - 0.8 * (1/(1+2^(8*self.vel_y)) - 0.5)
     else
         --Fall animation
-        sy = 1 - 0.4 * (1/(1+2^(4*self.vel_y)) - 0.5)
+        self.visual_fall_time = self.visual_fall_time + self.vel_y * frame.dt
+        local mag = 0.02 * (1/(1+2^(-2*self.vel_y)) - 0.5)
+        local t = self.visual_fall_time
+        local x = math.sin(t * 17 + 11.758) + math.sin(t * 23 + 7.138) + math.sin(t * 38 + 2.873)
+        sy = 1 + mag * x
     end
     local sxz = (1/sy)^0.5
     frame.mvp_world:scale(sxz, sy, sxz)

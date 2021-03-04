@@ -121,7 +121,7 @@ impl Terrain {
     }
 
     fn book_keep(&mut self, center: BlockPos, limit: Duration) {
-        measure_time!(start book_keep);
+        //measure_time!(start book_keep);
         //Keep track of time
         let now = Instant::now();
         let deadline = Instant::now() + limit;
