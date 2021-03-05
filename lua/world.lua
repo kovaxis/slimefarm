@@ -91,7 +91,7 @@ function World:tick()
 
     --Bookkeep terrain
     local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
-    self.terrain:book_keep(self.cam_x, self.cam_y, self.cam_z, time_limit)
+    self.terrain:hint_center(self.cam_x, self.cam_y, self.cam_z)
 
     --Advance tick count
     self.tick_count = self.tick_count + 1

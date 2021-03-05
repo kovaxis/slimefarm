@@ -17,32 +17,35 @@ pub mod prelude {
     pub(crate) use crate::{
         gen::GeneratorHandle,
         mesh::Mesh,
-        terrain::{BlockPos, Chunk, ChunkPos, CHUNK_SIZE},
+        terrain::{BlockData, BlockPos, Chunk, ChunkPos, ChunkStorage, CHUNK_SIZE},
         Buffer3d, LuaDrawParams, ShaderRef, SimpleVertex, State, UniformStorage,
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
     pub use crossbeam::{
+        atomic::AtomicCell,
         channel::{self, Receiver, Sender},
         sync::{Parker, Unparker},
     };
     pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
     pub use glium::{
         glutin::{
+            dpi::PhysicalSize,
             event::{DeviceEvent, Event, KeyboardInput, WindowEvent},
             event_loop::{ControlFlow, EventLoop},
             window::WindowBuilder,
             ContextBuilder,
         },
         implement_vertex,
-        index::PrimitiveType,
+        index::{PrimitiveType, RawIndexPackage},
         program,
         uniforms::{
             MagnifySamplerFilter, MinifySamplerFilter, SamplerBehavior, UniformValue, Uniforms,
         },
+        vertex::RawVertexPackage,
         Display, DrawParameters, Frame, IndexBuffer, Program, Surface, Texture2d, VertexBuffer,
     };
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
-    pub use parking_lot::{Mutex, MutexGuard};
+    pub use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
     pub use rand::{Rng, SeedableRng};
     pub use rand_xoshiro::Xoshiro128Plus as FastRng;
     pub use rlua::prelude::*;
@@ -55,7 +58,7 @@ pub mod prelude {
         f64::consts as f64,
         fs::{self, File},
         mem::{self, MaybeUninit as Uninit},
-        ops,
+        ops, ptr,
         rc::Rc,
         sync::Arc,
         thread::{self, JoinHandle},
@@ -253,6 +256,7 @@ pub static NvOptimusEnablement: u32 = 1;
 #[no_mangle]
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
+mod chunkmesh;
 mod gen;
 mod mesh;
 mod perlin;
@@ -263,6 +267,8 @@ struct State {
     text_sys: TextSystem,
     frame: RefCell<Frame>,
     base_time: Instant,
+    sec_gl_ctx: Cell<Option<glium::glutin::RawContext<glium::glutin::NotCurrent>>>,
+    _sec_win: glium::glutin::window::Window,
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -913,10 +919,26 @@ fn main() {
         .with_visible(true);
     let cb = ContextBuilder::new().with_vsync(false);
     let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
+
+    //Create secondary context for parallel uploading
+    let sec_ctxwin = ContextBuilder::new()
+        .with_shared_lists(&display.gl_window())
+        .build_windowed(
+            WindowBuilder::new()
+                .with_inner_size(PhysicalSize::new(1, 1))
+                .with_visible(false),
+            &evloop,
+        )
+        .expect("failed to initialize secondary OpenGL context");
+    let (sec_ctx, sec_win) = unsafe { sec_ctxwin.split() };
+
+    //Pack it all up
     let state = Rc::new(State {
         frame: RefCell::new(display.draw()),
         text_sys: TextSystem::new(&display),
         display,
+        sec_gl_ctx: Cell::new(Some(sec_ctx)),
+        _sec_win: sec_win,
         base_time: Instant::now(),
     });
 

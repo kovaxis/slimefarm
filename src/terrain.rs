@@ -1,6 +1,6 @@
 use std::f64::INFINITY;
 
-use crate::prelude::*;
+use crate::{chunkmesh::MesherHandle, prelude::*};
 
 /// Guaranteed to be a power of 2.
 pub const CHUNK_SIZE: i32 = 32;
@@ -19,18 +19,18 @@ impl ops::DerefMut for ChunkPos {
     }
 }
 impl ChunkPos {
-    fn offset(&self, x: i32, y: i32, z: i32) -> ChunkPos {
+    pub fn offset(&self, x: i32, y: i32, z: i32) -> ChunkPos {
         ChunkPos([self[0] + x, self[1] + y, self[2] + z])
     }
 
-    fn to_block_floor(&self) -> BlockPos {
+    pub fn to_block_floor(&self) -> BlockPos {
         BlockPos([
             self[0] * CHUNK_SIZE,
             self[1] * CHUNK_SIZE,
             self[2] * CHUNK_SIZE,
         ])
     }
-    fn _to_block_center(&self) -> BlockPos {
+    pub fn _to_block_center(&self) -> BlockPos {
         BlockPos([
             self[0] * CHUNK_SIZE + CHUNK_SIZE / 2,
             self[1] * CHUNK_SIZE + CHUNK_SIZE / 2,
@@ -87,259 +87,30 @@ pub struct BlockData {
     pub data: u8,
 }
 impl BlockData {
-    fn is_solid(&self) -> bool {
+    pub fn is_solid(&self) -> bool {
         self.data != 0
     }
 }
 
-const MIN_CHUNKS_MESHED_PER_SEC: f32 = 20.;
-
-struct Terrain {
-    mesher: Mesher,
-    state: Rc<State>,
-    chunks: HashMap<ChunkPos, Box<Chunk>>,
-    meshes: MeshKeeper,
-    meshing_time_estimate: f32,
-    last_meshing: Instant,
-    generator: GeneratorHandle,
-}
-impl Terrain {
-    fn new(state: &Rc<State>, gen_cfg: crate::gen::GenConfig) -> Terrain {
-        Terrain {
-            mesher: Mesher::new(),
-            state: state.clone(),
-            chunks: default(),
-            meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
-            meshing_time_estimate: 0.,
-            last_meshing: Instant::now(),
-            generator: GeneratorHandle::new(gen_cfg),
-        }
-    }
-
-    fn set_view_radius(&mut self, radius: f32) {
-        self.meshes = MeshKeeper::new(radius / CHUNK_SIZE as f32, self.meshes.center());
-    }
-
-    fn book_keep(&mut self, center: BlockPos, limit: Duration) {
-        //measure_time!(start book_keep);
-        //Keep track of time
-        let now = Instant::now();
-        let deadline = Instant::now() + limit;
-        //Adjust center
-        let center = center
-            .offset(CHUNK_SIZE / 2, CHUNK_SIZE / 2, CHUNK_SIZE / 2)
-            .to_chunk();
-        self.meshes.set_center(center);
-        //Receive chunks from the generator
-        {
-            let mut req = self.generator.request.lock();
-            //Mark which chunks are in-progress, so as to not request them again
-            for chunk_pos in req.in_progress.drain() {
-                if let Some(slot) = self.meshes.get_mut(chunk_pos) {
-                    slot.generating = true;
-                }
-            }
-            //Receive chunks
-            for (pos, chunk) in req.ready.drain(..) {
-                self.chunks.insert(pos, chunk);
-            }
-        }
-        //Look for candidate chunks
-        let meshing_time_estimate = Duration::from_secs_f32(self.meshing_time_estimate);
-        let mut force_mesh =
-            ((now - self.last_meshing).as_secs_f32() * MIN_CHUNKS_MESHED_PER_SEC).floor() as i32;
-        let mut chunks_meshed = 0;
-        let mut request_queue = self.generator.swap_request_vec(default());
-        let request_count = self.generator.request_hint();
-        request_queue.clear();
-        request_queue.reserve(request_count);
-        let mut order_idx = 0;
-        while order_idx < self.meshes.render_order.len() {
-            let idx = self.meshes.render_order[order_idx];
-            order_idx += 1;
-            let mesh_slot = self.meshes.get_by_idx(idx);
-            let pos = self.meshes.sub_idx_to_pos(idx);
-            let mut should_generate = !mesh_slot.generating;
-            if mesh_slot.mesh.is_none()
-                && (force_mesh > 0 || Instant::now() + meshing_time_estimate < deadline)
-            {
-                (|| {
-                    let start_time = Instant::now();
-                    let mesh_slot = self.meshes.get_by_idx_mut(idx);
-                    let chunk = self.chunks.get(&pos)?;
-                    //Don't generate, it already exists
-                    should_generate = false;
-                    //Get all of its adjacent neighbors
-                    /*let neighbors = [
-                        &**self.chunks.get(&pos.offset(-1, 0, 0))?,
-                        &**self.chunks.get(&pos.offset(1, 0, 0))?,
-                        &**self.chunks.get(&pos.offset(0, -1, 0))?,
-                        &**self.chunks.get(&pos.offset(0, 1, 0))?,
-                        &**self.chunks.get(&pos.offset(0, 0, -1))?,
-                        &**self.chunks.get(&pos.offset(0, 0, 1))?,
-                    ];*/
-                    macro_rules! build_neighbors {
-                        (@1, 1, 1) => {{
-                            &**chunk
-                        }};
-                        (@$x:expr, $y:expr, $z:expr) => {{
-                            &**self.chunks.get(&pos.offset($x-1, $y-1, $z-1))?
-                        }};
-                        ($($x:tt, $y:tt, $z:tt;)*) => {{
-                            [$(
-                                build_neighbors!(@$x, $y, $z),
-                            )*]
-                        }};
-                    }
-                    let neighbors = build_neighbors![
-                        0, 0, 0;
-                        1, 0, 0;
-                        2, 0, 0;
-                        0, 1, 0;
-                        1, 1, 0;
-                        2, 1, 0;
-                        0, 2, 0;
-                        1, 2, 0;
-                        2, 2, 0;
-
-                        0, 0, 1;
-                        1, 0, 1;
-                        2, 0, 1;
-                        0, 1, 1;
-                        1, 1, 1;
-                        2, 1, 1;
-                        0, 2, 1;
-                        1, 2, 1;
-                        2, 2, 1;
-
-                        0, 0, 2;
-                        1, 0, 2;
-                        2, 0, 2;
-                        0, 1, 2;
-                        1, 1, 2;
-                        2, 1, 2;
-                        0, 2, 2;
-                        1, 2, 2;
-                        2, 2, 2;
-                    ];
-                    //Mesh the chunk
-                    let mesh = self.mesher.make_mesh(&neighbors);
-                    //Upload the chunk
-                    let mesh = ChunkMesh {
-                        buf: if mesh.indices.is_empty() {
-                            None
-                        } else {
-                            Some(mesh.make_buffer(&self.state.display))
-                        },
-                    };
-                    mesh_slot.mesh = Some(mesh);
-                    force_mesh -= 1;
-                    chunks_meshed += 1;
-                    //Use the time measure to estimate the time meshing a chunk takes
-                    let time_taken = start_time.elapsed().as_secs_f32();
-                    const RAISE_WEIGHT: f32 = 0.75;
-                    const LOWER_WEIGHT: f32 = 0.1;
-                    let weight = if time_taken > self.meshing_time_estimate {
-                        RAISE_WEIGHT
-                    } else {
-                        LOWER_WEIGHT
-                    };
-                    self.meshing_time_estimate = self.meshing_time_estimate
-                        + (time_taken - self.meshing_time_estimate) * weight;
-                    Some(())
-                })();
-            }
-            if should_generate && request_queue.len() < request_count {
-                //Having this chunk'd be pretty pog
-                request_queue.push(pos);
-            }
-        }
-        //Keep track of average meshes per sec
-        if chunks_meshed > 0 {
-            self.last_meshing = Instant::now();
-        }
-        unsafe {
-            static mut LAST_UPDATE: std::time::SystemTime = std::time::UNIX_EPOCH;
-            if chunks_meshed > 0 {
-                LAST_UPDATE = std::time::SystemTime::now();
-            }
-            let since = LAST_UPDATE.elapsed().unwrap();
-            if since > Duration::from_millis(500) {
-                eprintln!("no chunks meshed");
-                LAST_UPDATE = std::time::SystemTime::now();
-            }
-        }
-        //Request missing chunks from generator
-        self.generator.request(&request_queue);
-        self.generator.swap_request_vec(request_queue);
-        //measure_time!(end book_keep);
-    }
-
-    fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
-        self.chunks.get(&pos.to_chunk()).map(|chunk| {
-            chunk.sub_get([
-                pos[0].rem_euclid(CHUNK_SIZE),
-                pos[1].rem_euclid(CHUNK_SIZE),
-                pos[2].rem_euclid(CHUNK_SIZE),
-            ])
-        })
-    }
-}
-impl Drop for Terrain {
-    fn drop(&mut self) {
-        eprintln!("dropping terrain");
-        measure_time!(start drop_chunks);
-        self.chunks = default();
-        measure_time!(end drop_chunks);
-    }
-}
-
-/// Keeps track of chunk meshes in an efficient grid structure.
-struct MeshKeeper {
+pub struct GridKeeper<T> {
     corner_pos: ChunkPos,
     size_log2: u32,
     origin_idx: i32,
-    meshes: Vec<ChunkMeshSlot>,
-    pub render_order: Vec<i32>,
+    slots: Vec<T>,
 }
-impl MeshKeeper {
-    pub fn new(radius: f32, center: ChunkPos) -> Self {
-        //Chunks right at the border are not renderable, because chunks need their neighbors
-        //in order to be meshed
-        //Therefore, must add 1 to the radius to make it effective
-        let radius = radius + 1.;
+impl<T: GridSlot> GridKeeper<T> {
+    pub fn new(size: i32, center: ChunkPos) -> Self {
         //Make sure length is a power of two
-        let size = (radius.ceil() * 2.).max(2.) as i32;
         let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
-        let size = 1 << size_log2;
+        assert_eq!(
+            1 << size_log2,
+            size,
+            "GridKeeper size must be a power of two"
+        );
         //Allocate space for meshes
         let total = (1 << (size_log2 * 3)) as usize;
-        let mut meshes = Vec::with_capacity(total);
-        meshes.resize_with(total, default);
-        //Precalculate the render order
-        let max_dist_sq = radius * radius;
-        let flatten_factor = 1.;
-        let mut distances = Vec::<(Sortf32, u32, i32)>::with_capacity(total);
-        let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
-        let mut idx = 0;
-        for z in 0..size {
-            for y in 0..size {
-                for x in 0..size {
-                    let pos = Vec3::new(x as f32, y as f32, z as f32);
-                    let center = (size / 2) as f32 - 0.5;
-                    let mut delta = pos - Vec3::broadcast(center);
-                    delta.y *= flatten_factor;
-                    let dist_sq = delta.mag_sq();
-                    if dist_sq < max_dist_sq {
-                        distances.push((Sortf32(dist_sq), rng.gen(), idx as i32));
-                    }
-                    idx += 1;
-                }
-            }
-        }
-        distances.sort_unstable();
-        let render_order: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
-        eprintln!("{} chunks to render", render_order.len());
+        let mut slots = Vec::with_capacity(total);
+        slots.resize_with(total, T::new);
         //Group em up
         Self {
             corner_pos: center.offset(
@@ -349,89 +120,8 @@ impl MeshKeeper {
             ),
             size_log2,
             origin_idx: 0,
-            meshes,
-            render_order,
+            slots,
         }
-    }
-
-    fn center(&self) -> ChunkPos {
-        self.corner_pos
-            .offset(self.half_size(), self.half_size(), self.half_size())
-    }
-
-    fn size(&self) -> i32 {
-        1 << self.size_log2
-    }
-
-    fn half_size(&self) -> i32 {
-        1 << (self.size_log2 - 1)
-    }
-
-    fn total_len(&self) -> i32 {
-        1 << (self.size_log2 * 3)
-    }
-
-    pub fn _get(&self, pos: ChunkPos) -> Option<&ChunkMeshSlot> {
-        if pos[0] >= self.corner_pos[0]
-            && pos[0] < self.corner_pos[0] + self.size()
-            && pos[1] >= self.corner_pos[1]
-            && pos[1] < self.corner_pos[1] + self.size()
-            && pos[2] >= self.corner_pos[2]
-            && pos[2] < self.corner_pos[2] + self.size()
-        {
-            Some(self._sub_get([
-                pos[0] - self.corner_pos[0],
-                pos[1] - self.corner_pos[1],
-                pos[2] - self.corner_pos[2],
-            ]))
-        } else {
-            None
-        }
-    }
-    pub fn get_mut(&mut self, pos: ChunkPos) -> Option<&mut ChunkMeshSlot> {
-        if pos[0] >= self.corner_pos[0]
-            && pos[0] < self.corner_pos[0] + self.size()
-            && pos[1] >= self.corner_pos[1]
-            && pos[1] < self.corner_pos[1] + self.size()
-            && pos[2] >= self.corner_pos[2]
-            && pos[2] < self.corner_pos[2] + self.size()
-        {
-            Some(self.sub_get_mut([
-                pos[0] - self.corner_pos[0],
-                pos[1] - self.corner_pos[1],
-                pos[2] - self.corner_pos[2],
-            ]))
-        } else {
-            None
-        }
-    }
-
-    pub fn get_by_idx(&self, idx: i32) -> &ChunkMeshSlot {
-        &self.meshes[(self.origin_idx + idx).rem_euclid(self.total_len()) as usize]
-    }
-    pub fn get_by_idx_mut(&mut self, idx: i32) -> &mut ChunkMeshSlot {
-        let idx = (self.origin_idx + idx).rem_euclid(self.total_len()) as usize;
-        &mut self.meshes[idx]
-    }
-    pub fn _sub_get(&self, pos: [i32; 3]) -> &ChunkMeshSlot {
-        &self.meshes[(self.origin_idx
-            + pos[0]
-            + pos[1] * self.size()
-            + pos[2] * (self.size() * self.size()))
-        .rem_euclid(self.total_len()) as usize]
-    }
-    pub fn sub_get_mut(&mut self, pos: [i32; 3]) -> &mut ChunkMeshSlot {
-        let size = self.size();
-        let total_len = self.total_len();
-        &mut self.meshes[(self.origin_idx + pos[0] + pos[1] * size + pos[2] * (size * size))
-            .rem_euclid(total_len) as usize]
-    }
-
-    pub fn sub_idx_to_pos(&self, idx: i32) -> ChunkPos {
-        let x = idx % self.size();
-        let y = idx / self.size() % self.size();
-        let z = idx / self.size() / self.size();
-        self.corner_pos.offset(x, y, z)
     }
 
     /// Will slide chunks and remove chunks that went over the border.
@@ -441,11 +131,11 @@ impl MeshKeeper {
         let adj_y = new_corner[1] - self.corner_pos[1];
         let adj_z = new_corner[2] - self.corner_pos[2];
         let clear_range =
-            |this: &mut MeshKeeper, x: ops::Range<i32>, y: ops::Range<i32>, z: ops::Range<i32>| {
+            |this: &mut Self, x: ops::Range<i32>, y: ops::Range<i32>, z: ops::Range<i32>| {
                 for z in z.clone() {
                     for y in y.clone() {
                         for x in x.clone() {
-                            *this.sub_get_mut([x, y, z]) = default();
+                            this.sub_get_mut([x, y, z]).reset();
                         }
                     }
                 }
@@ -486,24 +176,447 @@ impl MeshKeeper {
         self.corner_pos = new_corner;
     }
 }
+impl<T> GridKeeper<T> {
+    pub fn center(&self) -> ChunkPos {
+        self.corner_pos
+            .offset(self.half_size(), self.half_size(), self.half_size())
+    }
+
+    pub fn size(&self) -> i32 {
+        1 << self.size_log2
+    }
+
+    pub fn half_size(&self) -> i32 {
+        1 << (self.size_log2 - 1)
+    }
+
+    pub fn total_len(&self) -> i32 {
+        1 << (self.size_log2 * 3)
+    }
+
+    pub fn get(&self, pos: ChunkPos) -> Option<&T> {
+        if pos[0] >= self.corner_pos[0]
+            && pos[0] < self.corner_pos[0] + self.size()
+            && pos[1] >= self.corner_pos[1]
+            && pos[1] < self.corner_pos[1] + self.size()
+            && pos[2] >= self.corner_pos[2]
+            && pos[2] < self.corner_pos[2] + self.size()
+        {
+            Some(self._sub_get([
+                pos[0] - self.corner_pos[0],
+                pos[1] - self.corner_pos[1],
+                pos[2] - self.corner_pos[2],
+            ]))
+        } else {
+            None
+        }
+    }
+    pub fn get_mut(&mut self, pos: ChunkPos) -> Option<&mut T> {
+        if pos[0] >= self.corner_pos[0]
+            && pos[0] < self.corner_pos[0] + self.size()
+            && pos[1] >= self.corner_pos[1]
+            && pos[1] < self.corner_pos[1] + self.size()
+            && pos[2] >= self.corner_pos[2]
+            && pos[2] < self.corner_pos[2] + self.size()
+        {
+            Some(self.sub_get_mut([
+                pos[0] - self.corner_pos[0],
+                pos[1] - self.corner_pos[1],
+                pos[2] - self.corner_pos[2],
+            ]))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_by_idx(&self, idx: i32) -> &T {
+        &self.slots[(self.origin_idx + idx).rem_euclid(self.total_len()) as usize]
+    }
+    pub fn _get_by_idx_mut(&mut self, idx: i32) -> &mut T {
+        let idx = (self.origin_idx + idx).rem_euclid(self.total_len()) as usize;
+        &mut self.slots[idx]
+    }
+    pub fn _sub_get(&self, pos: [i32; 3]) -> &T {
+        &self.slots[(self.origin_idx
+            + pos[0]
+            + pos[1] * self.size()
+            + pos[2] * (self.size() * self.size()))
+        .rem_euclid(self.total_len()) as usize]
+    }
+    pub fn sub_get_mut(&mut self, pos: [i32; 3]) -> &mut T {
+        let size = self.size();
+        let total_len = self.total_len();
+        &mut self.slots[(self.origin_idx + pos[0] + pos[1] * size + pos[2] * (size * size))
+            .rem_euclid(total_len) as usize]
+    }
+
+    pub fn sub_idx_to_pos(&self, idx: i32) -> ChunkPos {
+        let x = idx % self.size();
+        let y = idx / self.size() % self.size();
+        let z = idx / self.size() / self.size();
+        self.corner_pos.offset(x, y, z)
+    }
+}
+
+pub trait GridSlot {
+    fn new() -> Self;
+    fn reset(&mut self);
+}
+
+pub struct ChunkSlot {
+    pub generating: AtomicCell<bool>,
+    data: Option<Box<Chunk>>,
+}
+impl GridSlot for ChunkSlot {
+    fn new() -> Self {
+        Self {
+            generating: false.into(),
+            data: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.generating = false.into();
+        self.data = None;
+    }
+}
+impl ChunkSlot {
+    pub fn present(&self) -> bool {
+        self.data.is_some()
+    }
+
+    pub fn as_ref(&self) -> Option<&Chunk> {
+        self.data.as_deref()
+    }
+
+    pub fn _as_mut(&mut self) -> Option<&mut Chunk> {
+        self.data.as_deref_mut()
+    }
+}
+
+impl GridSlot for bool {
+    fn new() -> bool {
+        false
+    }
+
+    fn reset(&mut self) {
+        *self = false;
+    }
+}
+
+pub struct ChunkStorage {
+    chunks: GridKeeper<ChunkSlot>,
+    pub priority: Vec<i32>,
+    pub center_hint: AtomicCell<ChunkPos>,
+}
+impl ChunkStorage {
+    pub fn new() -> Self {
+        //Calculate which chunks are more important based on distance to center
+        let size = 32;
+        let total = (size * size * size) as usize;
+        let radius = 15.;
+        let max_dist_sq = radius * radius;
+        let mut distances = Vec::<(Sortf32, u32, i32)>::with_capacity(total);
+        let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
+        let mut idx = 0;
+        for z in 0..size {
+            for y in 0..size {
+                for x in 0..size {
+                    let pos = Vec3::new(x as f32, y as f32, z as f32);
+                    let center = (size / 2) as f32 - 0.5;
+                    let delta = pos - Vec3::broadcast(center);
+                    let dist_sq = delta.mag_sq();
+                    if dist_sq < max_dist_sq {
+                        distances.push((Sortf32(dist_sq), rng.gen(), idx as i32));
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        distances.sort_unstable();
+        eprintln!("{} elements in priority", distances.len());
+        let priority: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
+        Self {
+            chunks: GridKeeper::new(size, ChunkPos([0, 0, 0])),
+            priority,
+            center_hint: AtomicCell::new(ChunkPos([0, 0, 0])),
+        }
+    }
+
+    pub fn chunk_at(&self, pos: ChunkPos) -> Option<&Chunk> {
+        self.chunks.get(pos).map(|opt| opt.as_ref()).unwrap_or(None)
+    }
+
+    pub fn _chunk_at_mut(&mut self, pos: ChunkPos) -> Option<&mut Chunk> {
+        self.chunks
+            .get_mut(pos)
+            .map(|opt| opt._as_mut())
+            .unwrap_or(None)
+    }
+
+    pub fn _chunk_slot_at(&self, pos: ChunkPos) -> Option<&ChunkSlot> {
+        self.chunks.get(pos)
+    }
+    pub fn chunk_slot_at_mut(&mut self, pos: ChunkPos) -> Option<&mut ChunkSlot> {
+        self.chunks.get_mut(pos)
+    }
+
+    pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
+        self.chunk_at(pos.to_chunk()).map(|chunk| {
+            chunk.sub_get([
+                pos[0].rem_euclid(CHUNK_SIZE),
+                pos[1].rem_euclid(CHUNK_SIZE),
+                pos[2].rem_euclid(CHUNK_SIZE),
+            ])
+        })
+    }
+
+    pub fn _block_at_mut(&mut self, pos: BlockPos) -> Option<&mut BlockData> {
+        self._chunk_at_mut(pos.to_chunk()).map(|chunk| {
+            chunk._sub_get_mut([
+                pos[0].rem_euclid(CHUNK_SIZE),
+                pos[1].rem_euclid(CHUNK_SIZE),
+                pos[2].rem_euclid(CHUNK_SIZE),
+            ])
+        })
+    }
+}
+impl ops::Deref for ChunkStorage {
+    type Target = GridKeeper<ChunkSlot>;
+    fn deref(&self) -> &Self::Target {
+        &self.chunks
+    }
+}
+impl ops::DerefMut for ChunkStorage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.chunks
+    }
+}
+impl Drop for ChunkStorage {
+    fn drop(&mut self) {
+        measure_time!(start drop_chunks);
+        self.chunks = GridKeeper::new(2, ChunkPos([0, 0, 0]));
+        measure_time!(end drop_chunks);
+    }
+}
+
+pub(crate) struct BookKeepHandle {
+    pub generated_send: Sender<(ChunkPos, Box<Chunk>)>,
+    pub chunk_reuse: Receiver<Box<Chunk>>,
+    close: Arc<AtomicCell<bool>>,
+    thread: Option<JoinHandle<()>>,
+}
+impl BookKeepHandle {
+    pub fn new(chunks: Arc<RwLock<ChunkStorage>>) -> Self {
+        let close = Arc::new(AtomicCell::new(false));
+        let (gen_send, gen_recv) = channel::bounded(64);
+        let (reuse_send, reuse_recv) = channel::bounded(64);
+        let thread = {
+            let close = close.clone();
+            thread::spawn(move || {
+                run_bookkeep(BookKeepState {
+                    chunks,
+                    close,
+                    generated: gen_recv,
+                    chunk_reuse: reuse_send,
+                });
+            })
+        };
+        BookKeepHandle {
+            generated_send: gen_send,
+            chunk_reuse: reuse_recv,
+            close,
+            thread: Some(thread),
+        }
+    }
+}
+impl Drop for BookKeepHandle {
+    fn drop(&mut self) {
+        self.close.store(true);
+        if let Some(join) = self.thread.take() {
+            join.thread().unpark();
+            join.join().unwrap();
+        }
+    }
+}
+
+struct BookKeepState {
+    close: Arc<AtomicCell<bool>>,
+    chunks: Arc<RwLock<ChunkStorage>>,
+    generated: Receiver<(ChunkPos, Box<Chunk>)>,
+    chunk_reuse: Sender<Box<Chunk>>,
+}
+
+fn run_bookkeep(state: BookKeepState) {
+    while !state.close.load() {
+        //eprintln!("bookkeeping");
+        let mut chunks = state.chunks.write();
+        //Update center pos
+        let new_center = chunks.center_hint.load();
+        chunks.set_center(new_center);
+        //Add queued generated chunks
+        for (pos, chunk) in state.generated.try_iter() {
+            if let Some(slot) = chunks.chunk_slot_at_mut(pos) {
+                slot.data = Some(chunk);
+                slot.generating = true.into();
+            }
+            //let _ = state.chunk_reuse.send(chunk);
+        }
+        //Wait some time or until the thread is unparked
+        drop(chunks);
+        if state.close.load() {
+            break;
+        }
+        thread::park_timeout(Duration::from_millis(50));
+    }
+}
+
+struct Terrain {
+    mesher: MesherHandle,
+    bookkeeper: BookKeepHandle,
+    generator: GeneratorHandle,
+    state: Rc<State>,
+    chunks: Arc<RwLock<ChunkStorage>>,
+    meshes: MeshKeeper,
+}
+impl Terrain {
+    fn new(state: &Rc<State>, gen_cfg: crate::gen::GenConfig) -> Terrain {
+        let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
+        let bookkeeper = BookKeepHandle::new(chunks.clone());
+        Terrain {
+            state: state.clone(),
+            meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
+            mesher: MesherHandle::new(state, chunks.clone()),
+            generator: GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper),
+            bookkeeper,
+            chunks,
+        }
+    }
+
+    fn set_view_radius(&mut self, radius: f32) {
+        self.meshes = MeshKeeper::new(radius / CHUNK_SIZE as f32, self.meshes.center());
+    }
+
+    fn hint_center(&mut self, center: BlockPos) {
+        //eprintln!("hinting center");
+        //Adjust center
+        let center = center
+            .offset(CHUNK_SIZE / 2, CHUNK_SIZE / 2, CHUNK_SIZE / 2)
+            .to_chunk();
+        self.chunks.read().center_hint.store(center);
+        self.meshes.set_center(center);
+        //Receive buffers from mesher thread
+        for (pos, buf_pkg) in self.mesher.recv_bufs.try_iter() {
+            let mesh = match buf_pkg {
+                None => {
+                    //A chunk with no geometry (ie. full air or full solid)
+                    ChunkMesh { buf: None }
+                }
+                Some((vert, idx)) => unsafe {
+                    //Deconstructed buffers
+                    ChunkMesh {
+                        buf: Some(Buffer3d {
+                            vertex: VertexBuffer::from_raw_package(&self.state.display, vert),
+                            index: IndexBuffer::from_raw_package(&self.state.display, idx),
+                        }),
+                    }
+                },
+            };
+            if let Some(slot) = self.meshes.get_mut(pos) {
+                slot.mesh = Some(mesh);
+            }
+        }
+    }
+
+    fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
+        self.chunks.read().block_at(pos)
+    }
+}
+
+/// Keeps track of chunk meshes in an efficient grid structure.
+struct MeshKeeper {
+    pub meshes: GridKeeper<ChunkMeshSlot>,
+    pub render_order: Vec<i32>,
+}
+impl MeshKeeper {
+    pub fn new(radius: f32, center: ChunkPos) -> Self {
+        //Chunks right at the border are not renderable, because chunks need their neighbors
+        //in order to be meshed
+        //Therefore, must add 1 to the radius to make it effective
+        let radius = radius + 1.;
+        //Make sure length is a power of two
+        let size = (radius.ceil() * 2.).max(2.) as i32;
+        let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
+        let size = 1 << size_log2;
+        //Allocate space for meshes
+        let meshes = GridKeeper::new(size, center);
+        //Precalculate the render order, from closest to farthest
+        //(Why? because rendering the nearest first makes better use of the depth buffer)
+        let total = (1 << (size_log2 * 3)) as usize;
+        let max_dist_sq = radius * radius;
+        let mut distances = Vec::<(Sortf32, u32, i32)>::with_capacity(total);
+        let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
+        let mut idx = 0;
+        for z in 0..size {
+            for y in 0..size {
+                for x in 0..size {
+                    let pos = Vec3::new(x as f32, y as f32, z as f32);
+                    let center = (size / 2) as f32 - 0.5;
+                    let delta = pos - Vec3::broadcast(center);
+                    let dist_sq = delta.mag_sq();
+                    if dist_sq < max_dist_sq {
+                        distances.push((Sortf32(dist_sq), rng.gen(), idx as i32));
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        distances.sort_unstable();
+        let render_order: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
+        eprintln!("{} chunks to render", render_order.len());
+        //Group em up
+        Self {
+            meshes,
+            render_order,
+        }
+    }
+}
+impl ops::Deref for MeshKeeper {
+    type Target = GridKeeper<ChunkMeshSlot>;
+    fn deref(&self) -> &Self::Target {
+        &self.meshes
+    }
+}
+impl ops::DerefMut for MeshKeeper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.meshes
+    }
+}
 
 #[derive(Default)]
 struct ChunkMeshSlot {
     mesh: Option<ChunkMesh>,
-    generating: bool,
+}
+impl GridSlot for ChunkMeshSlot {
+    fn new() -> Self {
+        default()
+    }
+    fn reset(&mut self) {
+        self.mesh = None;
+    }
 }
 
 struct ChunkMesh {
     buf: Option<Buffer3d>,
 }
 
+#[derive(Clone)]
 pub struct Chunk {
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
 }
 impl Chunk {
-    pub fn _new() -> Chunk {
+    pub fn new_slow() -> Self {
         Chunk {
-            //blocks: unsafe { Uninit::uninit().assume_init() },
             blocks: [BlockData { data: 0 }; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
         }
     }
@@ -521,233 +634,19 @@ impl Chunk {
             ),
         }
     }
-}
 
-struct Transform {
-    x: [i32; 3],
-    y: [i32; 3],
-    mov: [i32; 3],
-    flip: bool,
-    normal: u8,
-}
-
-struct Mesher {
-    vert_cache: [VertIdx; Self::VERT_COUNT],
-    block_buf: [BlockData; Self::BLOCK_COUNT * 2],
-    front: i32,
-    back: i32,
-    mesh: Mesh,
-}
-impl Mesher {
-    const VERT_COUNT: usize = ((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1)) as usize;
-    const BLOCK_COUNT: usize = ((CHUNK_SIZE + 2) * (CHUNK_SIZE + 2)) as usize;
-
-    const ADV_X: i32 = 1;
-    const ADV_Y: i32 = CHUNK_SIZE + 2;
-
-    pub fn new() -> Self {
-        Self {
-            vert_cache: [0; Self::VERT_COUNT],
-            block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
-            front: Self::BLOCK_COUNT as i32,
-            back: 0,
-            mesh: default(),
+    #[track_caller]
+    pub fn _sub_get_mut(&mut self, sub_pos: [i32; 3]) -> &mut BlockData {
+        match self.blocks.get_mut(
+            (sub_pos[0] | sub_pos[1] * CHUNK_SIZE | sub_pos[2] * (CHUNK_SIZE * CHUNK_SIZE))
+                as usize,
+        ) {
+            Some(b) => b,
+            None => panic!(
+                "block index [{}, {}, {}] outside chunk boundaries",
+                sub_pos[0], sub_pos[1], sub_pos[2]
+            ),
         }
-    }
-
-    fn flip_bufs(&mut self) {
-        mem::swap(&mut self.front, &mut self.back);
-    }
-
-    fn front_mut(&mut self, idx: i32) -> &mut BlockData {
-        &mut self.block_buf[(self.front + idx) as usize]
-    }
-
-    fn front(&self, idx: i32) -> BlockData {
-        self.block_buf[(self.front + idx) as usize]
-    }
-
-    fn back(&self, idx: i32) -> BlockData {
-        self.block_buf[(self.back + idx) as usize]
-    }
-
-    fn get_vert(&mut self, trans: &Transform, x: i32, y: i32, idx: i32) -> VertIdx {
-        let cache_idx = (x + y * (CHUNK_SIZE + 1)) as usize;
-        let mut cached = self.vert_cache[cache_idx];
-        if cached == VertIdx::max_value() {
-            //Create vertex
-            //[NONE, BACK_ONLY, FRONT_ONLY, BOTH]
-            const LIGHT_TABLE: [f32; 4] = [0.02, 0.0, -0.11, -0.11];
-            let mut lightness = 1.;
-            {
-                let mut process = |idx| {
-                    lightness += LIGHT_TABLE[(self.front(idx).is_solid() as usize) << 1
-                        | self.back(idx).is_solid() as usize];
-                };
-                process(idx);
-                process(idx - Self::ADV_X);
-                process(idx - Self::ADV_Y);
-                process(idx - Self::ADV_X - Self::ADV_Y);
-            }
-            let color_normal = [
-                (128. * lightness) as u8,
-                (128. * lightness) as u8,
-                (128. * lightness) as u8,
-                trans.normal,
-            ];
-            //Apply transform
-            let vert = Vec3::new(
-                (x & trans.x[0] | y & trans.y[0] | trans.mov[0]) as f32,
-                (x & trans.x[1] | y & trans.y[1] | trans.mov[1]) as f32,
-                (x & trans.x[2] | y & trans.y[2] | trans.mov[2]) as f32,
-            );
-            cached = self.mesh.add_vertex(vert, color_normal);
-            self.vert_cache[cache_idx] = cached;
-        }
-        cached
-    }
-
-    fn layer(&mut self, trans: &Transform) {
-        let mut idx = Self::ADV_X + Self::ADV_Y;
-        for vidx in self.vert_cache.iter_mut() {
-            *vidx = VertIdx::max_value();
-        }
-        for y in 0..CHUNK_SIZE {
-            for x in 0..CHUNK_SIZE {
-                if self.back(idx).is_solid() && !self.front(idx).is_solid() {
-                    //Place a face here
-                    let v00 = self.get_vert(trans, x, y, idx);
-                    let v01 = self.get_vert(trans, x, y + 1, idx + Self::ADV_Y);
-                    let v10 = self.get_vert(trans, x + 1, y, idx + Self::ADV_X);
-                    let v11 = self.get_vert(trans, x + 1, y + 1, idx + Self::ADV_X + Self::ADV_Y);
-                    if trans.flip {
-                        self.mesh.add_face(v01, v11, v00);
-                        self.mesh.add_face(v00, v11, v10);
-                    } else {
-                        self.mesh.add_face(v01, v00, v11);
-                        self.mesh.add_face(v00, v10, v11);
-                    }
-                }
-                idx += 1;
-            }
-            idx += 2;
-        }
-    }
-
-    pub fn make_mesh(&mut self, chunks: &[&Chunk; 3 * 3 * 3]) -> Mesh {
-        let block_at = |pos: [i32; 3]| {
-            let chunk_pos = [
-                pos[0] as u32 / CHUNK_SIZE as u32,
-                pos[1] as u32 / CHUNK_SIZE as u32,
-                pos[2] as u32 / CHUNK_SIZE as u32,
-            ];
-            let sub_pos = [
-                (pos[0] as u32 % CHUNK_SIZE as u32) as i32,
-                (pos[1] as u32 % CHUNK_SIZE as u32) as i32,
-                (pos[2] as u32 % CHUNK_SIZE as u32) as i32,
-            ];
-            chunks
-                [(chunk_pos[0] + chunk_pos[1] * 3 as u32 + chunk_pos[2] * (3 * 3) as u32) as usize]
-                .sub_get(sub_pos)
-        };
-
-        // X
-        for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-            let mut idx = 0;
-            for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                    *self.front_mut(idx) = block_at([x, y, z]);
-                    idx += 1;
-                }
-            }
-            if x > CHUNK_SIZE {
-                //Facing `+`
-                self.layer(&Transform {
-                    x: [0, -1, 0],
-                    y: [0, 0, -1],
-                    mov: [x - CHUNK_SIZE, 0, 0],
-                    flip: false,
-                    normal: 0,
-                });
-            }
-            self.flip_bufs();
-            if x >= CHUNK_SIZE && x < 2 * CHUNK_SIZE {
-                //Facing `-`
-                self.layer(&Transform {
-                    x: [0, -1, 0],
-                    y: [0, 0, -1],
-                    mov: [x - CHUNK_SIZE, 0, 0],
-                    flip: true,
-                    normal: 1,
-                });
-            }
-        }
-
-        // Y
-        for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-            let mut idx = 0;
-            for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                    *self.front_mut(idx) = block_at([x, y, z]);
-                    idx += 1;
-                }
-            }
-            if y > CHUNK_SIZE {
-                //Facing `+`
-                self.layer(&Transform {
-                    x: [-1, 0, 0],
-                    y: [0, 0, -1],
-                    mov: [0, y - CHUNK_SIZE, 0],
-                    flip: true,
-                    normal: 2,
-                });
-            }
-            self.flip_bufs();
-            if y >= CHUNK_SIZE && y < 2 * CHUNK_SIZE {
-                //Facing `-`
-                self.layer(&Transform {
-                    x: [-1, 0, 0],
-                    y: [0, 0, -1],
-                    mov: [0, y - CHUNK_SIZE, 0],
-                    flip: false,
-                    normal: 3,
-                });
-            }
-        }
-
-        // Z
-        for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-            let mut idx = 0;
-            for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                    *self.front_mut(idx) = block_at([x, y, z]);
-                    idx += 1;
-                }
-            }
-            if z > CHUNK_SIZE {
-                //Facing `+`
-                self.layer(&Transform {
-                    x: [-1, 0, 0],
-                    y: [0, -1, 0],
-                    mov: [0, 0, z - CHUNK_SIZE],
-                    flip: false,
-                    normal: 4,
-                });
-            }
-            self.flip_bufs();
-            if z >= CHUNK_SIZE && z < 2 * CHUNK_SIZE {
-                //Facing `-`
-                self.layer(&Transform {
-                    x: [-1, 0, 0],
-                    y: [0, -1, 0],
-                    mov: [0, 0, z - CHUNK_SIZE],
-                    flip: true,
-                    normal: 5,
-                });
-            }
-        }
-
-        mem::replace(&mut self.mesh, default())
     }
 }
 
@@ -881,8 +780,8 @@ impl TerrainRef {
     }
 }
 lua_type! {TerrainRef,
-    fn book_keep(lua, this, (x, y, z, secs): (i32, i32, i32, f64)) {
-        this.rc.borrow_mut().book_keep(BlockPos([x, y, z]), Duration::from_secs_f64(secs));
+    fn hint_center(lua, this, (x, y, z): (i32, i32, i32)) {
+        this.rc.borrow_mut().hint_center(BlockPos([x, y, z]));
     }
 
     fn set_view_distance(lua, this, dist: f32) {

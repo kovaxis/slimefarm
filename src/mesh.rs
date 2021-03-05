@@ -29,7 +29,7 @@ impl Mesh {
     }
 
     /// Upload mesh to GPU.
-    pub fn make_buffer(&self, display: &Display) -> Buffer3d {
+    pub fn make_buffer<F: glium::backend::Facade + ?Sized>(&self, display: &F) -> Buffer3d {
         Buffer3d {
             vertex: VertexBuffer::immutable(display, &self.vertices).unwrap(),
             index: IndexBuffer::immutable(display, PrimitiveType::TrianglesList, &self.indices)
