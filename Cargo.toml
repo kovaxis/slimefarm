@@ -11,8 +11,6 @@ members = [
     "glium_text_rusttype",
     "glium",
     "glutin/glutin",
-    "glutin/glutin_examples",
-    "glutin/glutin_examples/ios-example/rust",
     "glutin/glutin_egl_sys",
     "glutin/glutin_glx_sys",
     "glutin/glutin_wgl_sys",

@@ -35,7 +35,7 @@ void main() {
     //Calculate how aligned are the normal and the light direction (for diffuse lighting)
     float diffuse = -dot(normal, l_dir);
     if (diffuse < 0) {
-        v_diffuse = diffuse * 0.1;
+        v_diffuse = diffuse * 0.25;
     }else{
         v_diffuse = diffuse;
     }

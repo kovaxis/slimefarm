@@ -17,7 +17,7 @@ pub mod prelude {
     pub(crate) use crate::{
         gen::GeneratorHandle,
         mesh::Mesh,
-        terrain::{BlockData, BlockPos, Chunk, ChunkPos, ChunkStorage, CHUNK_SIZE},
+        terrain::{BlockData, BlockPos, Chunk, ChunkBox, ChunkPos, ChunkStorage, CHUNK_SIZE},
         Buffer3d, LuaDrawParams, ShaderRef, SimpleVertex, State, UniformStorage,
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
@@ -255,6 +255,9 @@ pub static NvOptimusEnablement: u32 = 1;
 #[cfg(target_os = "windows")]
 #[no_mangle]
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
+
+#[macro_use]
+mod arena;
 
 mod chunkmesh;
 mod gen;

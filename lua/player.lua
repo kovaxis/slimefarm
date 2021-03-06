@@ -144,7 +144,7 @@ function Player:tick(world)
     end]]
 
     --Jump around
-    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and not self.jump_was_down then
+    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and (self.on_ground or not self.jump_was_down) then
         self.jump_ticks = 0
         self.jump_cooldown = jump_cooldown_start
         self.jumps_left = self.jumps_left - 1

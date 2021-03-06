@@ -5,6 +5,9 @@ use crate::{chunkmesh::MesherHandle, prelude::*};
 /// Guaranteed to be a power of 2.
 pub const CHUNK_SIZE: i32 = 32;
 
+pub use self::chunk_arena::Box as ChunkBox;
+make_arena!(pub chunk_arena, Chunk);
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkPos(pub [i32; 3]);
 impl ops::Deref for ChunkPos {
@@ -265,7 +268,7 @@ pub trait GridSlot {
 
 pub struct ChunkSlot {
     pub generating: AtomicCell<bool>,
-    data: Option<Box<Chunk>>,
+    data: Option<ChunkBox>,
 }
 impl GridSlot for ChunkSlot {
     fn new() -> Self {
@@ -394,15 +397,12 @@ impl ops::DerefMut for ChunkStorage {
 }
 impl Drop for ChunkStorage {
     fn drop(&mut self) {
-        measure_time!(start drop_chunks);
         self.chunks = GridKeeper::new(2, ChunkPos([0, 0, 0]));
-        measure_time!(end drop_chunks);
     }
 }
 
 pub(crate) struct BookKeepHandle {
-    pub generated_send: Sender<(ChunkPos, Box<Chunk>)>,
-    pub chunk_reuse: Receiver<Box<Chunk>>,
+    pub generated_send: Sender<(ChunkPos, ChunkBox)>,
     close: Arc<AtomicCell<bool>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -410,7 +410,6 @@ impl BookKeepHandle {
     pub fn new(chunks: Arc<RwLock<ChunkStorage>>) -> Self {
         let close = Arc::new(AtomicCell::new(false));
         let (gen_send, gen_recv) = channel::bounded(64);
-        let (reuse_send, reuse_recv) = channel::bounded(64);
         let thread = {
             let close = close.clone();
             thread::spawn(move || {
@@ -418,13 +417,11 @@ impl BookKeepHandle {
                     chunks,
                     close,
                     generated: gen_recv,
-                    chunk_reuse: reuse_send,
                 });
             })
         };
         BookKeepHandle {
             generated_send: gen_send,
-            chunk_reuse: reuse_recv,
             close,
             thread: Some(thread),
         }
@@ -443,8 +440,7 @@ impl Drop for BookKeepHandle {
 struct BookKeepState {
     close: Arc<AtomicCell<bool>>,
     chunks: Arc<RwLock<ChunkStorage>>,
-    generated: Receiver<(ChunkPos, Box<Chunk>)>,
-    chunk_reuse: Sender<Box<Chunk>>,
+    generated: Receiver<(ChunkPos, ChunkBox)>,
 }
 
 fn run_bookkeep(state: BookKeepState) {
@@ -473,8 +469,8 @@ fn run_bookkeep(state: BookKeepState) {
 
 struct Terrain {
     mesher: MesherHandle,
-    bookkeeper: BookKeepHandle,
-    generator: GeneratorHandle,
+    _bookkeeper: BookKeepHandle,
+    _generator: GeneratorHandle,
     state: Rc<State>,
     chunks: Arc<RwLock<ChunkStorage>>,
     meshes: MeshKeeper,
@@ -487,8 +483,8 @@ impl Terrain {
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
             mesher: MesherHandle::new(state, chunks.clone()),
-            generator: GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper),
-            bookkeeper,
+            _generator: GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper),
+            _bookkeeper: bookkeeper,
             chunks,
         }
     }
@@ -615,7 +611,7 @@ pub struct Chunk {
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
 }
 impl Chunk {
-    pub fn new_slow() -> Self {
+    pub fn _new() -> Self {
         Chunk {
             blocks: [BlockData { data: 0 }; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
         }

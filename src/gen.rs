@@ -28,7 +28,6 @@ impl GeneratorHandle {
             let cfg = cfg.clone();
             let chunks = chunks.clone();
             let generated_send = bookkeep.generated_send.clone();
-            let chunk_reuse = bookkeep.chunk_reuse.clone();
 
             let join_handle = thread::Builder::new()
                 .name(format!("worldgen_{}", i))
@@ -37,7 +36,6 @@ impl GeneratorHandle {
                         chunks,
                         close,
                         generated_send,
-                        chunk_reuse,
                     };
                     gen_thread(state, cfg)
                 })
@@ -69,8 +67,7 @@ impl Drop for GeneratorHandle {
 struct GenState {
     close: Arc<AtomicCell<bool>>,
     chunks: Arc<RwLock<ChunkStorage>>,
-    generated_send: Sender<(ChunkPos, Box<Chunk>)>,
-    chunk_reuse: Receiver<Box<Chunk>>,
+    generated_send: Sender<(ChunkPos, ChunkBox)>,
 }
 
 fn gen_thread(gen: GenState, cfg: GenConfig) {
@@ -106,17 +103,9 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
         };
         //Generate this chunk
         //measure_time!(start gen_chunk);
-        let mut chunk = match gen.chunk_reuse.try_recv() {
-            Ok(chunk) => chunk,
-            Err(_) => unsafe {
-                //Illegal shit in order to avoid unstable features and costly initialization
-                let mut vec = Vec::with_capacity(1);
-                vec.set_len(1);
-                let mut boxed_slice: Box<[Chunk]> = vec.into_boxed_slice();
-                let chunk = Box::from_raw(boxed_slice.as_mut_ptr());
-                mem::forget(boxed_slice);
-                chunk
-            },
+        let mut chunk = unsafe {
+            //Illegal shit in order to avoid unstable features and costly initialization
+            crate::terrain::chunk_arena::alloc().assume_init()
         };
         //Generate noise in bulk for the entire chunk
         /*
