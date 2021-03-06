@@ -337,7 +337,6 @@ impl ChunkStorage {
             }
         }
         distances.sort_unstable();
-        eprintln!("{} elements in priority", distances.len());
         let priority: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
         Self {
             chunks: GridKeeper::new(size, ChunkPos([0, 0, 0])),

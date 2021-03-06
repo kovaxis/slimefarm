@@ -1,9 +1,18 @@
 use crate::prelude::*;
 
-#[derive(Clone, Default, Debug)]
-pub(crate) struct Mesh {
-    pub vertices: Vec<SimpleVertex>,
+#[derive(Clone, Debug)]
+pub(crate) struct Mesh<V = SimpleVertex> {
+    pub vertices: Vec<V>,
     pub indices: Vec<VertIdx>,
+}
+
+impl<V> Default for Mesh<V> {
+    fn default() -> Self {
+        Mesh {
+            vertices: default(),
+            indices: default(),
+        }
+    }
 }
 
 fn vert(pos: Vec3, color: [u8; 4]) -> SimpleVertex {
@@ -13,12 +22,11 @@ fn vert(pos: Vec3, color: [u8; 4]) -> SimpleVertex {
     }
 }
 
-impl Mesh {
-    /// Add a single vertex and return its index.
-    pub fn add_vertex(&mut self, v: Vec3, color: [u8; 4]) -> VertIdx {
-        let idx = self.vertices.len() as VertIdx;
-        self.vertices.push(vert(v, color));
-        idx
+impl<V> Mesh<V> {
+    /// Remove all vertices and faces.
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.indices.clear();
     }
 
     /// Add a single triangular face.
@@ -26,6 +34,14 @@ impl Mesh {
         self.indices.push(i0);
         self.indices.push(i1);
         self.indices.push(i2);
+    }
+}
+impl Mesh<SimpleVertex> {
+    /// Add a single vertex and return its index.
+    pub fn add_vertex(&mut self, v: Vec3, color: [u8; 4]) -> VertIdx {
+        let idx = self.vertices.len() as VertIdx;
+        self.vertices.push(vert(v, color));
+        idx
     }
 
     /// Upload mesh to GPU.

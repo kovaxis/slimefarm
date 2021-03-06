@@ -287,7 +287,7 @@ impl Mesher {
         }
     }
 
-    pub fn make_mesh(&mut self, chunks: &[&Chunk; 3 * 3 * 3]) -> Mesh {
+    pub fn make_mesh(&mut self, chunks: &[&Chunk; 3 * 3 * 3]) -> &Mesh {
         let block_at = |pos: [i32; 3]| {
             let chunk_pos = [
                 pos[0] as u32 / CHUNK_SIZE as u32,
@@ -303,6 +303,8 @@ impl Mesher {
                 [(chunk_pos[0] + chunk_pos[1] * 3 as u32 + chunk_pos[2] * (3 * 3) as u32) as usize]
                 .sub_get(sub_pos)
         };
+
+        self.mesh.clear();
 
         // X
         for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
@@ -400,6 +402,6 @@ impl Mesher {
             }
         }
 
-        mem::replace(&mut self.mesh, default())
+        &self.mesh
     }
 }
