@@ -82,12 +82,35 @@ function util.Curve:new()
     assert(#self % 2 == 0, "curve values must come in pairs")
     assert(#self >= 2, "curves must have at least one point")
     local last = -math.huge
+    local overall_ty = nil
     for i = 1, #self, 2 do
         if self[i] < last then
             error("curve points must be ordered", 2)
         end
+        local y = self[i + 1]
+        local ty
+        if type(y) == 'number' then
+            ty = 'single'
+        elseif type(y) == 'table' then
+            if #y == 2 then
+                ty = 'vec2'
+            elseif #y == 3 then
+                ty = 'vec3'
+            elseif #y == 4 then
+                ty = 'vec4'
+            end
+        end
+        if not ty then
+            print("unknown value type for '"..tostring(y).."'", 2)
+        end
+        if overall_ty then
+            assert(overall_ty == ty, "values with different types")
+        else
+            overall_ty = ty
+        end
         last = self[i]
     end
+    self.ty = overall_ty
     self.smooth = self.smooth or util.smoothstep
 end
 
@@ -107,7 +130,16 @@ function util.Curve:at(x)
     local y0 = self[prev + 1]
     local x1 = self[next]
     local y1 = self[next + 1]
-    return y0 + self.smooth((x - x0) / (x1 - x0)) * (y1 - y0)
+    local s = self.smooth((x - x0) / (x1 - x0))
+    if self.ty == 'single' then
+        return y0 + s * (y1 - y0)
+    elseif self.ty == 'vec2' then
+        return y0[1] + s * (y1[1] - y0[1]), y0[2] + s * (y1[2] - y0[2])
+    elseif self.ty == 'vec3' then
+        return y0[1] + s * (y1[1] - y0[1]), y0[2] + s * (y1[2] - y0[2]), y0[3] + s * (y1[3] - y0[3])
+    elseif self.ty == 'vec4' then
+        return y0[1] + s * (y1[1] - y0[1]), y0[2] + s * (y1[2] - y0[2]), y0[3] + s * (y1[3] - y0[3]), y0[4] + s * (y1[4] - y0[4])
+    end
 end
 
 util.DebugTimer = class{}

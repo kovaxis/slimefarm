@@ -33,7 +33,7 @@ impl ChunkPos {
             self[2] * CHUNK_SIZE,
         ])
     }
-    pub fn _to_block_center(&self) -> BlockPos {
+    pub fn to_block_center(&self) -> BlockPos {
         BlockPos([
             self[0] * CHUNK_SIZE + CHUNK_SIZE / 2,
             self[1] * CHUNK_SIZE + CHUNK_SIZE / 2,
@@ -530,6 +530,7 @@ impl Terrain {
 
 /// Keeps track of chunk meshes in an efficient grid structure.
 struct MeshKeeper {
+    pub radius: f32,
     pub meshes: GridKeeper<ChunkMeshSlot>,
     pub render_order: Vec<i32>,
 }
@@ -571,6 +572,7 @@ impl MeshKeeper {
         eprintln!("{} chunks to render", render_order.len());
         //Group em up
         Self {
+            radius: radius - 1.,
             meshes,
             render_order,
         }
@@ -797,6 +799,23 @@ lua_type! {TerrainRef,
             terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
         }, true);
         (fx, fy, fz)
+    }
+
+    fn visible_radius(lua, this, (x, y, z): (f64, f64, f64)) {
+        let terrain = this.rc.borrow();
+        for &idx in terrain.meshes.render_order.iter() {
+            if terrain.meshes.get_by_idx(idx).mesh.is_none() {
+                // This mesh is not visible
+                let block = terrain.meshes.sub_idx_to_pos(idx).to_block_center();
+                let dx = block[0] as f64 - x;
+                let dy = block[1] as f64 - y;
+                let dz = block[2] as f64 - z;
+                let delta = Vec3::new(dx as f32, dy as f32, dz as f32);
+                let radius = delta.mag() - (CHUNK_SIZE as f32 / 2.) * 3f32.cbrt();
+                return Ok(radius.max(0.));
+            }
+        }
+        terrain.meshes.radius * CHUNK_SIZE as f32
     }
 
     fn draw(lua, this, (shader, uniforms, offset_uniform, params, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, f64, f64, f64)) {

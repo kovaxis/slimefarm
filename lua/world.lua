@@ -19,12 +19,17 @@ function World:new()
         terrain = util.Shader{
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
-            uniforms = {'mvp', 'mv', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular'},
+            uniforms = {'mvp', 'mv', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
         basic = util.Shader{
             vertex = 'basic.vert',
             fragment = 'basic.frag',
             uniforms = {'mvp', 'tint'},
+        },
+        skybox = util.Shader{
+            vertex = 'skybox.vert',
+            fragment = 'skybox.frag',
+            uniforms = {'view', 'base', 'lowest', 'highest', 'sunrise', 'sunrise_dir'},
         },
     }
 
@@ -48,6 +53,7 @@ function World:new()
     self.frame.params_world:set_cull('cw')
     self.frame.params_world:set_depth('if_less', true)
     self.frame.params_world:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
+    self.frame.params_hud:set_depth('overwrite', false);
     self.frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
 
     self.cam_prev_x = 0
@@ -63,7 +69,17 @@ function World:new()
     self.cam_effective_y = 0
     self.cam_effective_z = 0
 
-    self.day_cycle = 0.25
+    self.day_cycle = 0.70
+
+    self.fog_poll_ticks = 0
+    self.fog_poll_min = 0
+    self.fog_last_minimums = {}
+    self.fog_min_idx = 0
+    self.fog_current = 0
+    self.fog_target = 0
+    for i = 1, 16 do
+        self.fog_last_minimums[i] = 0
+    end
 
     self.tick_period = 1/64
     self.next_tick = os.clock()
@@ -87,6 +103,7 @@ function World:tick()
         ent:tick(self)
     end
 
+    --Advance day cycle
     self.day_cycle = (self.day_cycle + 1 / (64*120)) % 1
 
     --Bookkeep terrain
@@ -121,20 +138,50 @@ function World:update()
     timer:start()
 end
 
-local amb_lo = 0.02
-local amb_hi = 0.75
-local dif_lo = 0
-local dif_hi = 0.20
-local spe_lo = 0
-local spe_hi = 0.02
-local specular_curve = util.Curve{ 0, spe_lo, 0.23, spe_lo, 0.27, spe_hi, 0.73, spe_hi, 0.77, spe_lo }
-local diffuse_curve  = util.Curve{ 0, dif_lo, 0.23, dif_lo, 0.27, dif_hi, 0.73, dif_hi, 0.77, dif_lo }
-local ambience_curve = util.Curve{ 0, amb_lo, 0.23, amb_lo, 0.40, amb_hi, 0.60, amb_hi, 0.77, amb_lo }
+local sky = {}
+do
+    local dawn, day, eve, night
+    local lo, hi
+    sky.screen = Mesh{}:add_quad(-1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1):as_buffer()
+
+    dawn = {.14, .42, .77}
+    day = {.08, .52, .90}
+    eve = {.14, .42, .77}
+    night = {.00, .01, .02}
+    sky.base = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
+
+    dawn = {.14, .72, .88}
+    day = {.08, .78, .94}
+    eve = {.14, .72, .88}
+    night = {.00, .00, .01}
+    sky.highest = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
+
+    dawn = {.77, .62, .60}
+    day = {.70, .75, .77}
+    eve = {.77, .62, .60}
+    night = {.01, .02, .03}
+    sky.lowest = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
+
+    dawn = {.68, .02, -.05}
+    day = {.00, .00, .00}
+    eve = {.45, .02, -.05}
+    night = {.00, .00, .00}
+    sky.sunrise = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.30, day, 0.70, day, 0.75, eve, 0.77, night, 1, night }
+
+    lo, hi = 0.00, 0.75
+    sky.ambience = util.Curve{ 0, lo, 0.23, lo, 0.40, hi, 0.60, hi, 0.77, lo }
+
+    lo, hi = 0, 0.20
+    sky.diffuse  = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
+
+    lo, hi = 0, 0.02
+    sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
+end
 
 function World:draw()
     local frame = self.frame
     local now = os.clock()
-    gfx.clear()
+    gfx.clear(0, 0, 0, 0, 1)
 
     --Count FPS
     while now >= self.fps_next_reset do
@@ -195,25 +242,79 @@ function World:draw()
     end
 
     --Setup model-view-projection matrix for world drawing
+    local vfov = 1.1
+    local hfov = vfov * frame.physical_w / frame.physical_h
     frame.mvp_world:reset()
-    frame.mvp_world:perspective(1.1, frame.physical_w / frame.physical_h, 0.1, 1000)
+    frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.1, 1000)
     frame.mv_world:reset()
     frame.mv_world:rotate_x(-cam_pitch)
     frame.mv_world:rotate_y(-cam_yaw)
     frame.mvp_world:mul_right(frame.mv_world)
 
+    --Draw skybox
+    do
+        local cycle = self.day_cycle
+        frame.mv_world:push()
+        frame.mv_world:identity()
+        frame.mv_world:rotate_y(cam_yaw)
+        frame.mv_world:rotate_x(cam_pitch)
+        frame.mv_world:scale(math.tan(hfov / 2), math.tan(vfov / 2), 1)
+        self.shaders.skybox:set_matrix('view', frame.mv_world)
+        self.shaders.skybox:set_vec3('base', sky.base:at(cycle))
+        self.shaders.skybox:set_vec3('highest', sky.highest:at(cycle))
+        self.shaders.skybox:set_vec3('lowest', sky.lowest:at(cycle))
+        self.shaders.skybox:set_vec3('sunrise', sky.sunrise:at(cycle))
+        self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), -math.cos(2*math.pi*cycle), 0)
+        self.shaders.skybox:draw(sky.screen, frame.params_hud)
+        frame.mv_world:pop()
+    end
+
+    --Update fog distance
+    do
+        if self.fog_poll_ticks > 0 then
+            self.fog_poll_ticks = self.fog_poll_ticks - 1
+        else
+            --Poll fog
+            local fog_now = self.terrain:visible_radius(cam_x, cam_y, cam_z)
+            self.fog_min_idx = self.fog_min_idx + 1
+            self.fog_last_minimums[self.fog_min_idx] = fog_now
+            self.fog_min_idx = self.fog_min_idx % #self.fog_last_minimums
+            self.fog_poll_ticks = 16
+            local abs_min = fog_now
+            for i = 1, #self.fog_last_minimums do
+                local fog = self.fog_last_minimums[i]
+                if fog < abs_min then
+                    abs_min = fog
+                end
+            end
+            if abs_min < self.fog_target then
+                self.fog_target = abs_min
+            elseif abs_min > self.fog_target + 10 then
+                self.fog_target = abs_min
+            end
+        end
+        if self.fog_target > self.fog_current then
+            --Move fog out slowly
+            self.fog_current = util.approach(self.fog_current, self.fog_target, 0.02, 2, frame.dt)
+        else
+            --Move fog in quickly
+            self.fog_current = util.approach(self.fog_current, self.fog_target, 0.00001, 8, frame.dt)
+        end
+    end
+
     --Draw terrain
     do
         local cycle = self.day_cycle
-        local ambience = ambience_curve:at(cycle)
-        local diffuse  = diffuse_curve:at(cycle)
-        local specular = specular_curve:at(cycle)
+        local ambience = sky.ambience:at(cycle)
+        local diffuse  = sky.diffuse:at(cycle)
+        local specular = sky.specular:at(cycle)
         local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), -math.sin((cycle - 0.25) * 2 * math.pi), 0
         --ambience = 0
         --diffuse = 0.2
         --specular = 0.03
         --dx, dy, dz = 2^-0.5, -2^-0.5, 0
         dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
+        self.shaders.terrain:set_float('fog', self.fog_current)
         self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
         self.shaders.terrain:set_matrix('mv', frame.mv_world)
         self.shaders.terrain:set_vec3('ambience', ambience, ambience, ambience)

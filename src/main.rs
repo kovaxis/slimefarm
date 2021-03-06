@@ -510,6 +510,11 @@ lua_type! {MatrixStack,
         *top = *other;
     }
 
+    fn identity(lua, this, ()) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        *top = Mat4::identity();
+    }
+
     fn mul_right(lua, this, other: MatrixStack) {
         let (_, this) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
@@ -841,8 +846,16 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         state.frame.borrow().get_dimensions()
                     }
 
-                    fn clear(()) {
-                        state.frame.borrow_mut().clear_color_and_depth((0., 0., 0., 0.), 1.);
+                    fn clear((r, g, b, a, depth): (Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)) {
+                        state.frame.borrow_mut().clear_color_and_depth(
+                            (
+                                r.unwrap_or(0.),
+                                g.unwrap_or(0.),
+                                b.unwrap_or(0.),
+                                a.unwrap_or(0.)
+                            ),
+                            depth.unwrap_or(1.)
+                        );
                     }
 
                     fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {
