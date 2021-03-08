@@ -1,31 +1,39 @@
-use crate::{
-    perlin::{NoiseScaler, PerlinNoise},
-    prelude::*,
-    terrain::BookKeepHandle,
-};
+use crate::{prelude::*, terrain::BookKeepHandle};
+use common::worldgen::{ChunkFillArgs, ChunkFillRet, ChunkGenerator};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GenConfig {
-    pub seed: u64,
-}
+const AVERAGE_WEIGHT: f32 = 0.02;
 
 pub struct GeneratorHandle {
-    pub close: Arc<AtomicCell<bool>>,
+    shared: Arc<SharedState>,
     threads: Vec<JoinHandle<()>>,
 }
 impl GeneratorHandle {
     pub(crate) fn new(
-        cfg: GenConfig,
+        cfg: &[u8],
         chunks: Arc<RwLock<ChunkStorage>>,
         bookkeep: &BookKeepHandle,
-    ) -> Self {
-        let close = Arc::new(AtomicCell::new(false));
+    ) -> Result<Self> {
+        let shared = Arc::new(SharedState {
+            close: false.into(),
+            avg_gen_time: 0f32.into(),
+        });
         let thread_count = (num_cpus::get() / 2).max(1);
         eprintln!("using {} worldgen threads", thread_count);
         let mut threads = Vec::with_capacity(thread_count);
-        for i in 0..thread_count {
-            let close = close.clone();
-            let cfg = cfg.clone();
+        let mut generators = (0..thread_count)
+            .map(|_| worldgen::new_generator(cfg))
+            .collect::<Result<Vec<_>>>()?;
+        if let Some((first, rest)) = generators.split_first_mut() {
+            for gen in rest {
+                // SAFETY: Generators must have the same shared part type
+                // This should happen because all of them were created with the same configstring.
+                unsafe {
+                    gen.share_with(first);
+                }
+            }
+        }
+        for (i, generator) in (0..thread_count).zip(generators) {
+            let shared = shared.clone();
             let chunks = chunks.clone();
             let generated_send = bookkeep.generated_send.clone();
 
@@ -34,21 +42,27 @@ impl GeneratorHandle {
                 .spawn(move || {
                     let state = GenState {
                         chunks,
-                        close,
+                        shared,
                         generated_send,
                     };
-                    gen_thread(state, cfg)
+                    gen_thread(state, generator)
                 })
                 .unwrap();
             threads.push(join_handle);
         }
-        Self { close, threads }
+        Ok(Self { shared, threads })
     }
 
     fn unpark_all(&self) {
         for join in self.threads.iter() {
             join.thread().unpark();
         }
+    }
+}
+impl ops::Deref for GeneratorHandle {
+    type Target = SharedState;
+    fn deref(&self) -> &SharedState {
+        &self.shared
     }
 }
 impl Drop for GeneratorHandle {
@@ -63,24 +77,26 @@ impl Drop for GeneratorHandle {
     }
 }
 
-#[derive(Clone)]
+pub struct SharedState {
+    close: AtomicCell<bool>,
+    pub avg_gen_time: AtomicCell<f32>,
+}
+
 struct GenState {
-    close: Arc<AtomicCell<bool>>,
+    shared: Arc<SharedState>,
     chunks: Arc<RwLock<ChunkStorage>>,
     generated_send: Sender<(ChunkPos, ChunkBox)>,
 }
 
-fn gen_thread(gen: GenState, cfg: GenConfig) {
-    let noise_gen = PerlinNoise::new(
-        cfg.seed,
-        &[(128., 1.), (64., 0.5), (32., 0.25), (16., 0.125)],
-    );
-    let mut noise_scaler = NoiseScaler::new(CHUNK_SIZE / 4, CHUNK_SIZE as f32);
+fn gen_thread(gen: GenState, mut generator: ChunkGenerator) {
+    let mut last_stall_warning = Instant::now();
     'outer: loop {
         //Acquire the next most prioritized chunk coordinate
-        let pos = 'inner: loop {
+        let center;
+        let pos;
+        'inner: loop {
             //eprintln!("acquiring chunk to generate");
-            if gen.close.load() {
+            if gen.shared.close.load() {
                 break 'outer;
             }
             let chunks = gen.chunks.read();
@@ -91,70 +107,62 @@ fn gen_thread(gen: GenState, cfg: GenConfig) {
                     //Make sure it hasn't been taken by another generator thread
                     if !slot.generating.compare_and_swap(false, true) {
                         //Generate this chunk
-                        break 'inner chunks.sub_idx_to_pos(idx);
+                        center = chunks.center();
+                        pos = chunks.sub_idx_to_pos(idx);
+                        break 'inner;
                     }
                 }
             }
             drop(chunks);
-            if gen.close.load() {
+            if gen.shared.close.load() {
                 break 'outer;
             }
             thread::park_timeout(Duration::from_millis(50));
-        };
+        }
         //Generate this chunk
-        //measure_time!(start gen_chunk);
-        let mut chunk = unsafe {
-            //Illegal shit in order to avoid unstable features and costly initialization
-            crate::terrain::chunk_arena::alloc().assume_init()
+        let gen_start = Instant::now();
+        let mut chunk: ChunkBox = unsafe {
+            //Illegal shit in order to avoid costly initialization
+            common::arena::alloc().assume_init()
+            //common::arena::alloc().init_zero()
         };
-        //Generate noise in bulk for the entire chunk
-        /*
-        noise_gen.noise_block(
-            [
-                (pos[0] * CHUNK_SIZE) as f64,
-                (pos[1] * CHUNK_SIZE) as f64,
-                (pos[2] * CHUNK_SIZE) as f64,
-            ],
-            CHUNK_SIZE as f64,
-            CHUNK_SIZE,
-            &mut noise_buf,
-            false,
-        );
-        // */
-        //*
-        noise_scaler.fill(
-            &noise_gen,
-            [
-                (pos[0] * CHUNK_SIZE) as f64,
-                (pos[1] * CHUNK_SIZE) as f64,
-                (pos[2] * CHUNK_SIZE) as f64,
-            ],
-            CHUNK_SIZE as f64,
-        );
-        // */
-        //Transform bulk noise into block ids
-        let mut idx = 0;
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let real_y = pos[1] * CHUNK_SIZE + y;
-                    //let noise = noise_buf[idx] - real_y as f32 * 0.04;
-                    let noise = noise_scaler.get(Vec3::new(x as f32, y as f32, z as f32))
-                        - real_y as f32 * 0.008;
-                    let normalized = noise / (0.4 + noise.abs());
-                    if normalized > 0. {
-                        chunk.blocks[idx].data = 15 + (normalized * 240.) as u8;
-                    } else {
-                        chunk.blocks[idx].data = 0;
+        let result = generator.fill(ChunkFillArgs {
+            center,
+            pos,
+            chunk: &mut *chunk,
+        });
+        {
+            //Keep chunkgen statistics
+            //Dont care about data races here, after all it's just stats
+            //Therefore, dont synchronize
+            let time = gen_start.elapsed().as_secs_f32();
+            let old_time = gen.shared.avg_gen_time.load();
+            let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+            gen.shared.avg_gen_time.store(new_time);
+        }
+        if result.is_some() {
+            //Send chunk back to main thread
+            match gen.generated_send.try_send((pos, chunk)) {
+                Ok(()) => {}
+                Err(err) if err.is_full() => {
+                    let stall_start = Instant::now();
+                    if gen.generated_send.send(err.into_inner()).is_err() {
+                        break;
                     }
-                    idx += 1;
+                    let now = Instant::now();
+                    if now - last_stall_warning > Duration::from_millis(1500) {
+                        last_stall_warning = now;
+                        eprintln!(
+                            "worldgen thread stalled for {}ms",
+                            (now - stall_start).as_millis()
+                        );
+                    }
+                }
+                Err(_) => {
+                    //Disconnected
+                    break;
                 }
             }
-        }
-        //measure_time!(end gen_chunk);
-        //Send chunk back to main thread
-        if gen.generated_send.send((pos, chunk)).is_err() {
-            break;
         }
     }
 }

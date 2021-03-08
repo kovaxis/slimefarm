@@ -331,10 +331,10 @@ impl PerlinLayer {
     }
 }
 
-pub struct PerlinNoise {
+pub struct Noise3d {
     octaves: Vec<PerlinLayer>,
 }
-impl PerlinNoise {
+impl Noise3d {
     pub fn new(seed: u64, layers: &[(f64, f32)]) -> Self {
         let mut rng = FastRng::seed_from_u64(seed);
         Self {
@@ -345,6 +345,27 @@ impl PerlinNoise {
                     salt: rng.gen(),
                     freq: period.recip(),
                     scale,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn new_octaves(seed: u64, period: f64, octs: i32) -> Self {
+        let mut rng = FastRng::seed_from_u64(seed);
+        let mut freq = period.recip();
+        let mut ampl = 1.;
+        Self {
+            octaves: (0..octs)
+                .map(|_| {
+                    let layer = PerlinLayer {
+                        offset: rng.gen(),
+                        salt: rng.gen(),
+                        freq,
+                        scale: ampl,
+                    };
+                    freq *= 2.;
+                    ampl /= 2.;
+                    layer
                 })
                 .collect(),
         }
@@ -385,12 +406,12 @@ impl PerlinNoise {
 }
 
 /// Generates chunks of noise and scales it to a virtual coordinate space.
-pub struct NoiseScaler {
+pub struct NoiseScaler3d {
     inner_size: i32,
     inner_per_outer: f32,
     buf: Vec<f32>,
 }
-impl NoiseScaler {
+impl NoiseScaler3d {
     pub fn new(inner: i32, outer: f32) -> Self {
         //Need to add 1 in order to account for the edges of the inner noise cube
         let inner_size = inner + 1;
@@ -403,7 +424,7 @@ impl NoiseScaler {
 
     /// Size is usually set to the same value as the `outer` arg to `Self::new`, but it doesn't
     /// _have_ to be identical.
-    pub fn fill(&mut self, noise_gen: &PerlinNoise, pos: [f64; 3], size: f64) {
+    pub fn fill(&mut self, noise_gen: &Noise3d, pos: [f64; 3], size: f64) {
         noise_gen.noise_block(pos, size, self.inner_size, &mut self.buf, true);
     }
 

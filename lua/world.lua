@@ -9,10 +9,23 @@ local World = class{}
 
 function World:new()
     self.tick_count = 0
-    self.terrain = terrain.new{
+    self.terrain = system.terrain{
         seed = 123443,
+        gen_radius = 16,
+        kind = 
+        --[[
+        {Parkour = {
+            y_offset = 0.008,
+            delta = 0.4,
+        }},--]]
+        -- [[
+        {Plains = {
+            xz_scale = 256,
+            detail = 3,
+            y_scale = 40,
+        }},--]]
     }
-    self.terrain:set_view_distance(256)
+    self.terrain:set_view_distance(32*12)
     self.entities = {}
 
     self.shaders = {
@@ -44,9 +57,9 @@ function World:new()
         h = 1,
         params_world = gfx.draw_params(),
         params_hud = gfx.draw_params(),
-        mvp_world = algebra.matrix(),
-        mv_world = algebra.matrix(),
-        mvp_hud = algebra.matrix(),
+        mvp_world = system.matrix(),
+        mv_world = system.matrix(),
+        mvp_hud = system.matrix(),
         s = 0,
         dt = 0,
     }
@@ -69,7 +82,7 @@ function World:new()
     self.cam_effective_y = 0
     self.cam_effective_z = 0
 
-    self.day_cycle = 0.70
+    self.day_cycle = 0.20
 
     self.fog_poll_ticks = 0
     self.fog_poll_min = 0
@@ -223,6 +236,7 @@ function World:draw()
         local dy = math.sin(self.cam_pitch) * rollback
         local dz = -math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+        cam_x, cam_y, cam_z = og_cam_x - dx, og_cam_y - dy, og_cam_z - dz
         self.cam_effective_x = cam_x
         self.cam_effective_y = cam_y
         self.cam_effective_z = cam_z
@@ -340,6 +354,12 @@ function World:draw()
     frame.mvp_hud:translate(-frame.w + 4, frame.h - 16, 0)
     frame.mvp_hud:scale(self.font_size)
     self.font:draw("FPS: "..self.fps, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    frame.mvp_hud:translate(0, -1.25, 0)
+    self.font:draw("gen: "..util.format_time(self.terrain:chunk_gen_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    frame.mvp_hud:translate(0, -1.25, 0)
+    self.font:draw("mesh: "..util.format_time(self.terrain:chunk_mesh_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    frame.mvp_hud:translate(0, -1.25, 0)
+    self.font:draw("upload: "..util.format_time(self.terrain:chunk_mesh_upload_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
 
     --Draw crosshair

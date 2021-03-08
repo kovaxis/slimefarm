@@ -2,7 +2,6 @@
 TODO:
 
 - Set a chunkload and a view radius, unloading chunks and meshes beyond it.
-- Reuse mesh buffer.
 - Prevent discontinuities in squash animations by making it stateful.
 - Special-case 2x and 4x noise scalers for big worldgen performance boost.
 - Merge adjacent chunk meshes into supermeshes.

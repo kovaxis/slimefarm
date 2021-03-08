@@ -1,34 +1,37 @@
-use crate::{prelude::*, terrain::GridKeeper};
-use glium::{
-    backend::{glutin::headless::Headless, Context, Facade},
-    glutin::{NotCurrent, PossiblyCurrent, RawContext},
-};
+use crate::prelude::*;
+use common::terrain::GridKeeper;
 
 pub(crate) type BufPackage = (
     ChunkPos,
     Option<(RawVertexPackage<SimpleVertex>, RawIndexPackage<VertIdx>)>,
 );
 
+const AVERAGE_WEIGHT: f32 = 0.02;
+
 pub struct MesherHandle {
     pub(crate) recv_bufs: Receiver<BufPackage>,
-    close: Arc<AtomicCell<bool>>,
+    shared: Arc<SharedState>,
     thread: Option<JoinHandle<()>>,
 }
 impl MesherHandle {
     pub(crate) fn new(state: &Rc<State>, chunks: Arc<RwLock<ChunkStorage>>) -> Self {
-        let close = Arc::new(AtomicCell::new(false));
+        let shared = Arc::new(SharedState {
+            close: false.into(),
+            avg_mesh_time: 0f32.into(),
+            avg_upload_time: 0f32.into(),
+        });
         let gl_ctx = state
             .sec_gl_ctx
             .take()
-            .expect("no secondary opengl context available for mesher")
-            .context;
+            .expect("no secondary opengl context available for mesher");
         let (send_bufs, recv_bufs) = channel::bounded(16);
         let thread = {
-            let close = close.clone();
+            let shared = shared.clone();
             thread::spawn(move || {
-                let gl_ctx = Headless::new(gl_ctx).expect("failed to create headless gl context");
+                let gl_ctx =
+                    Display::from_gl_window(gl_ctx).expect("failed to create headless gl context");
                 run_mesher(MesherState {
-                    close,
+                    shared,
                     chunks,
                     gl_ctx,
                     send_bufs,
@@ -38,14 +41,20 @@ impl MesherHandle {
         Self {
             thread: Some(thread),
             recv_bufs,
-            close,
+            shared,
         }
+    }
+}
+impl ops::Deref for MesherHandle {
+    type Target = SharedState;
+    fn deref(&self) -> &SharedState {
+        &self.shared
     }
 }
 impl Drop for MesherHandle {
     fn drop(&mut self) {
         self.recv_bufs = channel::never();
-        self.close.store(true);
+        self.shared.close.store(true);
         if let Some(join) = self.thread.take() {
             join.thread().unpark();
             join.join().unwrap();
@@ -53,10 +62,16 @@ impl Drop for MesherHandle {
     }
 }
 
+pub struct SharedState {
+    close: AtomicCell<bool>,
+    pub avg_mesh_time: AtomicCell<f32>,
+    pub avg_upload_time: AtomicCell<f32>,
+}
+
 struct MesherState {
-    close: Arc<AtomicCell<bool>>,
+    shared: Arc<SharedState>,
     chunks: Arc<RwLock<ChunkStorage>>,
-    gl_ctx: Headless,
+    gl_ctx: Display,
     send_bufs: Sender<BufPackage>,
 }
 
@@ -64,9 +79,9 @@ fn run_mesher(state: MesherState) {
     let mut mesher = Mesher::new();
     let mut chunks = state.chunks.read();
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
+    let mut last_stall_warning = Instant::now();
     loop {
         //Mission: find a meshable chunk
-        //eprintln!("finding meshable chunk");
         meshed.set_center(chunks.center());
         //Look for candidate chunks
         let mut order_idx = 0;
@@ -75,6 +90,7 @@ fn run_mesher(state: MesherState) {
             let idx = chunks.priority[order_idx];
             order_idx += 1;
             (|| {
+                let mesh_start = Instant::now();
                 let chunk_slot = chunks.get_by_idx(idx);
                 let chunk = chunk_slot.as_ref()?;
                 let pos = chunks.sub_idx_to_pos(idx);
@@ -85,18 +101,18 @@ fn run_mesher(state: MesherState) {
                 }
                 //Get all of its adjacent neighbors
                 macro_rules! build_neighbors {
-                        (@1, 1, 1) => {{
-                            chunk
-                        }};
-                        (@$x:expr, $y:expr, $z:expr) => {{
-                            chunks.chunk_at(pos.offset($x-1, $y-1, $z-1))?
-                        }};
-                        ($($x:tt, $y:tt, $z:tt;)*) => {{
-                            [$(
-                                build_neighbors!(@$x, $y, $z),
-                            )*]
-                        }};
-                    }
+                    (@_, _, _) => {{
+                        chunk
+                    }};
+                    (@$x:expr, $y:expr, $z:expr) => {{
+                        chunks.chunk_at(pos.offset($x-1, $y-1, $z-1))?
+                    }};
+                    ($($x:tt, $y:tt, $z:tt;)*) => {{
+                        [$(
+                            build_neighbors!(@$x, $y, $z),
+                        )*]
+                    }};
+                }
                 let neighbors = build_neighbors![
                     0, 0, 0;
                     1, 0, 0;
@@ -112,7 +128,7 @@ fn run_mesher(state: MesherState) {
                     1, 0, 1;
                     2, 0, 1;
                     0, 1, 1;
-                    1, 1, 1;
+                    _, _, _;
                     2, 1, 1;
                     0, 2, 1;
                     1, 2, 1;
@@ -130,11 +146,28 @@ fn run_mesher(state: MesherState) {
                 ];
                 //Mesh the chunk
                 let mesh = mesher.make_mesh(&neighbors);
+                {
+                    //Keep meshing statistics
+                    //Dont care about data races here, after all it's just stats
+                    //Therefore, dont synchronize
+                    let time = mesh_start.elapsed().as_secs_f32();
+                    let old_time = state.shared.avg_mesh_time.load();
+                    let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+                    state.shared.avg_mesh_time.store(new_time);
+                }
                 //Upload the chunk buffer to GPU
                 let buf_pkg = if mesh.indices.is_empty() {
                     None
                 } else {
+                    let upload_start = Instant::now();
                     let buf = mesh.make_buffer(&state.gl_ctx);
+                    //Keep upload statistics
+                    //Dont care about data races here, after all it's just stats
+                    //Therefore, dont synchronize
+                    let time = upload_start.elapsed().as_secs_f32();
+                    let old_time = state.shared.avg_upload_time.load();
+                    let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+                    state.shared.avg_upload_time.store(new_time);
                     Some((buf.vertex.into_raw_package(), buf.index.into_raw_package()))
                 };
                 //Send the buffer back
@@ -143,9 +176,18 @@ fn run_mesher(state: MesherState) {
                     Err(err) => {
                         if err.is_full() {
                             //Channel is full, make sure to unlock chunks
+                            let stall_start = Instant::now();
                             RwLockReadGuard::unlocked(&mut chunks, || {
                                 let _ = state.send_bufs.send(err.into_inner());
                             });
+                            let now = Instant::now();
+                            if now - last_stall_warning > Duration::from_millis(1500) {
+                                last_stall_warning = now;
+                                eprintln!(
+                                    "meshing thread stalled for {}ms",
+                                    (now - stall_start).as_millis()
+                                );
+                            }
                         } else {
                             //Channel closed, just discard it, we're gonna exit soon anyways
                         }
@@ -158,7 +200,7 @@ fn run_mesher(state: MesherState) {
                 Some(())
             })();
         }
-        if state.close.load() {
+        if state.shared.close.load() {
             break;
         }
         if did_mesh {
@@ -168,7 +210,7 @@ fn run_mesher(state: MesherState) {
             //Pause for a while
             drop(chunks);
             thread::park_timeout(Duration::from_millis(50));
-            if state.close.load() {
+            if state.shared.close.load() {
                 break;
             }
             chunks = state.chunks.read();

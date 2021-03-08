@@ -15,18 +15,10 @@ use crate::prelude::*;
 #[macro_use]
 pub mod prelude {
     pub(crate) use crate::{
-        gen::GeneratorHandle,
-        mesh::Mesh,
-        terrain::{BlockData, BlockPos, Chunk, ChunkBox, ChunkPos, ChunkStorage, CHUNK_SIZE},
-        Buffer3d, LuaDrawParams, ShaderRef, SimpleVertex, State, UniformStorage,
+        gen::GeneratorHandle, mesh::Mesh, terrain::ChunkStorage, Buffer3d, LuaDrawParams,
+        ShaderRef, SimpleVertex, State, UniformStorage,
     };
-    pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
-    pub use crossbeam::{
-        atomic::AtomicCell,
-        channel::{self, Receiver, Sender},
-        sync::{Parker, Unparker},
-    };
-    pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
+    pub use common::prelude::*;
     pub use glium::{
         glutin::{
             dpi::PhysicalSize,
@@ -45,26 +37,7 @@ pub mod prelude {
         Display, DrawParameters, Frame, IndexBuffer, Program, Surface, Texture2d, VertexBuffer,
     };
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
-    pub use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-    pub use rand::{Rng, SeedableRng};
-    pub use rand_xoshiro::Xoshiro128Plus as FastRng;
     pub use rlua::prelude::*;
-    pub use serde::{Deserialize, Serialize};
-    pub use std::{
-        cell::{Cell, RefCell},
-        cmp,
-        collections::VecDeque,
-        f32::consts as f32,
-        f64::consts as f64,
-        fs::{self, File},
-        mem::{self, MaybeUninit as Uninit},
-        ops, ptr,
-        rc::Rc,
-        sync::Arc,
-        thread::{self, JoinHandle},
-        time::{Duration, Instant},
-    };
-    pub use uv::{Mat2, Mat3, Mat4, Vec2, Vec3, Vec4};
 
     pub type VertIdx = u16;
 
@@ -219,22 +192,6 @@ pub mod prelude {
             }
         }
     }
-
-    #[derive(Copy, Clone, Debug, Default)]
-    pub(crate) struct AssertSync<T>(pub T);
-    unsafe impl<T> Send for AssertSync<T> {}
-    unsafe impl<T> Sync for AssertSync<T> {}
-    impl<T> ops::Deref for AssertSync<T> {
-        type Target = T;
-        fn deref(&self) -> &T {
-            &self.0
-        }
-    }
-    impl<T> ops::DerefMut for AssertSync<T> {
-        fn deref_mut(&mut self) -> &mut T {
-            &mut self.0
-        }
-    }
 }
 
 /// The pinnacle of stupid design: `ElementState`.
@@ -256,13 +213,9 @@ pub static NvOptimusEnablement: u32 = 1;
 #[no_mangle]
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
-#[macro_use]
-mod arena;
-
 mod chunkmesh;
 mod gen;
 mod mesh;
-mod perlin;
 mod terrain;
 
 struct State {
@@ -270,8 +223,7 @@ struct State {
     text_sys: TextSystem,
     frame: RefCell<Frame>,
     base_time: Instant,
-    sec_gl_ctx: Cell<Option<glium::glutin::RawContext<glium::glutin::NotCurrent>>>,
-    _sec_win: glium::glutin::window::Window,
+    sec_gl_ctx: Cell<Option<glium::glutin::WindowedContext<glium::glutin::NotCurrent>>>,
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -900,26 +852,29 @@ fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
             )
             .unwrap();
 }
-fn open_algebra_lib(state: &Rc<State>, lua: LuaContext) {
+fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
     lua.globals()
         .set(
-            "algebra",
+            "system",
             lua_lib! {lua, state,
                 fn matrix(()) {
                     MatrixStack::from(Mat4::identity())
                 }
-            },
-        )
-        .unwrap();
-}
-fn open_terrain_lib(state: &Rc<State>, lua: LuaContext) {
-    lua.globals()
-        .set(
-            "terrain",
-            lua_lib! {lua, state,
-                fn new(cfg: LuaValue) {
-                    let cfg = rlua_serde::from_value(cfg)?;
-                    terrain::TerrainRef::new(state, cfg)
+
+                fn terrain(cfg: LuaValue) {
+                    let buf;
+                    let cfg = match &cfg {
+                        LuaValue::String(s) => {
+                            s.as_bytes()
+                        },
+                        LuaValue::Table(_) => {
+                            let json: serde_json::Value = rlua_serde::from_value(cfg).to_lua_err()?;
+                            buf = serde_json::to_vec(&json).to_lua_err()?;
+                            &buf[..]
+                        },
+                        _ => return Err("expected table or string").to_lua_err()
+                    };
+                    terrain::TerrainRef::new(state, cfg).to_lua_err()?
                 }
             },
         )
@@ -927,6 +882,8 @@ fn open_terrain_lib(state: &Rc<State>, lua: LuaContext) {
 }
 
 fn main() {
+    std::env::set_var("RUST_BACKTRACE", "1");
+
     //Initialize window
     let evloop = EventLoop::new();
     let wb = WindowBuilder::new()
@@ -936,25 +893,12 @@ fn main() {
     let cb = ContextBuilder::new().with_vsync(false);
     let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
 
-    //Create secondary context for parallel uploading
-    let sec_ctxwin = ContextBuilder::new()
-        .with_shared_lists(&display.gl_window())
-        .build_windowed(
-            WindowBuilder::new()
-                .with_inner_size(PhysicalSize::new(1, 1))
-                .with_visible(false),
-            &evloop,
-        )
-        .expect("failed to initialize secondary OpenGL context");
-    let (sec_ctx, sec_win) = unsafe { sec_ctxwin.split() };
-
     //Pack it all up
     let state = Rc::new(State {
         frame: RefCell::new(display.draw()),
         text_sys: TextSystem::new(&display),
         display,
-        sec_gl_ctx: Cell::new(Some(sec_ctx)),
-        _sec_win: sec_win,
+        sec_gl_ctx: Cell::new(None),
         base_time: Instant::now(),
     });
 
@@ -968,8 +912,7 @@ fn main() {
     lua.context(|lua| {
         modify_std_lib(&state, lua);
         open_gfx_lib(&state, lua);
-        open_algebra_lib(&state, lua);
-        open_terrain_lib(&state, lua);
+        open_system_lib(&state, lua);
         let main_chunk = lua
             .load(&lua_main)
             .set_name("main.lua")
@@ -996,8 +939,26 @@ fn main() {
     }
     state.display.gl_window().window().set_cursor_visible(false);
     let _ = state.display.gl_window().window().set_cursor_grab(true);
-    evloop.run(move |ev, _, flow| {
+    evloop.run(move |ev, evloop, flow| {
         *flow = ControlFlow::Poll;
+        {
+            let sec_ctx = state.sec_gl_ctx.take();
+            if sec_ctx.is_some() {
+                state.sec_gl_ctx.set(sec_ctx);
+            } else {
+                //Create secondary context for parallel uploading
+                let sec_ctx = ContextBuilder::new()
+                    .with_shared_lists(&state.display.gl_window())
+                    .build_windowed(
+                        WindowBuilder::new()
+                            .with_inner_size(PhysicalSize::new(1, 1))
+                            .with_visible(false),
+                        &evloop,
+                    )
+                    .expect("failed to initialize secondary OpenGL context");
+                state.sec_gl_ctx.set(Some(sec_ctx));
+            }
+        }
         match ev {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::KeyboardInput {

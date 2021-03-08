@@ -10,36 +10,17 @@ function util.read_file(path)
     return str
 end
 
-function util.abs_min(x, abs)
-    if x < 0 then
-        abs = -abs
-        if abs > x then
-            return abs
-        else
-            return x
-        end
+function util.format_time(secs)
+    if secs < 0.0001 then
+        return (math.ceil(secs * 10000000) / 10) .. "us"
+    elseif secs < 0.25 then
+        return (math.ceil(secs * 10000) / 10) .. "ms"
+    elseif secs < 60 then
+        return (math.ceil(secs * 10) / 10) .. "s"
+    elseif secs < 3600 then
+        return (secs // 60) .. "m " .. math.ceil(secs % 60) .. "s"
     else
-        if abs < x then
-            return abs
-        else
-            return x
-        end
-    end
-end
-function util.abs_max(x, abs)
-    if x < 0 then
-        abs = -abs
-        if abs < x then
-            return abs
-        else
-            return x
-        end
-    else
-        if abs > x then
-            return abs
-        else
-            return x
-        end
+        return (secs // 3600) .."h " .. math.ceil(secs % 3600) .. "m"
     end
 end
 
