@@ -372,7 +372,7 @@ impl Mesher {
             //Create vertex
             //[NONE, BACK_ONLY, FRONT_ONLY, BOTH]
             const LIGHT_TABLE: [f32; 4] = [0.02, 0.0, -0.11, -0.11];
-            let mut lightness = 0.;
+            let mut lightness = 1.;
             {
                 let mut process = |idx| {
                     lightness += LIGHT_TABLE[(self.front(idx).is_solid() as usize) << 1
@@ -389,10 +389,11 @@ impl Mesher {
                 x & params.x[2] | y & params.y[2] | params.mov[2],
             ];
             let color = self.color_at(self.back(idx).data, pos_3d);
+            lightness *= 256.;
             let color_normal = [
-                ((color[0] + lightness) * 256.) as u8,
-                ((color[1] + lightness) * 256.) as u8,
-                ((color[2] + lightness) * 256.) as u8,
+                (color[0] * lightness) as u8,
+                (color[1] * lightness) as u8,
+                (color[2] * lightness) as u8,
                 params.normal,
             ];
             //Apply transform

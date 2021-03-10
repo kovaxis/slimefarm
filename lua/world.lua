@@ -201,7 +201,7 @@ do
     lo, hi = 0, 0.20
     sky.diffuse  = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
 
-    lo, hi = 0, 0.02
+    lo, hi = 0, 0.01
     sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
 end
 
