@@ -190,11 +190,14 @@ impl Terrain {
     fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let bookkeeper = BookKeepHandle::new(chunks.clone());
+        let (chunkfill, blockcolor) = worldgen::new_generator(gen_cfg)?.split();
         Ok(Terrain {
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
-            mesher: MesherHandle::new(state, chunks.clone()),
-            _generator: GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper)?,
+            mesher: MesherHandle::new(state, blockcolor, chunks.clone()),
+            _generator: unsafe {
+                GeneratorHandle::new(gen_cfg, chunkfill, chunks.clone(), &bookkeeper)?
+            },
             _bookkeeper: bookkeeper,
             chunks,
         })

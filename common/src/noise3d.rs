@@ -136,10 +136,6 @@ fn gradient_for(coord: [i32; 3], salt: u32) -> Vec3 {
     GRADIENTS[fxhash::hash32(&(coord, salt)) as usize % GRADIENT_COUNT].into()
 }
 
-fn interp(a: f32, b: f32, w: f32) -> f32 {
-    a + (b - a) * w
-}
-
 fn calc_dot(grad: Vec3, offset: [f32; 3], frac: [f32; 3]) -> f32 {
     grad.dot(Vec3::from(frac) - Vec3::new(offset[0] as f32, offset[1] as f32, offset[2] as f32))
 }
@@ -251,15 +247,23 @@ impl PerlinLayer {
                         )
                     }};
                 }
-                let noise = interp(
-                    interp(
-                        interp(calc_dot!(last[0], 0, 0, 0), calc_dot!(last[1], 0, 1, 0), sy),
-                        interp(calc_dot!(last[2], 0, 0, 1), calc_dot!(last[3], 0, 1, 1), sy),
+                let noise = Lerp::lerp(
+                    &Lerp::lerp(
+                        &Lerp::lerp(
+                            &calc_dot!(last[0], 0, 0, 0),
+                            calc_dot!(last[1], 0, 1, 0),
+                            sy,
+                        ),
+                        Lerp::lerp(
+                            &calc_dot!(last[2], 0, 0, 1),
+                            calc_dot!(last[3], 0, 1, 1),
+                            sy,
+                        ),
                         sz,
                     ),
-                    interp(
-                        interp(calc_dot!(new[0], 1, 0, 0), calc_dot!(new[1], 1, 1, 0), sy),
-                        interp(calc_dot!(new[2], 1, 0, 1), calc_dot!(new[3], 1, 1, 1), sy),
+                    Lerp::lerp(
+                        &Lerp::lerp(&calc_dot!(new[0], 1, 0, 0), calc_dot!(new[1], 1, 1, 0), sy),
+                        Lerp::lerp(&calc_dot!(new[2], 1, 0, 1), calc_dot!(new[3], 1, 1, 1), sy),
                         sz,
                     ),
                     sx,
@@ -444,15 +448,15 @@ impl NoiseScaler3d {
         let frac = pos - Vec3::new(base[0] as f32, base[1] as f32, base[2] as f32);
 
         let noise = |x, y, z| self.raw_get([base[0] + x, base[1] + y, base[2] + z]);
-        interp(
-            interp(
-                interp(noise(0, 0, 0), noise(1, 0, 0), frac[0]),
-                interp(noise(0, 1, 0), noise(1, 1, 0), frac[0]),
+        Lerp::lerp(
+            &Lerp::lerp(
+                &Lerp::lerp(&noise(0, 0, 0), noise(1, 0, 0), frac[0]),
+                Lerp::lerp(&noise(0, 1, 0), noise(1, 1, 0), frac[0]),
                 frac[1],
             ),
-            interp(
-                interp(noise(0, 0, 1), noise(1, 0, 1), frac[0]),
-                interp(noise(0, 1, 1), noise(1, 1, 1), frac[0]),
+            Lerp::lerp(
+                &Lerp::lerp(&noise(0, 0, 1), noise(1, 0, 1), frac[0]),
+                Lerp::lerp(&noise(0, 1, 1), noise(1, 1, 1), frac[0]),
                 frac[1],
             ),
             frac[2],

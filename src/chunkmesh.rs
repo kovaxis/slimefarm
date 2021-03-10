@@ -1,5 +1,11 @@
 use crate::prelude::*;
-use common::terrain::GridKeeper;
+use common::{
+    terrain::GridKeeper,
+    worldgen::{
+        AnyBlockColor, BlockColorArgs, ChunkColorBuf, CHUNK_COLOR_BUF_LEN, CHUNK_COLOR_BUF_WIDTH,
+        CHUNK_COLOR_DOWNSCALE,
+    },
+};
 
 pub(crate) type BufPackage = (
     ChunkPos,
@@ -14,7 +20,11 @@ pub struct MesherHandle {
     thread: Option<JoinHandle<()>>,
 }
 impl MesherHandle {
-    pub(crate) fn new(state: &Rc<State>, chunks: Arc<RwLock<ChunkStorage>>) -> Self {
+    pub(crate) fn new(
+        state: &Rc<State>,
+        share_with: AnyBlockColor,
+        chunks: Arc<RwLock<ChunkStorage>>,
+    ) -> Self {
         let shared = Arc::new(SharedState {
             close: false.into(),
             avg_mesh_time: 0f32.into(),
@@ -30,12 +40,15 @@ impl MesherHandle {
             thread::spawn(move || {
                 let gl_ctx =
                     Display::from_gl_window(gl_ctx).expect("failed to create headless gl context");
-                run_mesher(MesherState {
-                    shared,
-                    chunks,
-                    gl_ctx,
-                    send_bufs,
-                });
+                run_mesher(
+                    MesherState {
+                        shared,
+                        chunks,
+                        gl_ctx,
+                        send_bufs,
+                    },
+                    share_with,
+                );
             })
         };
         Self {
@@ -75,8 +88,8 @@ struct MesherState {
     send_bufs: Sender<BufPackage>,
 }
 
-fn run_mesher(state: MesherState) {
-    let mut mesher = Mesher::new();
+fn run_mesher(state: MesherState, block_color: AnyBlockColor) {
+    let mut mesher = Mesher::new(block_color);
     let mut chunks = state.chunks.read();
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
@@ -145,7 +158,7 @@ fn run_mesher(state: MesherState) {
                     2, 2, 2;
                 ];
                 //Mesh the chunk
-                let mesh = mesher.make_mesh(&neighbors);
+                let mesh = mesher.make_mesh(pos, &neighbors);
                 {
                     //Keep meshing statistics
                     //Dont care about data races here, after all it's just stats
@@ -218,7 +231,7 @@ fn run_mesher(state: MesherState) {
     }
 }
 
-struct Transform {
+struct LayerParams {
     x: [i32; 3],
     y: [i32; 3],
     mov: [i32; 3],
@@ -227,10 +240,14 @@ struct Transform {
 }
 
 struct Mesher {
+    pub color_blocks: AnyBlockColor,
     vert_cache: [VertIdx; Self::VERT_ROW * 2],
     block_buf: [BlockData; Self::BLOCK_COUNT * 2],
     front: i32,
     back: i32,
+    chunk_pos: ChunkPos,
+    ready_color_bufs: [usize; 256 / mem::size_of::<usize>() / 8],
+    color_bufs: Box<[ChunkColorBuf]>,
     mesh: Mesh,
 }
 impl Mesher {
@@ -243,12 +260,16 @@ impl Mesher {
     const ADV_X: i32 = 1;
     const ADV_Y: i32 = CHUNK_SIZE + Self::EXTRA_BLOCKS * 2;
 
-    pub fn new() -> Self {
+    pub fn new(color_blocks: AnyBlockColor) -> Self {
         Self {
+            color_blocks,
             vert_cache: [0; Self::VERT_ROW * 2],
             block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
             front: Self::BLOCK_COUNT as i32,
             back: 0,
+            chunk_pos: ChunkPos([0, 0, 0]),
+            ready_color_bufs: [0; 256 / mem::size_of::<usize>() / 8],
+            color_bufs: vec![[[0., 0., 0.]; CHUNK_COLOR_BUF_LEN]; 256].into_boxed_slice(),
             mesh: default(),
         }
     }
@@ -269,9 +290,77 @@ impl Mesher {
         self.block_buf[(self.back + idx) as usize]
     }
 
+    /// Expects a chunk-relative position.
+    fn color_at(&mut self, id: u8, pos: [i32; 3]) -> [f32; 3] {
+        const BITS_PER_ELEM: usize = mem::size_of::<usize>() * 8;
+        //Make sure buffer is created
+        let buf = &mut self.color_bufs[id as usize];
+        let ready_idx = id as usize / BITS_PER_ELEM;
+        let ready_idx_bit = id as usize % BITS_PER_ELEM;
+        if (self.ready_color_bufs[ready_idx] >> ready_idx_bit) & 1 == 0 {
+            //Must create buffer
+            unsafe {
+                self.color_blocks.call(BlockColorArgs {
+                    pos: self.chunk_pos.to_block_floor().offset(
+                        pos[0] as i32,
+                        pos[1] as i32,
+                        pos[2] as i32,
+                    ),
+                    id,
+                    out: mem::transmute(&mut *buf),
+                });
+            }
+            self.ready_color_bufs[ready_idx] |= 1 << ready_idx_bit;
+        }
+        //Interpolate
+        let pos0 = [
+            pos[0] as u32 / CHUNK_COLOR_DOWNSCALE as u32,
+            pos[1] as u32 / CHUNK_COLOR_DOWNSCALE as u32,
+            pos[2] as u32 / CHUNK_COLOR_DOWNSCALE as u32,
+        ];
+        let pos1 = [
+            (pos[0] as u32 + CHUNK_COLOR_DOWNSCALE as u32 - 1) / CHUNK_COLOR_DOWNSCALE as u32,
+            (pos[1] as u32 + CHUNK_COLOR_DOWNSCALE as u32 - 1) / CHUNK_COLOR_DOWNSCALE as u32,
+            (pos[2] as u32 + CHUNK_COLOR_DOWNSCALE as u32 - 1) / CHUNK_COLOR_DOWNSCALE as u32,
+        ];
+        let w = [
+            (pos[0] as u32 % CHUNK_COLOR_DOWNSCALE as u32) as f32
+                / (CHUNK_COLOR_DOWNSCALE - 1) as f32,
+            (pos[1] as u32 % CHUNK_COLOR_DOWNSCALE as u32) as f32
+                / (CHUNK_COLOR_DOWNSCALE - 1) as f32,
+            (pos[2] as u32 % CHUNK_COLOR_DOWNSCALE as u32) as f32
+                / (CHUNK_COLOR_DOWNSCALE - 1) as f32,
+        ];
+        macro_rules! at {
+            (@ 0) => { pos0 };
+            (@ 1) => { pos1 };
+            ($x:tt, $y:tt, $z:tt) => {{
+                Vec3::from(buf[
+                    (at!(@ $x)[0]
+                    + at!(@ $y)[1] * CHUNK_COLOR_BUF_WIDTH as u32
+                    + at!(@ $z)[2] * (CHUNK_COLOR_BUF_WIDTH * CHUNK_COLOR_BUF_WIDTH) as u32) as usize
+                ])
+            }};
+        }
+        Lerp::lerp(
+            &Lerp::lerp(
+                &Lerp::lerp(&at!(0, 0, 0), at!(1, 0, 0), w[0]),
+                Lerp::lerp(&at!(0, 1, 0), at!(1, 1, 0), w[0]),
+                w[1],
+            ),
+            Lerp::lerp(
+                &Lerp::lerp(&at!(0, 0, 1), at!(1, 0, 1), w[0]),
+                Lerp::lerp(&at!(0, 1, 1), at!(1, 1, 1), w[0]),
+                w[1],
+            ),
+            w[2],
+        )
+        .into()
+    }
+
     fn get_vert(
         &mut self,
-        trans: &Transform,
+        params: &LayerParams,
         x: i32,
         y: i32,
         cache_offset: usize,
@@ -283,7 +372,7 @@ impl Mesher {
             //Create vertex
             //[NONE, BACK_ONLY, FRONT_ONLY, BOTH]
             const LIGHT_TABLE: [f32; 4] = [0.02, 0.0, -0.11, -0.11];
-            let mut lightness = 1.;
+            let mut lightness = 0.;
             {
                 let mut process = |idx| {
                     lightness += LIGHT_TABLE[(self.front(idx).is_solid() as usize) << 1
@@ -293,26 +382,28 @@ impl Mesher {
                 process(idx - Self::ADV_X);
                 process(idx - Self::ADV_Y);
                 process(idx - Self::ADV_X - Self::ADV_Y);
-            }
+            };
+            let pos_3d = [
+                x & params.x[0] | y & params.y[0] | params.mov[0],
+                x & params.x[1] | y & params.y[1] | params.mov[1],
+                x & params.x[2] | y & params.y[2] | params.mov[2],
+            ];
+            let color = self.color_at(self.back(idx).data, pos_3d);
             let color_normal = [
-                (128. * lightness) as u8,
-                (128. * lightness) as u8,
-                (128. * lightness) as u8,
-                trans.normal,
+                ((color[0] + lightness) * 256.) as u8,
+                ((color[1] + lightness) * 256.) as u8,
+                ((color[2] + lightness) * 256.) as u8,
+                params.normal,
             ];
             //Apply transform
-            let vert = Vec3::new(
-                (x & trans.x[0] | y & trans.y[0] | trans.mov[0]) as f32,
-                (x & trans.x[1] | y & trans.y[1] | trans.mov[1]) as f32,
-                (x & trans.x[2] | y & trans.y[2] | trans.mov[2]) as f32,
-            );
+            let vert = Vec3::new(pos_3d[0] as f32, pos_3d[1] as f32, pos_3d[2] as f32);
             cached = self.mesh.add_vertex(vert, color_normal);
             self.vert_cache[cache_idx] = cached;
         }
         cached
     }
 
-    fn layer(&mut self, trans: &Transform) {
+    fn layer(&mut self, params: &LayerParams) {
         let mut idx = Self::ADV_X + Self::ADV_Y;
         for vidx in self.vert_cache.iter_mut().take(Self::VERT_ROW) {
             *vidx = VertIdx::max_value();
@@ -323,12 +414,12 @@ impl Mesher {
             for x in 0..CHUNK_SIZE {
                 if self.back(idx).is_solid() && !self.front(idx).is_solid() {
                     //Place a face here
-                    let v00 = self.get_vert(trans, x, y, back, idx);
-                    let v01 = self.get_vert(trans, x, y + 1, front, idx + Self::ADV_Y);
-                    let v10 = self.get_vert(trans, x + 1, y, back, idx + Self::ADV_X);
+                    let v00 = self.get_vert(params, x, y, back, idx);
+                    let v01 = self.get_vert(params, x, y + 1, front, idx + Self::ADV_Y);
+                    let v10 = self.get_vert(params, x + 1, y, back, idx + Self::ADV_X);
                     let v11 =
-                        self.get_vert(trans, x + 1, y + 1, front, idx + Self::ADV_X + Self::ADV_Y);
-                    if trans.flip {
+                        self.get_vert(params, x + 1, y + 1, front, idx + Self::ADV_X + Self::ADV_Y);
+                    if params.flip {
                         self.mesh.add_face(v01, v11, v00);
                         self.mesh.add_face(v00, v11, v10);
                     } else {
@@ -346,7 +437,7 @@ impl Mesher {
         }
     }
 
-    pub fn make_mesh(&mut self, chunks: &[ChunkRef; 3 * 3 * 3]) -> &Mesh {
+    pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkRef; 3 * 3 * 3]) -> &Mesh {
         let chunk_at = |pos: [u32; 3]| {
             &chunks[(pos[0] + pos[1] * 3 as u32 + pos[2] * (3 * 3) as u32) as usize]
         };
@@ -385,6 +476,11 @@ impl Mesher {
             return &self.mesh;
         }
 
+        self.chunk_pos = chunk_pos;
+        for ready_bits in self.ready_color_bufs.iter_mut() {
+            *ready_bits = 0;
+        }
+
         // X
         for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
             let mut idx = 0;
@@ -396,7 +492,7 @@ impl Mesher {
             }
             if x > CHUNK_SIZE {
                 //Facing `+`
-                self.layer(&Transform {
+                self.layer(&LayerParams {
                     x: [0, -1, 0],
                     y: [0, 0, -1],
                     mov: [x - CHUNK_SIZE, 0, 0],
@@ -407,7 +503,7 @@ impl Mesher {
             self.flip_bufs();
             if x >= CHUNK_SIZE && x < 2 * CHUNK_SIZE {
                 //Facing `-`
-                self.layer(&Transform {
+                self.layer(&LayerParams {
                     x: [0, -1, 0],
                     y: [0, 0, -1],
                     mov: [x - CHUNK_SIZE, 0, 0],
@@ -428,7 +524,7 @@ impl Mesher {
             }
             if y > CHUNK_SIZE {
                 //Facing `+`
-                self.layer(&Transform {
+                self.layer(&LayerParams {
                     x: [-1, 0, 0],
                     y: [0, 0, -1],
                     mov: [0, y - CHUNK_SIZE, 0],
@@ -439,7 +535,7 @@ impl Mesher {
             self.flip_bufs();
             if y >= CHUNK_SIZE && y < 2 * CHUNK_SIZE {
                 //Facing `-`
-                self.layer(&Transform {
+                self.layer(&LayerParams {
                     x: [-1, 0, 0],
                     y: [0, 0, -1],
                     mov: [0, y - CHUNK_SIZE, 0],
@@ -460,7 +556,7 @@ impl Mesher {
             }
             if z > CHUNK_SIZE {
                 //Facing `+`
-                self.layer(&Transform {
+                self.layer(&LayerParams {
                     x: [-1, 0, 0],
                     y: [0, -1, 0],
                     mov: [0, 0, z - CHUNK_SIZE],
@@ -471,7 +567,7 @@ impl Mesher {
             self.flip_bufs();
             if z >= CHUNK_SIZE && z < 2 * CHUNK_SIZE {
                 //Facing `-`
-                self.layer(&Transform {
+                self.layer(&LayerParams {
                     x: [-1, 0, 0],
                     y: [0, -1, 0],
                     mov: [0, 0, z - CHUNK_SIZE],

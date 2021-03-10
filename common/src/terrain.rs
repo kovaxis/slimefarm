@@ -126,7 +126,7 @@ impl<'a> ChunkRefMut<'a> {
                 //All the same
                 if blocks[0].data == 0 {
                     self.make_empty();
-                } else {
+                } else if blocks[0].data == 1 {
                     self.make_solid();
                 }
             }

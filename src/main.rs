@@ -869,6 +869,7 @@ fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                         },
                         LuaValue::Table(_) => {
                             let json: serde_json::Value = rlua_serde::from_value(cfg).to_lua_err()?;
+                            eprintln!("json: {:?}", json);
                             buf = serde_json::to_vec(&json).to_lua_err()?;
                             &buf[..]
                         },

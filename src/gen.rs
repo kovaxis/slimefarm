@@ -1,5 +1,5 @@
 use crate::{prelude::*, terrain::BookKeepHandle};
-use common::worldgen::{ChunkFillArgs, ChunkFillRet, ChunkGenerator};
+use common::worldgen::{AnyChunkFill, ChunkFillArgs, ChunkFillRet};
 
 const AVERAGE_WEIGHT: f32 = 0.02;
 
@@ -8,8 +8,12 @@ pub struct GeneratorHandle {
     threads: Vec<JoinHandle<()>>,
 }
 impl GeneratorHandle {
-    pub(crate) fn new(
+    /// # Safety
+    ///
+    /// `share_with` must be of the same type that the `cfg` bytestring will generate.
+    pub(crate) unsafe fn new(
         cfg: &[u8],
+        share_with: AnyChunkFill,
         chunks: Arc<RwLock<ChunkStorage>>,
         bookkeep: &BookKeepHandle,
     ) -> Result<Self> {
@@ -20,22 +24,12 @@ impl GeneratorHandle {
         let thread_count = (num_cpus::get() / 2).max(1);
         eprintln!("using {} worldgen threads", thread_count);
         let mut threads = Vec::with_capacity(thread_count);
-        let mut generators = (0..thread_count)
-            .map(|_| worldgen::new_generator(cfg))
-            .collect::<Result<Vec<_>>>()?;
-        if let Some((first, rest)) = generators.split_first_mut() {
-            for gen in rest {
-                // SAFETY: Generators must have the same shared part type
-                // This should happen because all of them were created with the same configstring.
-                unsafe {
-                    gen.share_with(first);
-                }
-            }
-        }
-        for (i, generator) in (0..thread_count).zip(generators) {
+        for i in 0..thread_count {
             let shared = shared.clone();
             let chunks = chunks.clone();
             let generated_send = bookkeep.generated_send.clone();
+            let (mut generator, _) = worldgen::new_generator(cfg)?.split();
+            generator.share_with(&share_with);
 
             let join_handle = thread::Builder::new()
                 .name(format!("worldgen_{}", i))
@@ -86,7 +80,7 @@ struct GenState {
     generated_send: Sender<(ChunkPos, ChunkBox)>,
 }
 
-fn gen_thread(gen: GenState, mut generator: ChunkGenerator) {
+fn gen_thread(gen: GenState, mut generator: AnyChunkFill) {
     let mut last_stall_warning = Instant::now();
     'outer: loop {
         //Acquire the next most prioritized chunk coordinate
@@ -120,7 +114,7 @@ fn gen_thread(gen: GenState, mut generator: ChunkGenerator) {
         //Generate this chunk
         let gen_start = Instant::now();
         //Fill chunk using custom generator
-        if let Some(chunk) = generator.fill(ChunkFillArgs { center, pos }) {
+        if let Some(chunk) = generator.call(ChunkFillArgs { center, pos }) {
             //Keep chunkgen timing statistics
             {
                 //Dont care about data races here, after all it's just stats

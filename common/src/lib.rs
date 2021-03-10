@@ -35,7 +35,7 @@ pub mod prelude {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
-    pub use uv::{Mat2, Mat3, Mat4, Vec2, Vec3, Vec4};
+    pub use uv::{Lerp, Mat2, Mat3, Mat4, Vec2, Vec3, Vec4};
 
     /// Unsafe as fuck, but whatever.
     #[derive(Copy, Clone, Debug, Default)]

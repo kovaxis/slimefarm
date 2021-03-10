@@ -136,10 +136,6 @@ fn gradient_for(coord: [i32; 2], salt: u32) -> Vec2 {
     GRADIENTS[fxhash::hash32(&(coord, salt)) as usize % GRADIENT_COUNT].into()
 }
 
-fn interp(a: f32, b: f32, w: f32) -> f32 {
-    a + (b - a) * w
-}
-
 fn calc_dot(grad: Vec2, offset: [f32; 2], frac: [f32; 2]) -> f32 {
     grad.dot(Vec2::from(frac) - Vec2::new(offset[0] as f32, offset[1] as f32))
 }
@@ -226,9 +222,9 @@ impl PerlinLayer {
                         calc_dot(new_2_grads[$grad_n], [$x as f32, $y as f32], block_pos_frac)
                     }};
                 }
-                let noise = interp(
-                    interp(calc_dot!(last[0], 0, 0), calc_dot!(last[1], 0, 1), sy),
-                    interp(calc_dot!(new[0], 1, 0), calc_dot!(new[1], 1, 1), sy),
+                let noise = Lerp::lerp(
+                    &Lerp::lerp(&calc_dot!(last[0], 0, 0), calc_dot!(last[1], 0, 1), sy),
+                    Lerp::lerp(&calc_dot!(new[0], 1, 0), calc_dot!(new[1], 1, 1), sy),
                     sx,
                 );
                 let out = &mut out[(cur_pos_int[0] + cur_pos_int[1] * out_size) as usize];
@@ -385,9 +381,9 @@ impl NoiseScaler2d {
         let frac = pos - Vec2::new(base[0] as f32, base[1] as f32);
 
         let noise = |x, y| self.raw_get([base[0] + x, base[1] + y]);
-        interp(
-            interp(noise(0, 0), noise(1, 0), frac[0]),
-            interp(noise(0, 1), noise(1, 1), frac[0]),
+        Lerp::lerp(
+            &Lerp::lerp(&noise(0, 0), noise(1, 0), frac[0]),
+            Lerp::lerp(&noise(0, 1), noise(1, 1), frac[0]),
             frac[1],
         )
     }
