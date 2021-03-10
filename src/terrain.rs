@@ -25,12 +25,12 @@ impl ChunkSlot {
         self.data.is_some()
     }
 
-    pub fn as_ref(&self) -> Option<&Chunk> {
-        self.data.as_deref()
+    pub fn as_ref(&self) -> Option<ChunkRef> {
+        self.data.as_ref().map(|chunk| ***chunk)
     }
 
-    pub fn _as_mut(&mut self) -> Option<&mut Chunk> {
-        self.data.as_deref_mut()
+    pub fn _as_mut(&mut self) -> Option<ChunkRefMut> {
+        self.data.as_mut().map(|chunk| chunk.as_mut())
     }
 }
 
@@ -72,11 +72,11 @@ impl ChunkStorage {
         }
     }
 
-    pub fn chunk_at(&self, pos: ChunkPos) -> Option<&Chunk> {
+    pub fn chunk_at(&self, pos: ChunkPos) -> Option<ChunkRef> {
         self.chunks.get(pos).map(|opt| opt.as_ref()).unwrap_or(None)
     }
 
-    pub fn _chunk_at_mut(&mut self, pos: ChunkPos) -> Option<&mut Chunk> {
+    pub fn _chunk_at_mut(&mut self, pos: ChunkPos) -> Option<ChunkRefMut> {
         self.chunks
             .get_mut(pos)
             .map(|opt| opt._as_mut())
@@ -93,16 +93,6 @@ impl ChunkStorage {
     pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
         self.chunk_at(pos.to_chunk()).map(|chunk| {
             chunk.sub_get([
-                pos[0].rem_euclid(CHUNK_SIZE),
-                pos[1].rem_euclid(CHUNK_SIZE),
-                pos[2].rem_euclid(CHUNK_SIZE),
-            ])
-        })
-    }
-
-    pub fn _block_at_mut(&mut self, pos: BlockPos) -> Option<&mut BlockData> {
-        self._chunk_at_mut(pos.to_chunk()).map(|chunk| {
-            chunk._sub_get_mut([
                 pos[0].rem_euclid(CHUNK_SIZE),
                 pos[1].rem_euclid(CHUNK_SIZE),
                 pos[2].rem_euclid(CHUNK_SIZE),
@@ -491,7 +481,6 @@ lua_type! {TerrainRef,
     }
 
     fn draw(lua, this, (shader, uniforms, offset_uniform, params, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, f64, f64, f64)) {
-        //measure_time!(start draw_terrain);
         let this = this.rc.borrow();
         let mut frame = this.state.frame.borrow_mut();
         //Rendering in this order has the nice property that closer chunks are rendered first,
@@ -504,7 +493,6 @@ lua_type! {TerrainRef,
                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
             }
         }
-        //measure_time!(end draw_terrain);
     }
 
     fn chunk_gen_time(lua, this, ()) {

@@ -1,10 +1,232 @@
-use crate::prelude::*;
+use crate::{
+    arena::{Box as ArenaBox, BoxUninit as ArenaBoxUninit},
+    prelude::*,
+};
 
 /// Guaranteed to be a power of 2.
 pub const CHUNK_SIZE: i32 = 32;
 
-pub type ChunkBox = crate::arena::Box<Chunk>;
+/// A 2D slice (or loaf) of an arbitrary type.
 pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>;
+
+/// Saves chunk tags on the last 2 bits of the chunk pointer.
+/// This is why `ChunkData` has an alignment of 4.
+#[derive(Copy, Clone)]
+pub struct ChunkRef<'a> {
+    blocks: NonNull<ChunkData>,
+    marker: PhantomData<&'a ChunkData>,
+}
+unsafe impl Send for ChunkRef<'_> {}
+unsafe impl Sync for ChunkRef<'_> {}
+impl<'a> ChunkRef<'a> {
+    const MASK: usize = 0b11;
+    const TAG_NORMAL: usize = 0;
+    const TAG_SOLID: usize = 1;
+    const TAG_EMPTY: usize = 2;
+
+    #[inline]
+    fn tag(&self) -> usize {
+        self.blocks.as_ptr() as usize & Self::MASK
+    }
+
+    #[inline]
+    fn make_tag(tag: usize) -> NonNull<ChunkData> {
+        unsafe { NonNull::new_unchecked((0x100 | tag) as *mut ChunkData) }
+    }
+
+    #[inline]
+    pub fn is_normal(&self) -> bool {
+        self.tag() == Self::TAG_NORMAL
+    }
+
+    #[inline]
+    pub fn is_solid(&self) -> bool {
+        self.tag() == Self::TAG_SOLID
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.tag() == Self::TAG_EMPTY
+    }
+
+    #[inline]
+    pub fn blocks(&self) -> Option<&ChunkData> {
+        if self.is_normal() {
+            unsafe { Some(self.blocks.as_ref()) }
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn sub_get(&self, pos: [i32; 3]) -> BlockData {
+        if let Some(blocks) = self.blocks() {
+            blocks.sub_get(pos)
+        } else if self.is_empty() {
+            BlockData { data: 0 }
+        } else {
+            BlockData { data: 1 }
+        }
+    }
+}
+
+#[repr(transparent)]
+pub struct ChunkRefMut<'a> {
+    inner: ChunkRef<'a>,
+    marker: PhantomData<&'a mut ChunkData>,
+}
+impl<'a> ops::Deref for ChunkRefMut<'a> {
+    type Target = ChunkRef<'a>;
+    fn deref(&self) -> &ChunkRef<'a> {
+        &self.inner
+    }
+}
+impl<'a> ChunkRefMut<'a> {
+    #[inline]
+    pub fn blocks_mut(&mut self) -> Option<&mut ChunkData> {
+        if self.is_normal() {
+            unsafe { Some(self.inner.blocks.as_mut()) }
+        } else {
+            None
+        }
+    }
+
+    /// The `new_tag` must be a valid, non-normal tag.
+    #[inline]
+    unsafe fn take_blocks(&mut self, new_tag: usize) -> Option<ArenaBox<ChunkData>> {
+        if self.is_normal() {
+            let blocks = ArenaBox::from_raw(self.blocks);
+            self.inner.blocks = ChunkRef::make_tag(new_tag);
+            Some(blocks)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn make_solid(&mut self) {
+        unsafe {
+            self.take_blocks(ChunkRef::TAG_SOLID);
+        }
+    }
+
+    #[inline]
+    pub fn make_empty(&mut self) {
+        unsafe {
+            self.take_blocks(ChunkRef::TAG_EMPTY);
+        }
+    }
+
+    /// If all of the blocks are of the same type, drop the data altogether and mark with a tag.
+    #[inline]
+    pub fn try_drop_blocks(&mut self) {
+        if let Some(chunk_data) = self.blocks() {
+            let blocks = &chunk_data.blocks;
+            if blocks.iter().skip(1).all(|&b| b.data == blocks[0].data) {
+                //All the same
+                if blocks[0].data == 0 {
+                    self.make_empty();
+                } else {
+                    self.make_solid();
+                }
+            }
+        }
+    }
+}
+
+pub struct ChunkBox {
+    inner: ChunkRefMut<'static>,
+}
+impl ops::Deref for ChunkBox {
+    type Target = ChunkRefMut<'static>;
+    fn deref(&self) -> &ChunkRefMut<'static> {
+        &self.inner
+    }
+}
+impl ops::DerefMut for ChunkBox {
+    fn deref_mut(&mut self) -> &mut ChunkRefMut<'static> {
+        &mut self.inner
+    }
+}
+impl ChunkBox {
+    #[inline]
+    pub fn new() -> Self {
+        ChunkBox {
+            inner: ChunkRefMut {
+                inner: ChunkRef {
+                    blocks: unsafe {
+                        ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().init_zero())
+                    },
+                    marker: PhantomData,
+                },
+                marker: PhantomData,
+            },
+        }
+    }
+
+    #[inline]
+    pub unsafe fn new_uninit() -> Self {
+        ChunkBox {
+            inner: ChunkRefMut {
+                inner: ChunkRef {
+                    blocks: ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init()),
+                    marker: PhantomData,
+                },
+                marker: PhantomData,
+            },
+        }
+    }
+
+    #[inline]
+    pub fn new_empty() -> Self {
+        ChunkBox {
+            inner: ChunkRefMut {
+                inner: ChunkRef {
+                    blocks: ChunkRef::make_tag(ChunkRef::TAG_EMPTY),
+                    marker: PhantomData,
+                },
+                marker: PhantomData,
+            },
+        }
+    }
+
+    #[inline]
+    pub fn new_solid() -> Self {
+        ChunkBox {
+            inner: ChunkRefMut {
+                inner: ChunkRef {
+                    blocks: ChunkRef::make_tag(ChunkRef::TAG_SOLID),
+                    marker: PhantomData,
+                },
+                marker: PhantomData,
+            },
+        }
+    }
+
+    #[inline]
+    pub fn new_quick() -> Self {
+        //Change depending on how bold we feel
+        //Self::new()
+        unsafe { Self::new_uninit() }
+    }
+
+    #[inline]
+    pub fn as_mut(&mut self) -> ChunkRefMut {
+        ChunkRefMut {
+            inner: self.inner.inner,
+            marker: PhantomData,
+        }
+    }
+}
+impl Drop for ChunkBox {
+    fn drop(&mut self) {
+        if self.is_normal() {
+            unsafe {
+                drop(ArenaBox::from_raw(self.blocks));
+            }
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkPos(pub [i32; 3]);
@@ -97,11 +319,14 @@ impl BlockData {
     }
 }
 
+/// Holds the block data for a chunk.
+/// Has an alignment of 4 in order for `ChunkBox` to store tags in the last 2 bits of the pointer.
 #[derive(Clone)]
-pub struct Chunk {
+#[repr(align(4))]
+pub struct ChunkData {
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
 }
-impl Chunk {
+impl ChunkData {
     #[track_caller]
     pub fn sub_get(&self, sub_pos: [i32; 3]) -> BlockData {
         match self.blocks.get(

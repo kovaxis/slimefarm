@@ -46,12 +46,7 @@ enum GenKind {
 }
 
 fn void(_cfg: Config) -> ChunkGenerator {
-    wrap_gen(move |args| {
-        for b in args.chunk.blocks.iter_mut() {
-            *b = BlockData { data: 0 };
-        }
-        Some(())
-    })
+    wrap_gen(move |_| Some(ChunkBox::new_empty()))
 }
 
 #[derive(Deserialize)]
@@ -67,6 +62,8 @@ fn parkour(cfg: Config, k: Parkour) -> ChunkGenerator {
     );
     let mut noise_scaler = NoiseScaler3d::new(CHUNK_SIZE / 4, CHUNK_SIZE as f32);
     wrap_gen(move |args| {
+        let mut chunk = ChunkBox::new_quick();
+        let out_blocks = &mut chunk.blocks_mut().unwrap().blocks;
         //Generate noise in bulk for the entire chunk
         /*
         noise_gen.noise_block(
@@ -99,15 +96,15 @@ fn parkour(cfg: Config, k: Parkour) -> ChunkGenerator {
                         - real_y as f32 * k.y_offset;
                     let normalized = noise / (k.delta + noise.abs());
                     if normalized > 0. {
-                        args.chunk.blocks[idx].data = 15 + (normalized * 235.) as u8;
+                        out_blocks[idx].data = 15 + (normalized * 235.) as u8;
                     } else {
-                        args.chunk.blocks[idx].data = 0;
+                        out_blocks[idx].data = 0;
                     }
                     idx += 1;
                 }
             }
         }
-        Some(())
+        Some(chunk)
     })
 }
 
@@ -119,13 +116,15 @@ struct Plains {
 }
 
 fn plains(cfg: Config, k: Plains) -> ChunkGenerator {
-    let mut cols = GridKeeper2d::<Option<LoafBox<i32>>>::with_radius(cfg.gen_radius, [0, 0]);
+    let mut cols =
+        GridKeeper2d::<Option<(i16, i16, LoafBox<i16>)>>::with_radius(cfg.gen_radius, [0, 0]);
     let noise2d = Noise2d::new_octaves(cfg.seed, k.xz_scale, k.detail);
     wrap_gen(move |args| {
         cols.set_center(args.center.xz());
-        let col = cols.get_mut(args.pos.xz())?.get_or_insert_with(|| {
+        let (col_min, col_max, col) = cols.get_mut(args.pos.xz())?.get_or_insert_with(|| {
             //Generate the height map for this column
-            let mut noise: LoafBox<i32> = unsafe { common::arena::alloc().assume_init() };
+            let mut hmap: LoafBox<i16> = unsafe { common::arena::alloc().assume_init() };
+            let mut noise_buf = [0.; (CHUNK_SIZE * CHUNK_SIZE) as usize];
             noise2d.noise_block(
                 [
                     (args.pos[0] * CHUNK_SIZE) as f64,
@@ -133,14 +132,27 @@ fn plains(cfg: Config, k: Plains) -> ChunkGenerator {
                 ],
                 CHUNK_SIZE as f64,
                 CHUNK_SIZE,
-                unsafe { mem::transmute(&mut noise[..]) },
+                &mut noise_buf[..],
                 false,
             );
-            for y in noise.iter_mut() {
-                *y = (f32::from_bits(*y as u32) * k.y_scale) as i32;
+            let mut min = i16::max_value();
+            let mut max = i16::min_value();
+            for (&noise, height) in noise_buf.iter().zip(hmap.iter_mut()) {
+                *height = (noise * k.y_scale) as i16;
+                min = min.min(*height);
+                max = max.max(*height);
             }
-            noise
+            (min, max, hmap)
         });
+        if args.pos[1] * CHUNK_SIZE >= *col_max as i32 {
+            //Chunk is high enough to be all-air
+            return Some(ChunkBox::new_empty());
+        } else if (args.pos[1] + 1) * CHUNK_SIZE <= *col_min as i32 {
+            //Chunk is low enough to be all-ground
+            return Some(ChunkBox::new_solid());
+        }
+        let mut chunk = ChunkBox::new_quick();
+        let mut out_blocks = &mut chunk.blocks_mut().unwrap().blocks;
         let mut idx_3d = 0;
         let mut idx_2d = 0;
         for _z in 0..CHUNK_SIZE {
@@ -148,14 +160,14 @@ fn plains(cfg: Config, k: Plains) -> ChunkGenerator {
                 let mut idx_2d = idx_2d;
                 for _x in 0..CHUNK_SIZE {
                     let real_y = args.pos[1] * CHUNK_SIZE + y;
-                    args.chunk.blocks[idx_3d].data = (real_y < col[idx_2d]) as u8;
+                    out_blocks[idx_3d].data = (real_y < col[idx_2d] as i32) as u8;
                     idx_2d += 1;
                     idx_3d += 1;
                 }
             }
             idx_2d += CHUNK_SIZE as usize;
         }
-        Some(())
+        Some(chunk)
     })
 }
 

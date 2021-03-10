@@ -154,10 +154,23 @@ pub struct Box<T> {
     inner: BoxUninit<T>,
 }
 impl<T> Box<T> {
-    #[allow(dead_code)]
     #[inline]
     pub fn new(val: T) -> Box<T> {
         BoxUninit::new().init(val)
+    }
+
+    #[inline]
+    pub fn into_raw(this: Self) -> NonNull<T> {
+        let ptr = this.inner.ptr;
+        mem::forget(this);
+        ptr.cast()
+    }
+
+    #[inline]
+    pub unsafe fn from_raw(raw: NonNull<T>) -> Box<T> {
+        Box {
+            inner: BoxUninit { ptr: raw.cast() },
+        }
     }
 }
 impl<T> ops::Deref for Box<T> {

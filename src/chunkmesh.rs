@@ -24,7 +24,7 @@ impl MesherHandle {
             .sec_gl_ctx
             .take()
             .expect("no secondary opengl context available for mesher");
-        let (send_bufs, recv_bufs) = channel::bounded(16);
+        let (send_bufs, recv_bufs) = channel::bounded(512);
         let thread = {
             let shared = shared.clone();
             thread::spawn(move || {
@@ -227,22 +227,25 @@ struct Transform {
 }
 
 struct Mesher {
-    vert_cache: [VertIdx; Self::VERT_COUNT],
+    vert_cache: [VertIdx; Self::VERT_ROW * 2],
     block_buf: [BlockData; Self::BLOCK_COUNT * 2],
     front: i32,
     back: i32,
     mesh: Mesh,
 }
 impl Mesher {
-    const VERT_COUNT: usize = ((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1)) as usize;
-    const BLOCK_COUNT: usize = ((CHUNK_SIZE + 2) * (CHUNK_SIZE + 2)) as usize;
+    const EXTRA_BLOCKS: i32 = 1;
+
+    const VERT_ROW: usize = (CHUNK_SIZE + 1) as usize;
+    const BLOCK_COUNT: usize =
+        ((CHUNK_SIZE + Self::EXTRA_BLOCKS * 2) * (CHUNK_SIZE + Self::EXTRA_BLOCKS * 2)) as usize;
 
     const ADV_X: i32 = 1;
-    const ADV_Y: i32 = CHUNK_SIZE + 2;
+    const ADV_Y: i32 = CHUNK_SIZE + Self::EXTRA_BLOCKS * 2;
 
     pub fn new() -> Self {
         Self {
-            vert_cache: [0; Self::VERT_COUNT],
+            vert_cache: [0; Self::VERT_ROW * 2],
             block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
             front: Self::BLOCK_COUNT as i32,
             back: 0,
@@ -266,8 +269,15 @@ impl Mesher {
         self.block_buf[(self.back + idx) as usize]
     }
 
-    fn get_vert(&mut self, trans: &Transform, x: i32, y: i32, idx: i32) -> VertIdx {
-        let cache_idx = (x + y * (CHUNK_SIZE + 1)) as usize;
+    fn get_vert(
+        &mut self,
+        trans: &Transform,
+        x: i32,
+        y: i32,
+        cache_offset: usize,
+        idx: i32,
+    ) -> VertIdx {
+        let cache_idx = cache_offset as usize + x as usize;
         let mut cached = self.vert_cache[cache_idx];
         if cached == VertIdx::max_value() {
             //Create vertex
@@ -304,17 +314,20 @@ impl Mesher {
 
     fn layer(&mut self, trans: &Transform) {
         let mut idx = Self::ADV_X + Self::ADV_Y;
-        for vidx in self.vert_cache.iter_mut() {
+        for vidx in self.vert_cache.iter_mut().take(Self::VERT_ROW) {
             *vidx = VertIdx::max_value();
         }
+        let mut back = 0;
+        let mut front = Self::VERT_ROW;
         for y in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
                 if self.back(idx).is_solid() && !self.front(idx).is_solid() {
                     //Place a face here
-                    let v00 = self.get_vert(trans, x, y, idx);
-                    let v01 = self.get_vert(trans, x, y + 1, idx + Self::ADV_Y);
-                    let v10 = self.get_vert(trans, x + 1, y, idx + Self::ADV_X);
-                    let v11 = self.get_vert(trans, x + 1, y + 1, idx + Self::ADV_X + Self::ADV_Y);
+                    let v00 = self.get_vert(trans, x, y, back, idx);
+                    let v01 = self.get_vert(trans, x, y + 1, front, idx + Self::ADV_Y);
+                    let v10 = self.get_vert(trans, x + 1, y, back, idx + Self::ADV_X);
+                    let v11 =
+                        self.get_vert(trans, x + 1, y + 1, front, idx + Self::ADV_X + Self::ADV_Y);
                     if trans.flip {
                         self.mesh.add_face(v01, v11, v00);
                         self.mesh.add_face(v00, v11, v10);
@@ -325,11 +338,18 @@ impl Mesher {
                 }
                 idx += 1;
             }
-            idx += 2;
+            mem::swap(&mut front, &mut back);
+            for vert in self.vert_cache.iter_mut().skip(front).take(Self::VERT_ROW) {
+                *vert = VertIdx::max_value();
+            }
+            idx += Self::ADV_Y - CHUNK_SIZE;
         }
     }
 
-    pub fn make_mesh(&mut self, chunks: &[&Chunk; 3 * 3 * 3]) -> &Mesh {
+    pub fn make_mesh(&mut self, chunks: &[ChunkRef; 3 * 3 * 3]) -> &Mesh {
+        let chunk_at = |pos: [u32; 3]| {
+            &chunks[(pos[0] + pos[1] * 3 as u32 + pos[2] * (3 * 3) as u32) as usize]
+        };
         let block_at = |pos: [i32; 3]| {
             let chunk_pos = [
                 pos[0] as u32 / CHUNK_SIZE as u32,
@@ -341,18 +361,35 @@ impl Mesher {
                 (pos[1] as u32 % CHUNK_SIZE as u32) as i32,
                 (pos[2] as u32 % CHUNK_SIZE as u32) as i32,
             ];
-            chunks
-                [(chunk_pos[0] + chunk_pos[1] * 3 as u32 + chunk_pos[2] * (3 * 3) as u32) as usize]
-                .sub_get(sub_pos)
+            chunk_at(chunk_pos).sub_get(sub_pos)
         };
 
         self.mesh.clear();
 
+        // Special case empty chunks
+        if chunk_at([1, 1, 1]).is_empty() {
+            //Empty chunks have no geometry
+            return &self.mesh;
+        }
+
+        // Special case solid chunks surrounded by solid chunks
+        if chunk_at([1, 1, 1]).is_solid()
+            && chunk_at([1, 1, 0]).is_solid()
+            && chunk_at([1, 0, 1]).is_solid()
+            && chunk_at([0, 1, 1]).is_solid()
+            && chunk_at([2, 1, 1]).is_solid()
+            && chunk_at([1, 2, 1]).is_solid()
+            && chunk_at([1, 1, 2]).is_solid()
+        {
+            //Solid chunks surrounded by solid chunks have no visible geometry
+            return &self.mesh;
+        }
+
         // X
-        for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+        for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
             let mut idx = 0;
-            for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+            for z in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
+                for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                     *self.front_mut(idx) = block_at([x, y, z]);
                     idx += 1;
                 }
@@ -381,10 +418,10 @@ impl Mesher {
         }
 
         // Y
-        for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+        for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
             let mut idx = 0;
-            for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+            for z in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
+                for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                     *self.front_mut(idx) = block_at([x, y, z]);
                     idx += 1;
                 }
@@ -413,10 +450,10 @@ impl Mesher {
         }
 
         // Z
-        for z in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+        for z in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
             let mut idx = 0;
-            for y in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
-                for x in CHUNK_SIZE - 1..2 * CHUNK_SIZE + 1 {
+            for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
+                for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                     *self.front_mut(idx) = block_at([x, y, z]);
                     idx += 1;
                 }

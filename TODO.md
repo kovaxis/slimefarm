@@ -1,6 +1,7 @@
 
 TODO:
 
+- Object-centered lighting.
 - Set a chunkload and a view radius, unloading chunks and meshes beyond it.
 - Prevent discontinuities in squash animations by making it stateful.
 - Special-case 2x and 4x noise scalers for big worldgen performance boost.

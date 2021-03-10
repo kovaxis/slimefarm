@@ -13,12 +13,12 @@ function World:new()
         seed = 123443,
         gen_radius = 16,
         kind = 
-        --[[
+        -- [[
         {Parkour = {
             y_offset = 0.008,
             delta = 0.4,
         }},--]]
-        -- [[
+        --[[
         {Plains = {
             xz_scale = 256,
             detail = 3,
@@ -84,8 +84,8 @@ function World:new()
 
     self.day_cycle = 0.20
 
-    self.fog_poll_ticks = 0
-    self.fog_poll_min = 0
+    self.fog_poll_next = os.clock()
+    self.fog_poll_interval = 1 / 16
     self.fog_last_minimums = {}
     self.fog_min_idx = 0
     self.fog_current = 0
@@ -236,7 +236,6 @@ function World:draw()
         local dy = math.sin(self.cam_pitch) * rollback
         local dz = -math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
-        cam_x, cam_y, cam_z = og_cam_x - dx, og_cam_y - dy, og_cam_z - dz
         self.cam_effective_x = cam_x
         self.cam_effective_y = cam_y
         self.cam_effective_z = cam_z
@@ -285,15 +284,14 @@ function World:draw()
 
     --Update fog distance
     do
-        if self.fog_poll_ticks > 0 then
-            self.fog_poll_ticks = self.fog_poll_ticks - 1
-        else
+        local now = os.clock()
+        if now > self.fog_poll_next then
+            self.fog_poll_next = now + (self.fog_poll_interval - now % self.fog_poll_interval)
             --Poll fog
             local fog_now = self.terrain:visible_radius(cam_x, cam_y, cam_z)
             self.fog_min_idx = self.fog_min_idx + 1
             self.fog_last_minimums[self.fog_min_idx] = fog_now
             self.fog_min_idx = self.fog_min_idx % #self.fog_last_minimums
-            self.fog_poll_ticks = 16
             local abs_min = fog_now
             for i = 1, #self.fog_last_minimums do
                 local fog = self.fog_last_minimums[i]

@@ -3,7 +3,10 @@
 use crate::prelude::*;
 
 pub mod prelude {
-    pub use crate::terrain::{BlockData, BlockPos, Chunk, ChunkBox, ChunkPos, LoafBox, CHUNK_SIZE};
+    pub use crate::terrain::{
+        BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, ChunkRefMut, LoafBox,
+        CHUNK_SIZE,
+    };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
     pub use crossbeam::{
         atomic::AtomicCell,
@@ -23,8 +26,10 @@ pub mod prelude {
         f32::consts as f32,
         f64::consts as f64,
         fs::{self, File},
+        marker::PhantomData,
         mem::{self, MaybeUninit as Uninit},
-        ops, ptr,
+        ops,
+        ptr::{self, NonNull},
         rc::Rc,
         sync::Arc,
         thread::{self, JoinHandle},

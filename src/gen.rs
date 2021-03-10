@@ -67,13 +67,11 @@ impl ops::Deref for GeneratorHandle {
 }
 impl Drop for GeneratorHandle {
     fn drop(&mut self) {
-        measure_time!(start close_worldgen);
         self.close.store(true);
         self.unpark_all();
         for join in self.threads.drain(..) {
             join.join().unwrap();
         }
-        measure_time!(end close_worldgen);
     }
 }
 
@@ -121,26 +119,17 @@ fn gen_thread(gen: GenState, mut generator: ChunkGenerator) {
         }
         //Generate this chunk
         let gen_start = Instant::now();
-        let mut chunk: ChunkBox = unsafe {
-            //Illegal shit in order to avoid costly initialization
-            common::arena::alloc().assume_init()
-            //common::arena::alloc().init_zero()
-        };
-        let result = generator.fill(ChunkFillArgs {
-            center,
-            pos,
-            chunk: &mut *chunk,
-        });
-        {
-            //Keep chunkgen statistics
-            //Dont care about data races here, after all it's just stats
-            //Therefore, dont synchronize
-            let time = gen_start.elapsed().as_secs_f32();
-            let old_time = gen.shared.avg_gen_time.load();
-            let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
-            gen.shared.avg_gen_time.store(new_time);
-        }
-        if result.is_some() {
+        //Fill chunk using custom generator
+        if let Some(chunk) = generator.fill(ChunkFillArgs { center, pos }) {
+            //Keep chunkgen timing statistics
+            {
+                //Dont care about data races here, after all it's just stats
+                //Therefore, dont synchronize
+                let time = gen_start.elapsed().as_secs_f32();
+                let old_time = gen.shared.avg_gen_time.load();
+                let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+                gen.shared.avg_gen_time.store(new_time);
+            }
             //Send chunk back to main thread
             match gen.generated_send.try_send((pos, chunk)) {
                 Ok(()) => {}

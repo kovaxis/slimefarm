@@ -1,12 +1,11 @@
 use crate::prelude::*;
 
-pub struct ChunkFillArgs<'a> {
+pub struct ChunkFillArgs {
     pub center: ChunkPos,
     pub pos: ChunkPos,
-    pub chunk: &'a mut Chunk,
 }
 
-pub type ChunkFillRet = Option<()>;
+pub type ChunkFillRet = Option<ChunkBox>;
 
 pub trait ChunkGen {
     type Shared: Send + Sync;
@@ -31,7 +30,7 @@ impl ChunkGenerator {
             shared: *const u8,
             local: *mut u8,
             args: ChunkFillArgs,
-        ) -> Option<()> {
+        ) -> ChunkFillRet {
             let shared =
                 mem::ManuallyDrop::new(Arc::<G::Shared>::from_raw(shared as *const G::Shared));
             let mut local =

@@ -2,6 +2,7 @@
 local input = require 'input'
 local World = require 'world'
 local Player = require 'player'
+local Enemy = require 'enemy'
 
 local world = World{}
 table.insert(world.entities, Player{
@@ -9,6 +10,13 @@ table.insert(world.entities, Player{
     y = 0,
     z = 0,
 })
+for x = -10, 10 do
+    table.insert(world.entities, Enemy{
+        x = x * 10,
+        y = 100,
+        z = 20,
+    })
+end
 
 while true do
     local ev, a, b, c, d, e, f = coroutine.yield()
