@@ -21,17 +21,42 @@ impl GridSlot for ChunkSlot {
     }
 }
 impl ChunkSlot {
-    pub fn present(&self) -> bool {
-        self.data.is_some()
-    }
-
     pub fn as_ref(&self) -> Option<ChunkRef> {
-        self.data.as_ref().map(|chunk| ***chunk)
+        self.data.as_ref().map(|chunk| chunk.as_ref())
     }
+}
 
-    pub fn _as_mut(&mut self) -> Option<ChunkRefMut> {
-        self.data.as_mut().map(|chunk| chunk.as_mut())
+pub fn by_dist_up_to(radius: f32) -> impl FnMut(Vec3) -> Option<f32> {
+    let max_sq = radius * radius;
+    move |delta| {
+        let dist_sq = delta.mag_sq();
+        if dist_sq <= max_sq {
+            Some(dist_sq)
+        } else {
+            None
+        }
     }
+}
+
+pub fn gen_priorities(size: i32, mut cost: impl FnMut(Vec3) -> Option<f32>) -> Vec<i32> {
+    let mut chunks = Vec::<(Sortf32, u32, i32)>::with_capacity((size * size * size) as usize);
+    let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
+    let mut idx = 0;
+    for z in 0..size {
+        for y in 0..size {
+            for x in 0..size {
+                let pos = Vec3::new(x as f32, y as f32, z as f32);
+                let center = (size / 2) as f32 - 0.5;
+                let delta = pos - Vec3::broadcast(center);
+                if let Some(cost) = cost(delta) {
+                    chunks.push((Sortf32(cost), rng.gen(), idx as i32));
+                }
+                idx += 1;
+            }
+        }
+    }
+    chunks.sort_unstable();
+    chunks.into_iter().map(|(_, _, idx)| idx).collect()
 }
 
 pub struct ChunkStorage {
@@ -43,44 +68,16 @@ impl ChunkStorage {
     pub fn new() -> Self {
         //Calculate which chunks are more important based on distance to center
         let size = 32;
-        let total = (size * size * size) as usize;
         let radius = 15.;
-        let max_dist_sq = radius * radius;
-        let mut distances = Vec::<(Sortf32, u32, i32)>::with_capacity(total);
-        let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
-        let mut idx = 0;
-        for z in 0..size {
-            for y in 0..size {
-                for x in 0..size {
-                    let pos = Vec3::new(x as f32, y as f32, z as f32);
-                    let center = (size / 2) as f32 - 0.5;
-                    let delta = pos - Vec3::broadcast(center);
-                    let dist_sq = delta.mag_sq();
-                    if dist_sq < max_dist_sq {
-                        distances.push((Sortf32(dist_sq), rng.gen(), idx as i32));
-                    }
-                    idx += 1;
-                }
-            }
-        }
-        distances.sort_unstable();
-        let priority: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
         Self {
             chunks: GridKeeper::new(size, ChunkPos([0, 0, 0])),
-            priority,
+            priority: gen_priorities(size, by_dist_up_to(radius)),
             center_hint: AtomicCell::new(ChunkPos([0, 0, 0])),
         }
     }
 
     pub fn chunk_at(&self, pos: ChunkPos) -> Option<ChunkRef> {
         self.chunks.get(pos).map(|opt| opt.as_ref()).unwrap_or(None)
-    }
-
-    pub fn _chunk_at_mut(&mut self, pos: ChunkPos) -> Option<ChunkRefMut> {
-        self.chunks
-            .get_mut(pos)
-            .map(|opt| opt._as_mut())
-            .unwrap_or(None)
     }
 
     pub fn _chunk_slot_at(&self, pos: ChunkPos) -> Option<&ChunkSlot> {
@@ -258,30 +255,9 @@ impl MeshKeeper {
         //Allocate space for meshes
         let meshes = GridKeeper::with_radius(radius, center);
         let size = meshes.size();
-        let size_log2 = meshes.size_log2();
         //Precalculate the render order, from closest to farthest
         //(Why? because rendering the nearest first makes better use of the depth buffer)
-        let total = (1 << (size_log2 * 3)) as usize;
-        let max_dist_sq = radius * radius;
-        let mut distances = Vec::<(Sortf32, u32, i32)>::with_capacity(total);
-        let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
-        let mut idx = 0;
-        for z in 0..size {
-            for y in 0..size {
-                for x in 0..size {
-                    let pos = Vec3::new(x as f32, y as f32, z as f32);
-                    let center = (size / 2) as f32 - 0.5;
-                    let delta = pos - Vec3::broadcast(center);
-                    let dist_sq = delta.mag_sq();
-                    if dist_sq < max_dist_sq {
-                        distances.push((Sortf32(dist_sq), rng.gen(), idx as i32));
-                    }
-                    idx += 1;
-                }
-            }
-        }
-        distances.sort_unstable();
-        let render_order: Vec<_> = distances.into_iter().map(|(_, _, idx)| idx).collect();
+        let render_order = gen_priorities(size, by_dist_up_to(radius));
         eprintln!("{} chunks to render", render_order.len());
         //Group em up
         Self {

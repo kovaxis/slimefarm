@@ -1998,6 +1998,7 @@ name = "worldgen"
 version = "0.1.0"
 dependencies = [
  "common",
+ "fxhash",
  "serde",
  "serde_json",
 ]

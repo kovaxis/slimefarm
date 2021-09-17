@@ -4,8 +4,8 @@ use crate::prelude::*;
 
 pub mod prelude {
     pub use crate::terrain::{
-        BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, ChunkRefMut, LoafBox,
-        CHUNK_SIZE,
+        BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, LoafBox, CHUNK_BITS,
+        CHUNK_MASK, CHUNK_SIZE,
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
     pub use crossbeam::{
@@ -25,6 +25,7 @@ pub mod prelude {
         collections::VecDeque,
         f32::consts as f32,
         f64::consts as f64,
+        fmt,
         fs::{self, File},
         marker::PhantomData,
         mem::{self, MaybeUninit as Uninit},

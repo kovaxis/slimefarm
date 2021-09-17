@@ -3,8 +3,14 @@ use crate::{
     prelude::*,
 };
 
+/// Base-2 logarithm of the chunk size.
+pub const CHUNK_BITS: u32 = 5;
+
 /// Guaranteed to be a power of 2.
-pub const CHUNK_SIZE: i32 = 32;
+pub const CHUNK_SIZE: i32 = 1 << CHUNK_BITS;
+
+/// Masks a block coordinate into a chunk-relative block coordinate.
+pub const CHUNK_MASK: i32 = CHUNK_SIZE - 1;
 
 /// A 2D slice (or loaf) of an arbitrary type.
 pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>;
@@ -12,12 +18,26 @@ pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>
 /// Saves chunk tags on the last 2 bits of the chunk pointer.
 /// This is why `ChunkData` has an alignment of 4.
 #[derive(Copy, Clone)]
+#[repr(transparent)]
 pub struct ChunkRef<'a> {
     blocks: NonNull<ChunkData>,
     marker: PhantomData<&'a ChunkData>,
 }
 unsafe impl Send for ChunkRef<'_> {}
 unsafe impl Sync for ChunkRef<'_> {}
+impl fmt::Debug for ChunkRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.is_normal() {
+            write!(f, "ChunkRef({}KB)", mem::size_of::<ChunkData>() / 1024)
+        } else if self.is_solid() {
+            write!(f, "ChunkRef::Solid")
+        } else if self.is_empty() {
+            write!(f, "ChunkRef::Empty")
+        } else {
+            write!(f, "ChunkRef::Unknown")
+        }
+    }
+}
 impl<'a> ChunkRef<'a> {
     const MASK: usize = 0b11;
     const TAG_NORMAL: usize = 0;
@@ -68,24 +88,124 @@ impl<'a> ChunkRef<'a> {
             BlockData { data: 1 }
         }
     }
+
+    pub fn into_raw(self) -> *const ChunkData {
+        self.blocks.as_ptr()
+    }
+
+    pub unsafe fn from_raw(raw: *const ChunkData) -> Self {
+        Self {
+            blocks: NonNull::new_unchecked(raw as *mut ChunkData),
+            marker: PhantomData,
+        }
+    }
+
+    pub fn clone_chunk(&self) -> ChunkBox {
+        if self.is_normal() {
+            let mut uninit = ArenaBoxUninit::<ChunkData>::new();
+            unsafe {
+                ptr::copy_nonoverlapping(self.blocks.as_ptr(), uninit.as_mut().as_mut_ptr(), 1);
+                ChunkBox {
+                    blocks: ArenaBox::into_raw(uninit.assume_init()),
+                }
+            }
+        } else {
+            ChunkBox {
+                blocks: self.blocks,
+            }
+        }
+    }
 }
 
 #[repr(transparent)]
-pub struct ChunkRefMut<'a> {
-    inner: ChunkRef<'a>,
-    marker: PhantomData<&'a mut ChunkData>,
+pub struct ChunkBox {
+    blocks: NonNull<ChunkData>,
 }
-impl<'a> ops::Deref for ChunkRefMut<'a> {
-    type Target = ChunkRef<'a>;
-    fn deref(&self) -> &ChunkRef<'a> {
-        &self.inner
+unsafe impl Send for ChunkBox {}
+unsafe impl Sync for ChunkBox {}
+impl ops::Deref for ChunkBox {
+    type Target = ChunkRef<'static>;
+    fn deref(&self) -> &ChunkRef<'static> {
+        unsafe { mem::transmute(self) }
     }
 }
-impl<'a> ChunkRefMut<'a> {
-    #[inline]
-    pub fn blocks_mut(&mut self) -> Option<&mut ChunkData> {
+impl fmt::Debug for ChunkBox {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.is_normal() {
-            unsafe { Some(self.inner.blocks.as_mut()) }
+            write!(f, "ChunkBox({}KB)", mem::size_of::<ChunkData>() / 1024)
+        } else if self.is_solid() {
+            write!(f, "ChunkBox::Solid")
+        } else if self.is_empty() {
+            write!(f, "ChunkBox::Empty")
+        } else {
+            write!(f, "ChunkBox::Unknown")
+        }
+    }
+}
+impl ChunkBox {
+    #[inline]
+    pub fn new() -> Self {
+        ChunkBox {
+            blocks: unsafe { ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().init_zero()) },
+        }
+    }
+
+    #[inline]
+    pub unsafe fn new_uninit() -> Self {
+        ChunkBox {
+            blocks: ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init()),
+        }
+    }
+
+    #[inline]
+    pub fn new_empty() -> Self {
+        ChunkBox {
+            blocks: ChunkRef::make_tag(ChunkRef::TAG_EMPTY),
+        }
+    }
+
+    #[inline]
+    pub fn new_solid() -> Self {
+        ChunkBox {
+            blocks: ChunkRef::make_tag(ChunkRef::TAG_SOLID),
+        }
+    }
+
+    #[inline]
+    pub fn new_quick() -> Self {
+        //Change depending on how bold we feel
+        //Self::new()
+        unsafe { Self::new_uninit() }
+    }
+
+    #[inline]
+    pub fn as_ref(&self) -> ChunkRef {
+        ChunkRef {
+            blocks: self.blocks,
+            marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn blocks_mut(&mut self) -> &mut ChunkData {
+        if !self.is_normal() {
+            unsafe {
+                let solid = self.is_solid();
+                *self = ChunkBox::new_uninit();
+                if solid {
+                    ptr::write_bytes(self.blocks.as_ptr(), 1, 1);
+                } else {
+                    ptr::write_bytes(self.blocks.as_ptr(), 0, 1);
+                }
+            }
+        }
+        unsafe { self.blocks.as_mut() }
+    }
+
+    #[inline]
+    pub fn try_blocks_mut(&mut self) -> Option<&mut ChunkData> {
+        if self.is_normal() {
+            unsafe { Some(self.blocks.as_mut()) }
         } else {
             None
         }
@@ -94,13 +214,14 @@ impl<'a> ChunkRefMut<'a> {
     /// The `new_tag` must be a valid, non-normal tag.
     #[inline]
     unsafe fn take_blocks(&mut self, new_tag: usize) -> Option<ArenaBox<ChunkData>> {
-        if self.is_normal() {
+        let out = if self.is_normal() {
             let blocks = ArenaBox::from_raw(self.blocks);
-            self.inner.blocks = ChunkRef::make_tag(new_tag);
             Some(blocks)
         } else {
             None
-        }
+        };
+        self.blocks = ChunkRef::make_tag(new_tag);
+        out
     }
 
     #[inline]
@@ -130,91 +251,6 @@ impl<'a> ChunkRefMut<'a> {
                     self.make_solid();
                 }
             }
-        }
-    }
-}
-
-pub struct ChunkBox {
-    inner: ChunkRefMut<'static>,
-}
-impl ops::Deref for ChunkBox {
-    type Target = ChunkRefMut<'static>;
-    fn deref(&self) -> &ChunkRefMut<'static> {
-        &self.inner
-    }
-}
-impl ops::DerefMut for ChunkBox {
-    fn deref_mut(&mut self) -> &mut ChunkRefMut<'static> {
-        &mut self.inner
-    }
-}
-impl ChunkBox {
-    #[inline]
-    pub fn new() -> Self {
-        ChunkBox {
-            inner: ChunkRefMut {
-                inner: ChunkRef {
-                    blocks: unsafe {
-                        ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().init_zero())
-                    },
-                    marker: PhantomData,
-                },
-                marker: PhantomData,
-            },
-        }
-    }
-
-    #[inline]
-    pub unsafe fn new_uninit() -> Self {
-        ChunkBox {
-            inner: ChunkRefMut {
-                inner: ChunkRef {
-                    blocks: ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init()),
-                    marker: PhantomData,
-                },
-                marker: PhantomData,
-            },
-        }
-    }
-
-    #[inline]
-    pub fn new_empty() -> Self {
-        ChunkBox {
-            inner: ChunkRefMut {
-                inner: ChunkRef {
-                    blocks: ChunkRef::make_tag(ChunkRef::TAG_EMPTY),
-                    marker: PhantomData,
-                },
-                marker: PhantomData,
-            },
-        }
-    }
-
-    #[inline]
-    pub fn new_solid() -> Self {
-        ChunkBox {
-            inner: ChunkRefMut {
-                inner: ChunkRef {
-                    blocks: ChunkRef::make_tag(ChunkRef::TAG_SOLID),
-                    marker: PhantomData,
-                },
-                marker: PhantomData,
-            },
-        }
-    }
-
-    #[inline]
-    pub fn new_quick() -> Self {
-        //Change depending on how bold we feel
-        //Self::new()
-        unsafe { Self::new_uninit() }
-    }
-
-    #[inline]
-    pub fn as_mut(&mut self) -> ChunkRefMut {
-        ChunkRefMut {
-            inner: self.inner.inner,
-            marker: PhantomData,
         }
     }
 }
@@ -342,7 +378,7 @@ impl ChunkData {
     }
 
     #[track_caller]
-    pub fn _sub_get_mut(&mut self, sub_pos: [i32; 3]) -> &mut BlockData {
+    pub fn sub_get_mut(&mut self, sub_pos: [i32; 3]) -> &mut BlockData {
         match self.blocks.get_mut(
             (sub_pos[0] | sub_pos[1] * CHUNK_SIZE | sub_pos[2] * (CHUNK_SIZE * CHUNK_SIZE))
                 as usize,

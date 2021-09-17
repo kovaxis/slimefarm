@@ -19,7 +19,8 @@ function World:new()
             "xz_scale": 256,
             "detail": 3,
             "y_scale": 40,
-            "color": [0.01, 0.92, 0.20]
+            "color": [0.01, 0.92, 0.20],
+            "log_color": [0.53, 0.12, 0.01]
         }},
         "gen_radius": 16,
         "seed": 123443
@@ -372,6 +373,8 @@ function World:draw()
     self.font:draw("mesh: "..util.format_time(self.terrain:chunk_mesh_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:translate(0, -1.25, 0)
     self.font:draw("upload: "..util.format_time(self.terrain:chunk_mesh_upload_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    frame.mvp_hud:translate(0, -1.25, 0)
+    self.font:draw("pos: "..math.floor(self.cam_x)..", "..math.floor(self.cam_y)..", "..math.floor(self.cam_z), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
 
     --Draw crosshair
