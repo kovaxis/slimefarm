@@ -142,7 +142,13 @@ impl fmt::Debug for ChunkBox {
         }
     }
 }
+impl Default for ChunkBox {
+    fn default() -> Self {
+        Self::new_empty()
+    }
+}
 impl ChunkBox {
+    /// Create a new chunk box with memory allocated to its blocks, but all of them set to 0.
     #[inline]
     pub fn new() -> Self {
         ChunkBox {
@@ -150,6 +156,8 @@ impl ChunkBox {
         }
     }
 
+    /// Create a new chunk box with memory allocated, but uninitialized.
+    /// Inherently unsafe, but may work in most cases and speeds things up.
     #[inline]
     pub unsafe fn new_uninit() -> Self {
         ChunkBox {
@@ -157,6 +165,8 @@ impl ChunkBox {
         }
     }
 
+    /// Create a new empty chunk box without allocating any memory.
+    /// This is basically a compile-time constant.
     #[inline]
     pub fn new_empty() -> Self {
         ChunkBox {
@@ -164,6 +174,8 @@ impl ChunkBox {
         }
     }
 
+    /// Create a new solid chunk box without allocating any memory.
+    /// This is basically a compile-time constant.
     #[inline]
     pub fn new_solid() -> Self {
         ChunkBox {
@@ -171,6 +183,7 @@ impl ChunkBox {
         }
     }
 
+    /// Create a new chunk box with unspecified but allocated contents.
     #[inline]
     pub fn new_quick() -> Self {
         //Change depending on how bold we feel
@@ -178,6 +191,7 @@ impl ChunkBox {
         unsafe { Self::new_uninit() }
     }
 
+    /// Get an immutable reference to the chunk box.
     #[inline]
     pub fn as_ref(&self) -> ChunkRef {
         ChunkRef {
@@ -186,6 +200,9 @@ impl ChunkBox {
         }
     }
 
+    /// Get a mutable reference to the inner blocks.
+    /// If there is no associated memory, this method will allocate and fill with empty or solid
+    /// blocks, according to the current state.
     #[inline]
     pub fn blocks_mut(&mut self) -> &mut ChunkData {
         if !self.is_normal() {
@@ -202,6 +219,7 @@ impl ChunkBox {
         unsafe { self.blocks.as_mut() }
     }
 
+    /// Gets the inner blocks if there is memory associated to this chunk box.
     #[inline]
     pub fn try_blocks_mut(&mut self) -> Option<&mut ChunkData> {
         if self.is_normal() {
@@ -224,6 +242,7 @@ impl ChunkBox {
         out
     }
 
+    /// Remove any memory associated with this box, and simply make all blocks solid.
     #[inline]
     pub fn make_solid(&mut self) {
         unsafe {
@@ -231,6 +250,7 @@ impl ChunkBox {
         }
     }
 
+    /// Remove any memory associated with this box, and simply make all blocks empty.
     #[inline]
     pub fn make_empty(&mut self) {
         unsafe {
@@ -238,7 +258,8 @@ impl ChunkBox {
         }
     }
 
-    /// If all of the blocks are of the same type, drop the data altogether and mark with a tag.
+    /// Check if all of the blocks are of the same type, and drop the data altogether and mark with
+    /// a tag in that case.
     #[inline]
     pub fn try_drop_blocks(&mut self) {
         if let Some(chunk_data) = self.blocks() {
@@ -264,6 +285,7 @@ impl Drop for ChunkBox {
     }
 }
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkPos(pub [i32; 3]);
 impl ops::Deref for ChunkPos {
@@ -364,6 +386,7 @@ pub struct ChunkData {
 }
 impl ChunkData {
     #[track_caller]
+    #[inline]
     pub fn sub_get(&self, sub_pos: [i32; 3]) -> BlockData {
         match self.blocks.get(
             (sub_pos[0] | sub_pos[1] * CHUNK_SIZE | sub_pos[2] * (CHUNK_SIZE * CHUNK_SIZE))
@@ -378,6 +401,7 @@ impl ChunkData {
     }
 
     #[track_caller]
+    #[inline]
     pub fn sub_get_mut(&mut self, sub_pos: [i32; 3]) -> &mut BlockData {
         match self.blocks.get_mut(
             (sub_pos[0] | sub_pos[1] * CHUNK_SIZE | sub_pos[2] * (CHUNK_SIZE * CHUNK_SIZE))
@@ -389,6 +413,11 @@ impl ChunkData {
                 sub_pos[0], sub_pos[1], sub_pos[2]
             ),
         }
+    }
+
+    #[inline]
+    pub fn set_idx(&mut self, idx: usize, block: BlockData) {
+        self.blocks[idx] = block;
     }
 }
 

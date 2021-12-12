@@ -15,4 +15,4 @@ crossbeam = "0.8"
 parking_lot = "0.11"
 serde = "1"
 serde_derive = "1"
-uv = { package = "ultraviolet", version = "0.7" }
+uv = { package = "ultraviolet", version = "0.8" }

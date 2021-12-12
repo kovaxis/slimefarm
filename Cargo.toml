@@ -28,7 +28,7 @@ glium_text_rusttype = { path = "glium_text_rusttype" }
 rlua = "0.17"
 rlua_serde = "0.4"
 anyhow = "1"
-uv = { package = "ultraviolet", version = "0.7" }
+uv = { package = "ultraviolet", version = "0.8" }
 fxhash = "0.2"
 rand = "0.8"
 rand_xoshiro = "0.6"
@@ -38,3 +38,16 @@ num_cpus = "1"
 image = { version = "0.23", default-features = false, features = ["png"] }
 serde = "1"
 serde_json = "1"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.glium]
+opt-level = 3
+[profile.dev.package.glutin]
+opt-level = 3
+[profile.dev.package.glium_text_rusttype]
+opt-level = 3
+
+[profile.dev.package.common]
+opt-level = 3

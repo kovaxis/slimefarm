@@ -10,12 +10,12 @@ local World = class{}
 function World:new()
     self.tick_count = 0
     self.terrain = system.terrain [[{
-        "_kind": {"Parkour": {
+        "kind": {"Parkour": {
             "y_offset": 0.008,
             "delta": 0.4,
             "color": [0.43, 0.43, 0.43]
         }},
-        "kind": {"Plains": {
+        "_kind": {"Plains": {
             "xz_scale": 256,
             "detail": 3,
             "y_scale": 40,

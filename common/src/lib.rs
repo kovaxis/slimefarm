@@ -1,11 +1,17 @@
 #![allow(unused_imports)]
 
+extern crate alloc;
+
 use crate::prelude::*;
 
 pub mod prelude {
-    pub use crate::terrain::{
-        BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, LoafBox, CHUNK_BITS,
-        CHUNK_MASK, CHUNK_SIZE,
+    pub use crate::{
+        arena::{Box as ArenaBox, BoxUninit as ArenaBoxUninit},
+        slotmap::{SlotId, SlotMap},
+        terrain::{
+            BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, LoafBox, CHUNK_BITS,
+            CHUNK_MASK, CHUNK_SIZE,
+        },
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
     pub use crossbeam::{
@@ -59,5 +65,6 @@ pub mod prelude {
 pub mod arena;
 pub mod noise2d;
 pub mod noise3d;
+pub mod slotmap;
 pub mod terrain;
 pub mod worldgen;

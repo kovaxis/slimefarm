@@ -2,8 +2,11 @@ use crate::prelude::*;
 use std::ptr::NonNull;
 
 /// What size of chunk to allocate in one go.
+/// 20 = 1MB
 /// 22 = 4MB
-const BLOCK_SIZE_LOG2: usize = 22;
+/// 24 = 16MB
+/// 26 = 64MB
+const BLOCK_SIZE_LOG2: usize = 24;
 
 struct SizeClass {
     available: Vec<AssertSync<*mut u8>>,
@@ -187,7 +190,9 @@ impl<T> ops::DerefMut for Box<T> {
 impl<T> Drop for Box<T> {
     fn drop(&mut self) {
         unsafe {
-            ptr::drop_in_place(&mut **self);
+            // Drop the inner T
+            ptr::drop_in_place::<T>(&mut **self);
+            // The inner BoxUninit will be dropped automatically
         }
     }
 }

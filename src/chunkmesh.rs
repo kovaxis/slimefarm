@@ -2,7 +2,7 @@ use crate::prelude::*;
 use common::{
     terrain::GridKeeper,
     worldgen::{
-        AnyBlockColor, BlockColorArgs, ChunkColorBuf, CHUNK_COLOR_BUF_LEN, CHUNK_COLOR_BUF_WIDTH,
+        BlockColorArgs, BlockColorizer, ChunkColorBuf, CHUNK_COLOR_BUF_LEN, CHUNK_COLOR_BUF_WIDTH,
         CHUNK_COLOR_DOWNSCALE,
     },
 };
@@ -22,8 +22,8 @@ pub struct MesherHandle {
 impl MesherHandle {
     pub(crate) fn new(
         state: &Rc<State>,
-        share_with: AnyBlockColor,
         chunks: Arc<RwLock<ChunkStorage>>,
+        colorizer: Box<dyn BlockColorizer>,
     ) -> Self {
         let shared = Arc::new(SharedState {
             close: false.into(),
@@ -47,7 +47,7 @@ impl MesherHandle {
                         gl_ctx,
                         send_bufs,
                     },
-                    share_with,
+                    colorizer,
                 );
             })
         };
@@ -88,8 +88,8 @@ struct MesherState {
     send_bufs: Sender<BufPackage>,
 }
 
-fn run_mesher(state: MesherState, block_color: AnyBlockColor) {
-    let mut mesher = Mesher::new(block_color);
+fn run_mesher(state: MesherState, colorizer: Box<dyn BlockColorizer>) {
+    let mut mesher = Mesher::new(colorizer);
     let mut chunks = state.chunks.read();
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
@@ -240,7 +240,7 @@ struct LayerParams {
 }
 
 struct Mesher {
-    pub color_blocks: AnyBlockColor,
+    colorizer: Box<dyn BlockColorizer>,
     vert_cache: [VertIdx; Self::VERT_ROW * 2],
     block_buf: [BlockData; Self::BLOCK_COUNT * 2],
     front: i32,
@@ -260,9 +260,9 @@ impl Mesher {
     const ADV_X: i32 = 1;
     const ADV_Y: i32 = CHUNK_SIZE + Self::EXTRA_BLOCKS * 2;
 
-    pub fn new(color_blocks: AnyBlockColor) -> Self {
+    pub fn new(colorizer: Box<dyn BlockColorizer>) -> Self {
         Self {
-            color_blocks,
+            colorizer,
             vert_cache: [0; Self::VERT_ROW * 2],
             block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
             front: Self::BLOCK_COUNT as i32,
@@ -299,8 +299,9 @@ impl Mesher {
         let ready_idx_bit = id as usize % BITS_PER_ELEM;
         if (self.ready_color_bufs[ready_idx] >> ready_idx_bit) & 1 == 0 {
             //Must create buffer
+            // TODO: Fix color
             unsafe {
-                self.color_blocks.call(BlockColorArgs {
+                self.colorizer.colorize(BlockColorArgs {
                     pos: self.chunk_pos.to_block_floor().offset(
                         pos[0] as i32,
                         pos[1] as i32,

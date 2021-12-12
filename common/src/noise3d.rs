@@ -162,7 +162,7 @@ impl PerlinLayer {
         pos: [f64; 3],
         size: f64,
         out_size: i32,
-        out: &mut [f32],
+        out: &[Cell<f32>],
         generate_edges: bool,
     ) {
         assert_eq!(
@@ -268,11 +268,11 @@ impl PerlinLayer {
                     ),
                     sx,
                 );
-                let out = &mut out[(cur_pos_int[0]
+                let out = &out[(cur_pos_int[0]
                     + cur_pos_int[1] * out_size
                     + cur_pos_int[2] * (out_size * out_size))
                     as usize];
-                *out = noise.mul_add(self.scale, *out);
+                out.set(noise.mul_add(self.scale, out.get()));
             }
             //Advance on the X axis
             cur_pos_int[0] += 1;
@@ -375,6 +375,22 @@ impl Noise3d {
         }
     }
 
+    fn noise_block_cell(
+        &self,
+        pos: [f64; 3],
+        size: f64,
+        out_size: i32,
+        out: &[Cell<f32>],
+        generate_edges: bool,
+    ) {
+        for out in out.iter() {
+            out.set(0.);
+        }
+        for oct in self.octaves.iter() {
+            oct.noise_block(pos, size, out_size, out, generate_edges);
+        }
+    }
+
     /// Generates a cubic grid of noise sampled from a cubic grid.
     /// The cube has its origin at `pos` and side length `size`.
     /// The output grid has `out_size` samples per side.
@@ -400,12 +416,8 @@ impl Noise3d {
         out: &mut [f32],
         generate_edges: bool,
     ) {
-        for out in out.iter_mut() {
-            *out = 0.;
-        }
-        for oct in self.octaves.iter() {
-            oct.noise_block(pos, size, out_size, out, generate_edges);
-        }
+        let out = Cell::as_slice_of_cells(Cell::from_mut(out));
+        self.noise_block_cell(pos, size, out_size, out, generate_edges)
     }
 }
 
@@ -413,7 +425,7 @@ impl Noise3d {
 pub struct NoiseScaler3d {
     inner_size: i32,
     inner_per_outer: f32,
-    buf: Vec<f32>,
+    buf: Vec<Cell<f32>>,
 }
 impl NoiseScaler3d {
     pub fn new(inner: i32, outer: f32) -> Self {
@@ -422,19 +434,20 @@ impl NoiseScaler3d {
         Self {
             inner_size,
             inner_per_outer: inner as f32 / outer,
-            buf: vec![0.; (inner_size * inner_size * inner_size) as usize],
+            buf: vec![(0.).into(); (inner_size * inner_size * inner_size) as usize],
         }
     }
 
     /// Size is usually set to the same value as the `outer` arg to `Self::new`, but it doesn't
     /// _have_ to be identical.
-    pub fn fill(&mut self, noise_gen: &Noise3d, pos: [f64; 3], size: f64) {
-        noise_gen.noise_block(pos, size, self.inner_size, &mut self.buf, true);
+    pub fn fill(&self, noise_gen: &Noise3d, pos: [f64; 3], size: f64) {
+        noise_gen.noise_block_cell(pos, size, self.inner_size, &self.buf, true);
     }
 
     fn raw_get(&self, pos: [i32; 3]) -> f32 {
         self.buf[(pos[0] + pos[1] * self.inner_size + pos[2] * (self.inner_size * self.inner_size))
             as usize]
+            .get()
     }
 
     /// Pos should be within the outer size, otherwise panics and weird stuff may ensue.

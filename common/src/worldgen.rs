@@ -1,11 +1,213 @@
 use crate::prelude::*;
 
+pub trait GenCapsule<'a> {
+    fn cast_trait_obj(&self, name: &str) -> (usize, usize);
+    fn init(&'a self, _store: GenStoreRef<'a>) {}
+    fn cast_concrete(&self) -> *const u8 {
+        self as *const Self as *const u8
+    }
+}
+
+#[macro_export]
+macro_rules! impl_cast_to {
+    ($($name:expr => $into:path),*) => {
+        fn cast_trait_obj(&self, name: &str) -> (usize, usize) {
+            match name {
+                $(
+                    $name => {
+                        let newref: &dyn $into = &*self;
+                        unsafe { mem::transmute(newref) }
+                    }
+                )*
+                _ => (0, 0),
+            }
+        }
+    };
+}
+
+pub unsafe fn cast_capsule_concrete<'a, T: Sized>(cap: &'a dyn GenCapsule<'a>) -> &'a T {
+    &*(cap.cast_concrete() as *const T)
+}
+
+pub unsafe fn cast_capsule<'a, T: ?Sized>(cap: &'a dyn GenCapsule<'a>, name: &str) -> &'a T {
+    assert_eq!(
+        mem::size_of::<&'a T>(),
+        mem::size_of::<(usize, usize)>(),
+        "cannot cast to thin pointer"
+    );
+    let ptr = cap.cast_trait_obj(name);
+    if ptr.0 == 0 || ptr.1 == 0 {
+        panic!("cannot cast capsule to trait object `{}`", name);
+    }
+    mem::transmute_copy(&ptr)
+}
+
+pub trait GenStore {
+    fn register<'a>(&'a self, name: &str, capsule: Box<dyn 'a + GenCapsule<'a>>);
+    fn lookup_capsule<'a>(&'a self, name: &str) -> Option<&'a (dyn 'a + GenCapsule<'a>)>;
+}
+
+impl<'a> dyn 'a + GenStore {
+    pub unsafe fn try_lookup<T: ?Sized>(&'a self, name: &str) -> Option<&'a T> {
+        let cap = self.lookup_capsule(name)?;
+        Some(cast_capsule(cap, name))
+    }
+
+    pub unsafe fn lookup<T: ?Sized>(&'a self, name: &str) -> &'a T {
+        match self.try_lookup(name) {
+            Some(cap) => cap,
+            None => panic!("failed to find capsule with name `{}`", name),
+        }
+    }
+
+    pub unsafe fn try_lookup_concrete<T: Sized>(&'a self, name: &str) -> Option<&'a T> {
+        let cap = self.lookup_capsule(name)?;
+        Some(cast_capsule_concrete(cap))
+    }
+
+    pub unsafe fn lookup_concrete<T: Sized>(&'a self, name: &str) -> &'a T {
+        match self.try_lookup_concrete(name) {
+            Some(cap) => cap,
+            None => panic!("failed to find capsule with name `{}`", name),
+        }
+    }
+}
+
+pub type GenStoreRef<'a> = &'a (dyn 'a + GenStore);
+
+pub trait GenStage {
+    fn require(&self, min: ChunkPos, max: ChunkPos, layer: i32) -> Option<()>;
+    fn place(&self, min: ChunkPos, max: ChunkPos, landmark: LandmarkId) -> Option<()>;
+    /// Unsafe because the landmark box kind must match the actual type of the landmark box.
+    unsafe fn create_landmark(&self, landmark: LandmarkBox) -> LandmarkId;
+    fn landmark_kind(&self, name: &str) -> LandmarkKind;
+}
+
+pub struct LandmarkCreator<'a, T> {
+    stage: &'a dyn GenStage,
+    kind: LandmarkKind,
+    _marker: PhantomData<T>,
+}
+impl<'a, T> LandmarkCreator<'a, T> {
+    /// Safety: Guarantee that the given name is associated **only** with the type `T`.
+    pub unsafe fn new(stage: &'a dyn GenStage, name: &str) -> Self {
+        let kind = stage.landmark_kind(name);
+        Self {
+            stage,
+            kind,
+            _marker: PhantomData,
+        }
+    }
+    pub fn create(&self, landmark: T) -> LandmarkId {
+        unsafe {
+            self.stage
+                .create_landmark(LandmarkBox::new(self.kind, landmark))
+        }
+    }
+    pub fn downcast_box(&self, b: LandmarkBox) -> Option<T> {
+        if b.kind() == self.kind {
+            unsafe { Some(b.into_inner::<T>()) }
+        } else {
+            None
+        }
+    }
+}
+
+#[repr(C)]
+struct LandmarkWrap<T> {
+    head: LandmarkHead,
+    inner: T,
+}
+
+pub struct LandmarkBox {
+    ptr: NonNull<LandmarkHead>,
+}
+impl LandmarkBox {
+    pub fn new<T>(kind: LandmarkKind, landmark: T) -> Self {
+        unsafe fn drop_raw<T>(ptr: NonNull<LandmarkHead>, drop_all: bool) {
+            if drop_all {
+                drop(Box::from_raw(ptr.as_ptr() as *mut LandmarkWrap<T>));
+            } else {
+                drop(Box::from_raw(
+                    ptr.as_ptr() as *mut LandmarkWrap<mem::ManuallyDrop<T>>
+                ));
+            }
+        }
+        let b = Box::<LandmarkWrap<T>>::new(LandmarkWrap {
+            head: LandmarkHead {
+                refs: 0,
+                kind,
+                drop: drop_raw::<T>,
+            },
+            inner: landmark,
+        });
+        LandmarkBox {
+            ptr: unsafe { NonNull::new_unchecked(Box::into_raw(b) as *mut LandmarkHead) },
+        }
+    }
+}
+impl LandmarkBox {
+    pub fn kind(&self) -> LandmarkKind {
+        unsafe { self.ptr.as_ref().kind }
+    }
+
+    /// Safety: The caller guarantees that the contained landmark is of type `T`.
+    pub unsafe fn into_inner<T>(self) -> T {
+        let ptr = self.ptr;
+        mem::forget(self);
+        let inner = ptr::read(&(*(ptr.as_ptr() as *mut LandmarkWrap<T>)).inner);
+        (ptr.as_ref().drop)(ptr, false);
+        inner
+    }
+}
+impl Drop for LandmarkBox {
+    fn drop(&mut self) {
+        unsafe {
+            (self.ptr.as_ref().drop)(self.ptr, true);
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Copy, Clone)]
+pub struct LandmarkKind(pub i32);
+
+#[repr(C)]
+pub struct LandmarkHead {
+    pub refs: u32,
+    pub kind: LandmarkKind,
+    /// If true, drop everything.
+    /// If false, drop only the memory, but keep the inner landmark body undropped.
+    pub drop: unsafe fn(NonNull<LandmarkHead>, bool),
+}
+
+pub struct LandmarkId(pub u32);
+
+/// Generator logic.
+/// The top level generator should go into the `base.chunkfill` slot in the gen store.
+pub trait ChunkFill {
+    fn layer_count(&self) -> i32;
+    fn fill(&self, args: ChunkFillArgs) -> ChunkFillRet;
+    fn colorizer(&self) -> Box<dyn BlockColorizer>;
+}
+
+/// SAFETY: The values in this struct have an implicit lifetime.
+/// Specifically, if this type is received as an argument, its lifetime must not be extended beyond
+/// the argument lifetime.
 pub struct ChunkFillArgs {
-    pub center: ChunkPos,
     pub pos: ChunkPos,
     pub layer: i32,
-    pub substrate: ChunkView<'static>,
-    pub output: ChunkViewOut<'static>,
+    pub blocks: Cell<*mut ChunkBox>,
+}
+impl ChunkFillArgs {
+    pub fn take_blocks(&self) -> &mut ChunkBox {
+        let val = self.blocks.replace(ptr::null_mut());
+        unsafe {
+            if val.is_null() {
+                panic!("attempt to take blocks twice");
+            }
+            &mut *val
+        }
+    }
 }
 
 pub type ChunkFillRet = Option<()>;
@@ -15,6 +217,10 @@ pub const CHUNK_COLOR_BUF_WIDTH: i32 = CHUNK_SIZE / CHUNK_COLOR_DOWNSCALE + 1;
 pub const CHUNK_COLOR_BUF_LEN: usize = (CHUNK_SIZE / CHUNK_COLOR_DOWNSCALE + 1).pow(3) as usize;
 pub type ChunkColorBuf = [[f32; 3]; CHUNK_COLOR_BUF_LEN];
 
+pub trait BlockColorizer: Send {
+    fn colorize(&mut self, args: BlockColorArgs) -> BlockColorRet;
+}
+
 pub struct BlockColorArgs {
     pub pos: BlockPos,
     pub id: u8,
@@ -22,131 +228,6 @@ pub struct BlockColorArgs {
 }
 
 pub type BlockColorRet = ();
-
-pub trait SplitCall {
-    type Args;
-    type Ret;
-
-    type Shared: Send + Sync;
-    type Local;
-
-    fn split(self) -> (Self::Shared, Self::Local);
-    fn call(shared: &Self::Shared, local: &mut Self::Local, args: Self::Args) -> Self::Ret;
-}
-
-#[repr(C)]
-pub struct DynSplitCall<A, R> {
-    shared: *const u8,
-    local: *mut u8,
-    call: unsafe extern "C" fn(*const u8, *mut u8, A) -> R,
-    clone_shared: unsafe extern "C" fn(*const u8) -> *const u8,
-    drop_shared: unsafe extern "C" fn(*const u8),
-    drop_local: unsafe extern "C" fn(*mut u8),
-}
-unsafe impl<A, R> Send for DynSplitCall<A, R> {}
-impl<A, R> DynSplitCall<A, R> {
-    pub fn new<G>(gen: G) -> Self
-    where
-        G: SplitCall<Args = A, Ret = R> + 'static,
-    {
-        unsafe extern "C" fn call_raw<G: SplitCall>(
-            shared: *const u8,
-            local: *mut u8,
-            args: G::Args,
-        ) -> G::Ret {
-            let shared =
-                mem::ManuallyDrop::new(Arc::<G::Shared>::from_raw(shared as *const G::Shared));
-            let mut local =
-                mem::ManuallyDrop::new(Box::<G::Local>::from_raw(local as *mut G::Local));
-            G::call(&shared, &mut local, args)
-        }
-        unsafe extern "C" fn clone_shared_raw<G: SplitCall>(shared: *const u8) -> *const u8 {
-            let shared =
-                mem::ManuallyDrop::new(Arc::<G::Shared>::from_raw(shared as *const G::Shared));
-            Arc::into_raw(Arc::clone(&shared)) as *const u8
-        }
-        unsafe extern "C" fn drop_shared_raw<G: SplitCall>(shared: *const u8) {
-            drop(Arc::<G::Shared>::from_raw(shared as *const G::Shared));
-        }
-        unsafe extern "C" fn drop_local_raw<G: SplitCall>(local: *mut u8) {
-            drop(Box::<G::Local>::from_raw(local as *mut G::Local));
-        }
-        let (shared, local) = gen.split();
-        let shared = Arc::into_raw(Arc::new(shared));
-        let local = Box::into_raw(Box::new(local));
-        Self {
-            shared: shared as *const u8,
-            local: local as *mut u8,
-            call: call_raw::<G>,
-            clone_shared: clone_shared_raw::<G>,
-            drop_shared: drop_shared_raw::<G>,
-            drop_local: drop_local_raw::<G>,
-        }
-    }
-
-    /// Drops the shared part of `self` and replaces it with a shared copy of the shared part of
-    /// `other`.
-    ///
-    /// # Safety
-    ///
-    /// The type of the shared part of both must be the same.
-    pub unsafe fn share_with<A2, R2>(&mut self, other: &DynSplitCall<A2, R2>) {
-        (self.drop_shared)(self.shared);
-        self.shared = (other.clone_shared)(other.shared);
-    }
-
-    pub fn call(&mut self, args: A) -> R {
-        unsafe { (self.call)(self.shared, self.local, args) }
-    }
-}
-impl<A, R> Drop for DynSplitCall<A, R> {
-    fn drop(&mut self) {
-        unsafe {
-            (self.drop_shared)(self.shared);
-            (self.drop_local)(self.local);
-        }
-    }
-}
-
-pub type AnyChunkFill = DynSplitCall<ChunkFillArgs, ChunkFillRet>;
-pub type AnyBlockColor = DynSplitCall<BlockColorArgs, BlockColorRet>;
-
-/// A set of chunkfill and colorgen functions that share the same shared part.
-pub struct AnyGen {
-    pub layers: Vec<i32>,
-    fill: AnyChunkFill,
-    color: AnyBlockColor,
-}
-impl AnyGen {
-    pub fn new<F, C>(layers: Vec<i32>, fill: F, color: C) -> Self
-    where
-        F: SplitCall<Args = ChunkFillArgs, Ret = ChunkFillRet> + 'static,
-        C: SplitCall<Args = BlockColorArgs, Ret = BlockColorRet, Shared = F::Shared> + 'static,
-    {
-        let fill = DynSplitCall::new(fill);
-        let mut color = DynSplitCall::new(color);
-        unsafe {
-            color.share_with(&fill);
-        }
-        Self {
-            layers,
-            fill,
-            color,
-        }
-    }
-
-    /// # Safety
-    ///
-    /// The type of the shared parts of both `AnyGen`s must be the same.
-    pub unsafe fn share_with(&mut self, other: &AnyGen) {
-        self.fill.share_with(&other.fill);
-        self.color.share_with(&other.color);
-    }
-
-    pub fn split(self) -> (AnyChunkFill, AnyBlockColor) {
-        (self.fill, self.color)
-    }
-}
 
 pub struct ChunkView<'a> {
     size: i32,
