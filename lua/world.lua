@@ -247,7 +247,7 @@ function World:draw()
 
         local cam_wall_dist = 0.4
         local rollback = self.cam_rollback
-        local dx = math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
+        local dx = -math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dy = math.sin(self.cam_pitch) * rollback
         local dz = -math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
@@ -386,7 +386,10 @@ function World:draw()
 end
 
 function World:mousemove(dx, dy)
-    self.cam_yaw = (self.cam_yaw + dx * 0.01) % (2*math.pi)
+    -- under a right-handed coordinate system:
+    -- rotation is counterclockwise around the Y axis, so looking to the right is negative rotation
+    self.cam_yaw = (self.cam_yaw - dx * 0.01) % (2*math.pi)
+    -- rotation is counterclockwise around the X axis, so looking down is negative rotation
     self.cam_pitch = self.cam_pitch - dy * 0.01
     if self.cam_pitch < math.pi / -2 then
         self.cam_pitch = math.pi / -2

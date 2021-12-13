@@ -24,12 +24,20 @@ function util.format_time(secs)
     end
 end
 
+-- rotates the given (x, z) vector according to the given yaw.
 function util.rotate_yaw(x, z, yaw)
-    return x * math.cos(yaw) - z * math.sin(yaw), x * math.sin(yaw) + z * math.cos(yaw)
+    return x * math.cos(yaw) + z * math.sin(yaw), -x * math.sin(yaw) + z * math.cos(yaw)
 end
 
+-- computes the yaw that the given (x, z) vector points towards.
+-- yaw 0 is defined to be towards (0, -1), and angles grow around the Y axis in a right-handed
+-- coordinate system, that is, angles grow from the Z axis to the X axis:
+--  (0, -1) -> 0
+--  (-1, 0) -> 90
+--  (0, 1)  -> 180
+--  (1, 0)  -> 270
 function util.pos_to_yaw(dx, dz)
-    return math.atan(dx, -dz)
+    return math.atan(-dx, -dz)
 end
 
 function util.approach(cur, target, factor, linear, dt)
