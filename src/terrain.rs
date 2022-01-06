@@ -191,7 +191,7 @@ impl Terrain {
         Ok(Terrain {
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
-            mesher: MesherHandle::new(state, chunks.clone(), generator.take_colorizer().unwrap()),
+            mesher: MesherHandle::new(state, chunks.clone()),
             _generator: generator,
             _bookkeeper: bookkeeper,
             chunks,

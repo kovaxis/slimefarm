@@ -530,7 +530,7 @@ lua_type! {MatrixStack,
 
     fn perspective(lua, this, (fov, aspect, near, far): (f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
-        *top = *top * uv::projection::perspective_gl(fov, aspect, near, far);
+        *top = *top * uv::projection::perspective_gl(fov, aspect, near, far) * Mat4::from_rotation_x(-f32::PI/2.);
     }
     fn orthographic(lua, this, (xleft, xright, ydown, yup, znear, zfar): (f32, f32, f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();

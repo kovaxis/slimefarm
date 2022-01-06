@@ -7,10 +7,10 @@ local util = require 'util'
 local Player = class{}
 
 Player.mesh = Mesh{}
-Player.mesh:add_cube(0, 1, 0, 1.2, 1.2, 1.2, 0, 0.31, 0.13, 1)
-Player.mesh:add_cube(0.4, 1.1,-1,   0.2,   0.6,   0.2, 0, 0, 0)
-Player.mesh:add_cube(-0.4, 1.1,-1,   0.2,   0.6,   0.2, 0, 0, 0)
-Player.mesh:add_cube(0, 1, 0,   2,   2,   2, 0, 0.63, 0.26, 0.4)
+Player.mesh:add_cube(   0,   0,   1,   1.2, 1.2, 1.2,      0, 0.31, 0.13,   1)
+Player.mesh:add_cube( 0.4,   1, 1.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
+Player.mesh:add_cube(-0.4,   1, 1.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
+Player.mesh:add_cube(   0,   0,   1,     2,   2,   2,      0, 0.63, 0.26, 0.4)
 Player.mesh_buf = Player.mesh:as_buffer()
 
 local bbox_h = 2
@@ -30,14 +30,14 @@ local jump_keepup_ticks = 14
 local jump_cooldown_start = 10
 local jump_cooldown_land = 0
 
-local lag_vel_y_add = 1.2
-local lag_vel_y_mul = 0.0012
+local lag_vel_z_add = 1.2
+local lag_vel_z_mul = 0.0012
 
 local air_maneuver = 0.011
 local air_maneuver_max = 0.17
 
 local function wasd_delta(yaw)
-    local dx, dz = 0, 0
+    local dx, dy = 0, 0
     if input.key_down.a then
         dx = dx - 1
     end
@@ -45,16 +45,16 @@ local function wasd_delta(yaw)
         dx = dx + 1
     end
     if input.key_down.w then
-        dz = dz - 1
+        dy = dy + 1
     end
     if input.key_down.s then
-        dz = dz + 1
+        dy = dy - 1
     end
-    if dx ~= 0 and dz ~= 0 then
+    if dx ~= 0 and dy ~= 0 then
         dx = dx * 2^-0.5
-        dz = dz * 2^-0.5
+        dy = dy * 2^-0.5
     end
-    return util.rotate_yaw(dx, dz, yaw)
+    return util.rotate_yaw(dx, dy, yaw)
 end
 
 function Player:new()
@@ -71,7 +71,7 @@ function Player:new()
     self.visual_yaw = 0
     self.yaw = 0
     self.idle_ticks = 0
-    self.visual_lag_vel_y = 0
+    self.visual_lag_vel_z = 0
     self.visual_fall_time = 0
 
     self.jumps_left = 0
@@ -81,7 +81,7 @@ function Player:new()
     self.jump_cooldown = 0
     self.jump_ticks = -1
     self.jump_dx = 0
-    self.jump_dz = 0
+    self.jump_dy = 0
     self.jump_yaw = 0
 
     self.is_player = true
@@ -108,42 +108,7 @@ function Player:tick(world)
     end
     
     --Apply gravity
-    self.vel_y = self.vel_y - gravity
-
-    --[[
-    --Check pressed keys to determine horizontal movement
-    do
-        local dx, dz = 0, 0
-        if input.key_down.w then
-            dz = dz - 1
-        end
-        if input.key_down.s then
-            dz = dz + 1
-        end
-        if input.key_down.a then
-            dx = dx - 1
-        end
-        if input.key_down.d then
-            dx = dx + 1
-        end
-        if dx ~= 0 and dz ~= 0 then
-            dx = dx * 2^-0.5
-            dz = dz * 2^-0.5
-        end
-        if dx ~= 0 or dz ~= 0 then
-            --Move horizontally
-            local yaw = world.cam_yaw
-            dx, dz = dx * math.cos(yaw) - dz * math.sin(yaw), dx * math.sin(yaw) + dz * math.cos(yaw)
-            self.yaw = math.atan(dx, -dz)
-            self.vel_x = dx * walk_speed
-            self.vel_z = dz * walk_speed
-        end
-    end
-
-    --Jump
-    if self.on_ground and input.key_down.space then
-        self.vel_y = jump_vel
-    end]]
+    self.vel_z = self.vel_z - gravity
 
     --Jump around
     if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and (self.on_ground or not self.jump_was_down) then
@@ -161,10 +126,10 @@ function Player:tick(world)
             self.jump_ticks = self.jump_ticks + 1
             if self.jump_ticks >= jump_charge then
                 --Start jumping
-                local dx, dz = wasd_delta(world.cam_yaw)
+                local dx, dy = wasd_delta(world.cam_yaw)
                 self.vel_x = dx * jump_hvel
-                self.vel_z = dz * jump_hvel
-                self.vel_y = jump_vvel
+                self.vel_y = dy * jump_hvel
+                self.vel_z = jump_vvel
             end
         else
             if self.on_ground then
@@ -174,10 +139,10 @@ function Player:tick(world)
                 if self.jump_ticks < jump_charge + jump_keepup_ticks then
                     if input.key_down.space then
                         --Keep up in the air
-                        self.vel_y = self.vel_y + jump_keepup
+                        self.vel_z = self.vel_z + jump_keepup
                     else
                         --Turn down the jump
-                        self.vel_y = self.vel_y - jump_keepdown
+                        self.vel_z = self.vel_z - jump_keepdown
                     end
                 end
                 self.jump_ticks = self.jump_ticks + 1
@@ -189,25 +154,25 @@ function Player:tick(world)
     if not self.on_ground then
         local cur_norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
         local max_norm = math.max(cur_norm, air_maneuver_max)
-        local dx, dz = wasd_delta(world.cam_yaw)
+        local dx, dy = wasd_delta(world.cam_yaw)
         self.vel_x = self.vel_x + dx * air_maneuver
-        self.vel_z = self.vel_z + dz * air_maneuver
+        self.vel_y = self.vel_y + dy * air_maneuver
         local norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
         if norm > max_norm then
             --Renormalize
             local mul_by = max_norm / norm
             self.vel_x = self.vel_x * mul_by
-            self.vel_z = self.vel_z * mul_by
+            self.vel_y = self.vel_y * mul_by
         end
     end
 
     --Set yaw if moving
-    if self.vel_x*self.vel_x + self.vel_z*self.vel_z > 0.02^2 then
-        self.yaw = util.pos_to_yaw(self.vel_x, self.vel_z)
+    if self.vel_x*self.vel_x + self.vel_y*self.vel_y > 0.02^2 then
+        self.yaw = util.pos_to_yaw(self.vel_x, self.vel_y)
     end
 
     --Count idle ticks
-    if self.on_ground and self.vel_x == 0 and self.vel_z == 0 then
+    if self.on_ground and self.vel_x == 0 and self.vel_y == 0 then
         self.idle_ticks = self.idle_ticks + 1
     else
         self.idle_ticks = 0
@@ -217,9 +182,9 @@ function Player:tick(world)
     do
         local radius_h = bbox_h / 2
         local radius_v = bbox_v / 2
-        local fx, fy, fz = world.terrain:collide(self.x, self.y+radius_v, self.z, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_v, radius_h)
-        self.on_ground = self.vel_y < 0 and fy > self.y + radius_v + self.vel_y + gravity / 2
-        self.x, self.y, self.z = fx, fy-radius_v, fz
+        local fx, fy, fz = world.terrain:collide(self.x, self.y, self.z+radius_v, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_v, radius_h)
+        self.on_ground = self.vel_z < 0 and fz > self.z + radius_v + self.vel_z + gravity / 2
+        self.x, self.y, self.z = fx, fy, fz-radius_v
     end
 
     --Move camera to point at player
@@ -227,11 +192,11 @@ function Player:tick(world)
         local focus_height = 3.2
         local focus_dist = 8
         world.cam_prev_x = self.prev_x
-        world.cam_prev_y = self.prev_y + focus_height
-        world.cam_prev_z = self.prev_z
+        world.cam_prev_y = self.prev_y
+        world.cam_prev_z = self.prev_z + focus_height
         world.cam_x = self.x
-        world.cam_y = self.y + focus_height
-        world.cam_z = self.z
+        world.cam_y = self.y
+        world.cam_z = self.z + focus_height
         world.cam_rollback = focus_dist
     end
 end
@@ -241,39 +206,39 @@ function Player:draw(world)
 
     local dyaw = (self.yaw - self.visual_yaw + math.pi) % (2*math.pi) - math.pi
     self.visual_yaw = util.approach(self.yaw - dyaw, self.yaw, yaw_anim_factor, yaw_anim_linear, frame.dt) % (2*math.pi)
-    frame.mvp_world:rotate_y(self.visual_yaw)
+    frame.mvp_world:rotate_z(self.visual_yaw)
 
-    self.visual_lag_vel_y = util.approach(self.visual_lag_vel_y, self.vel_y, lag_vel_y_mul, lag_vel_y_add, frame.dt)
+    self.visual_lag_vel_z = util.approach(self.visual_lag_vel_z, self.vel_z, lag_vel_z_mul, lag_vel_z_add, frame.dt)
 
-    local sy = 1
+    local sz = 1
     if self.jump_ticks >= 0 and self.jump_ticks < jump_charge then
         --Jump charge animation
         local x = (self.jump_ticks + frame.s) / jump_charge
-        sy = 0.8 + 0.2*(1+3.4*(x-1)*x)^2
+        sz = 0.8 + 0.2*(1+3.4*(x-1)*x)^2
     elseif self.idle_ticks > 0 then
         --On-ground animation
-        local acc = self.vel_y - self.visual_lag_vel_y
-        if self.vel_y <= 0 and acc > 0.0 then
+        local acc = self.vel_z - self.visual_lag_vel_z
+        if self.vel_z <= 0 and acc > 0.0 then
             --Squash animation
-            sy = 1 + 0.35 * (1/(1+2^(2.2*acc)) - 0.5)
+            sz = 1 + 0.35 * (1/(1+2^(2.2*acc)) - 0.5)
         else
             --Idle animation
             local x = (self.idle_ticks + frame.s) + 56
-            sy = 1 - 0.03 * math.sin(x*0.04) / (1+2^(30 - x*0.4))
+            sz = 1 - 0.03 * math.sin(x*0.04) / (1+2^(30 - x*0.4))
         end
-    elseif self.vel_y > 0 then
+    elseif self.vel_z > 0 then
         --Rise animation
-        sy = 1 - 0.8 * (1/(1+2^(8*self.vel_y)) - 0.5)
+        sz = 1 - 0.8 * (1/(1+2^(8*self.vel_z)) - 0.5)
     else
         --Fall animation
-        self.visual_fall_time = self.visual_fall_time + self.vel_y * frame.dt
-        local mag = 0.02 * (1/(1+2^(-2*self.vel_y)) - 0.5)
+        self.visual_fall_time = self.visual_fall_time + self.vel_z * frame.dt
+        local mag = 0.02 * (1/(1+2^(-2*self.vel_z)) - 0.5)
         local t = self.visual_fall_time
         local x = math.sin(t * 17 + 11.758) + math.sin(t * 23 + 7.138) + math.sin(t * 38 + 2.873)
-        sy = 1 + mag * x
+        sz = 1 + mag * x
     end
-    local sxz = (1/sy)^0.5
-    frame.mvp_world:scale(sxz, sy, sxz)
+    local sxy = (1/sz)^0.5
+    frame.mvp_world:scale(sxy, sxy, sz)
 
     world.shaders.basic:set_matrix('mvp', frame.mvp_world)
     world.shaders.basic:set_vec4('tint', 1, 1, 1, 1)

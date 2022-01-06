@@ -46,7 +46,7 @@ function Mesh:add_quad(x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, r, g, b, 
     return self
 end
 
-function Mesh:add_cube(x, y, z, w, h, d, r, g, b, a)
+function Mesh:add_cube(x, y, z, w, d, h, r, g, b, a)
     r = r or 1
     g = g or 1
     b = b or 1
@@ -57,9 +57,9 @@ function Mesh:add_cube(x, y, z, w, h, d, r, g, b, a)
     local base = #v / 3
     local l = #i
 
-    w, h, d = w / 2, h / 2, d / 2
-    local x0, y0, z0 = x - w, y - h, z - d
-    local x1, y1, z1 = x + w, y + h, z + d
+    w, d, h = w / 2, d / 2, h / 2
+    local x0, y0, z0 = x - w, y - d, z - h
+    local x1, y1, z1 = x + w, y + d, z + h
 
     self:add_vertex(x0, y0, z0, r, g, b, a)
     self:add_vertex(x1, y0, z0, r, g, b, a)

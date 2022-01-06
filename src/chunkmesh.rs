@@ -1,11 +1,5 @@
 use crate::prelude::*;
-use common::{
-    terrain::GridKeeper,
-    worldgen::{
-        BlockColorArgs, BlockColorizer, ChunkColorBuf, CHUNK_COLOR_BUF_LEN, CHUNK_COLOR_BUF_WIDTH,
-        CHUNK_COLOR_DOWNSCALE,
-    },
-};
+use common::terrain::GridKeeper;
 
 pub(crate) type BufPackage = (
     ChunkPos,
@@ -20,11 +14,7 @@ pub struct MesherHandle {
     thread: Option<JoinHandle<()>>,
 }
 impl MesherHandle {
-    pub(crate) fn new(
-        state: &Rc<State>,
-        chunks: Arc<RwLock<ChunkStorage>>,
-        colorizer: Box<dyn BlockColorizer>,
-    ) -> Self {
+    pub(crate) fn new(state: &Rc<State>, chunks: Arc<RwLock<ChunkStorage>>) -> Self {
         let shared = Arc::new(SharedState {
             close: false.into(),
             avg_mesh_time: 0f32.into(),
@@ -40,15 +30,12 @@ impl MesherHandle {
             thread::spawn(move || {
                 let gl_ctx =
                     Display::from_gl_window(gl_ctx).expect("failed to create headless gl context");
-                run_mesher(
-                    MesherState {
-                        shared,
-                        chunks,
-                        gl_ctx,
-                        send_bufs,
-                    },
-                    colorizer,
-                );
+                run_mesher(MesherState {
+                    shared,
+                    chunks,
+                    gl_ctx,
+                    send_bufs,
+                });
             })
         };
         Self {
@@ -88,8 +75,8 @@ struct MesherState {
     send_bufs: Sender<BufPackage>,
 }
 
-fn run_mesher(state: MesherState, colorizer: Box<dyn BlockColorizer>) {
-    let mut mesher = Mesher::new(colorizer);
+fn run_mesher(state: MesherState) {
+    let mut mesher = Mesher::new();
     let mut chunks = state.chunks.read();
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
@@ -240,14 +227,11 @@ struct LayerParams {
 }
 
 struct Mesher {
-    colorizer: Box<dyn BlockColorizer>,
     vert_cache: [VertIdx; Self::VERT_ROW * 2],
     block_buf: [BlockData; Self::BLOCK_COUNT * 2],
     front: i32,
     back: i32,
     chunk_pos: ChunkPos,
-    ready_color_bufs: [usize; 256 / mem::size_of::<usize>() / 8],
-    color_bufs: Box<[ChunkColorBuf]>,
     mesh: Mesh,
 }
 impl Mesher {
@@ -260,16 +244,13 @@ impl Mesher {
     const ADV_X: i32 = 1;
     const ADV_Y: i32 = CHUNK_SIZE + Self::EXTRA_BLOCKS * 2;
 
-    pub fn new(colorizer: Box<dyn BlockColorizer>) -> Self {
+    pub fn new() -> Self {
         Self {
-            colorizer,
             vert_cache: [0; Self::VERT_ROW * 2],
             block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
             front: Self::BLOCK_COUNT as i32,
             back: 0,
             chunk_pos: ChunkPos([0, 0, 0]),
-            ready_color_bufs: [0; 256 / mem::size_of::<usize>() / 8],
-            color_bufs: vec![[[0., 0., 0.]; CHUNK_COLOR_BUF_LEN]; 256].into_boxed_slice(),
             mesh: default(),
         }
     }
@@ -292,7 +273,8 @@ impl Mesher {
 
     /// Expects a chunk-relative position.
     fn color_at(&mut self, id: u8, pos: [i32; 3]) -> [f32; 3] {
-        const BITS_PER_ELEM: usize = mem::size_of::<usize>() * 8;
+        [1., 1., 1.]
+        /*const BITS_PER_ELEM: usize = mem::size_of::<usize>() * 8;
         //Make sure buffer is created
         let buf = &mut self.color_bufs[id as usize];
         let ready_idx = id as usize / BITS_PER_ELEM;
@@ -356,7 +338,7 @@ impl Mesher {
             ),
             w[2],
         )
-        .into()
+        .into()*/
     }
 
     fn get_vert(
@@ -479,9 +461,9 @@ impl Mesher {
         }
 
         self.chunk_pos = chunk_pos;
-        for ready_bits in self.ready_color_bufs.iter_mut() {
+        /*for ready_bits in self.ready_color_bufs.iter_mut() {
             *ready_bits = 0;
-        }
+        }*/
 
         // X
         for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {

@@ -10,15 +10,15 @@ local World = class{}
 function World:new()
     self.tick_count = 0
     self.terrain = system.terrain [[{
-        "kind": {"Parkour": {
-            "y_offset": 0.008,
+        "_kind": {"Parkour": {
+            "z_offset": 0.008,
             "delta": 0.4,
             "color": [0.43, 0.43, 0.43]
         }},
-        "_kind": {"Plains": {
-            "xz_scale": 256,
+        "kind": {"Plains": {
+            "xy_scale": 256,
             "detail": 3,
-            "y_scale": 40,
+            "z_scale": 40,
             "color": [0.01, 0.92, 0.20],
             "log_color": [0.53, 0.12, 0.01]
         }},
@@ -27,16 +27,16 @@ function World:new()
     }]]
     --[[
         {Parkour = {
-            y_offset = 0.008,
+            z_offset = 0.008,
             delta = 0.4,
             color = {0.43, 0.43, 0.43},
         }},
     ]]
     --[[
         "kind": {"Plains" = {
-            xz_scale = 256,
+            xy_scale = 256,
             detail = 3,
-            y_scale = 40,
+            z_scale = 40,
             color = [0.01, 0.12, 0.78],
         }},
     ]]
@@ -248,8 +248,8 @@ function World:draw()
         local cam_wall_dist = 0.4
         local rollback = self.cam_rollback
         local dx = -math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
-        local dy = math.sin(self.cam_pitch) * rollback
-        local dz = -math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
+        local dy = math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
+        local dz = math.sin(self.cam_pitch) * rollback
         cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
         self.cam_effective_x = cam_x
         self.cam_effective_y = cam_y
@@ -276,7 +276,7 @@ function World:draw()
     frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.1, 1000)
     frame.mv_world:reset()
     frame.mv_world:rotate_x(-cam_pitch)
-    frame.mv_world:rotate_y(-cam_yaw)
+    frame.mv_world:rotate_z(-cam_yaw)
     frame.mvp_world:mul_right(frame.mv_world)
 
     --Draw skybox
@@ -284,7 +284,7 @@ function World:draw()
         local cycle = self.day_cycle
         frame.mv_world:push()
         frame.mv_world:identity()
-        frame.mv_world:rotate_y(cam_yaw)
+        frame.mv_world:rotate_z(cam_yaw)
         frame.mv_world:rotate_x(cam_pitch)
         frame.mv_world:scale(math.tan(hfov / 2), math.tan(vfov / 2), 1)
         self.shaders.skybox:set_matrix('view', frame.mv_world)
@@ -335,11 +335,11 @@ function World:draw()
         local ambience = sky.ambience:at(cycle)
         local diffuse  = sky.diffuse:at(cycle)
         local specular = sky.specular:at(cycle)
-        local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), -math.sin((cycle - 0.25) * 2 * math.pi), 0
+        local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), 0, -math.sin((cycle - 0.25) * 2 * math.pi)
         --ambience = 0
         --diffuse = 0.2
         --specular = 0.03
-        --dx, dy, dz = 2^-0.5, -2^-0.5, 0
+        --dx, dy, dz = 2^-0.5, 0, -2^-0.5
         dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
         self.shaders.terrain:set_float('fog', self.fog_current)
         self.shaders.terrain:set_matrix('mvp', frame.mvp_world)

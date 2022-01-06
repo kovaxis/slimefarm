@@ -13,8 +13,8 @@ table.insert(world.entities, Player{
 for x = -10, 10 do
     table.insert(world.entities, Enemy{
         x = x * 10,
-        y = 100,
-        z = 20,
+        y = 20,
+        z = 100,
     })
 end
 

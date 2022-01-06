@@ -319,8 +319,8 @@ impl ChunkPos {
         ])
     }
 
-    pub fn xz(&self) -> [i32; 2] {
-        [self[0], self[2]]
+    pub fn xy(&self) -> [i32; 2] {
+        [self[0], self[1]]
     }
 }
 
@@ -466,6 +466,8 @@ impl<T: GridSlot> GridKeeper<T> {
         let adj_z = new_corner[2] - self.corner_pos[2];
         let clear_range =
             |this: &mut Self, x: ops::Range<i32>, y: ops::Range<i32>, z: ops::Range<i32>| {
+                // OPTIMIZE: Store lists of active slots in each plane slice, so as to only visit
+                // actual active slots.
                 for z in z.clone() {
                     for y in y.clone() {
                         for x in x.clone() {
