@@ -367,7 +367,7 @@ impl BlockPos {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BlockData {
     pub data: u8,
 }
@@ -415,6 +415,7 @@ impl ChunkData {
         }
     }
 
+    #[track_caller]
     #[inline]
     pub fn set_idx(&mut self, idx: usize, block: BlockData) {
         self.blocks[idx] = block;
@@ -628,7 +629,7 @@ impl<T: GridSlot> GridKeeper2d<T> {
         assert_eq!(
             1 << size_log2,
             size,
-            "GridKeeper size must be a power of two"
+            "GridKeeper2d size must be a power of two"
         );
         //Allocate space for meshes
         let total = (1 << (size_log2 * 2)) as usize;
@@ -775,5 +776,182 @@ where
     #[inline]
     fn reset(&mut self) {
         *self = T::default();
+    }
+}
+
+/// a dynamic growable buffer, representing an infinite space filled with "filler block".
+/// any block within this space can be set or get, but setting blocks far away from the origin
+/// will overallocate memory.
+/// this buffer can be "transferred" over to a chunk, copying the corresponding blocks over from
+/// the virtual buffer to the actual chunk.
+pub struct BlockBuf {
+    /// the actual buffer data.
+    blocks: Vec<BlockData>,
+    /// "filler block", the block that by default covers the entire space.
+    fill: BlockData,
+    /// the lowest coordinate represented by the physical block buffer, in buffer-local coordinates.
+    /// usually negative.
+    corner: [i32; 3],
+    /// log2 of the size.
+    /// forces sizes to be a power of two.
+    size: [i32; 3],
+}
+impl BlockBuf {
+    pub fn with_filler(fill: BlockData, corner: [i32; 3], size: [i32; 3]) -> Self {
+        let size_log2 = [
+            (mem::size_of_val(&size[0]) * 8) as i32 - (size[0] - 1).leading_zeros() as i32,
+            (mem::size_of_val(&size[1]) * 8) as i32 - (size[1] - 1).leading_zeros() as i32,
+            (mem::size_of_val(&size[2]) * 8) as i32 - (size[2] - 1).leading_zeros() as i32,
+        ];
+        Self {
+            fill,
+            corner,
+            size: size_log2,
+            blocks: vec![fill; 1 << (size_log2[0] + size_log2[1] + size_log2[2])],
+        }
+    }
+
+    pub fn with_capacity(corner: [i32; 3], size: [i32; 3]) -> Self {
+        Self::with_filler(BlockData { data: 255 }, corner, size)
+    }
+
+    /// creates a new block buffer with its origin at [0, 0, 0].
+    pub fn new() -> Self {
+        Self::with_capacity([-2, -2, -2], [4, 4, 4])
+    }
+
+    /// get the block data at the given position relative to the block buffer origin.
+    /// if the position is out of bounds, return the filler block.
+    pub fn get(&self, pos: BlockPos) -> BlockData {
+        let pos = [
+            pos[0] - self.corner[0],
+            pos[1] - self.corner[1],
+            pos[2] - self.corner[2],
+        ];
+        if (pos[0] as u32) < 1u32 << self.size[0]
+            && (pos[1] as u32) < 1u32 << self.size[1]
+            && (pos[2] as u32) < 1u32 << self.size[2]
+        {
+            self.blocks[(pos[0] + ((pos[1] + (pos[2] << self.size[1])) << self.size[0])) as usize]
+        } else {
+            self.fill
+        }
+    }
+
+    /// set the block data at the given position relative to the block buffer origin.
+    /// if the position is out of bounds, allocates new blocks filled with the filler block and
+    /// only then sets the given position.
+    pub fn set(&mut self, abs_pos: BlockPos, block: BlockData) {
+        let mut pos = [
+            abs_pos[0] - self.corner[0],
+            abs_pos[1] - self.corner[1],
+            abs_pos[2] - self.corner[2],
+        ];
+        if (pos[0] as u32) >= 1u32 << self.size[0]
+            || (pos[1] as u32) >= 1u32 << self.size[1]
+            || (pos[2] as u32) >= 1u32 << self.size[2]
+        {
+            // determine a new fitting bounding box
+            let mut new_corner = self.corner;
+            let mut new_size = self.size;
+            let mut shift = [0, 0, 0];
+            for i in 0..3 {
+                while pos[i] < 0 {
+                    new_corner[i] -= 1 << new_size[i];
+                    pos[i] += 1 << new_size[i];
+                    shift[i] += 1 << new_size[i];
+                    new_size[i] += 1;
+                }
+                while pos[i] >= 1 << new_size[i] {
+                    new_size[i] += 1;
+                }
+            }
+
+            // allocate space for new blocks and move block data around to fit new layout
+            self.blocks
+                .resize(1 << (new_size[0] + new_size[1] + new_size[2]), self.fill);
+            let mut src = 1 << (self.size[0] + self.size[1] + self.size[2]);
+            let mut dst = 1 << (new_size[0] + new_size[1] + new_size[2]);
+            dst += shift[0] + ((shift[1] + (shift[2] << new_size[1])) << new_size[0]);
+            dst -= ((1 << new_size[2]) - (1 << self.size[2])) << (new_size[0] + new_size[1]);
+            for _z in 0..1 << self.size[2] {
+                dst -= ((1 << new_size[1]) - (1 << self.size[1])) << new_size[0];
+                for _y in 0..1 << self.size[1] {
+                    src -= 1 << self.size[0];
+                    dst -= 1 << new_size[0];
+                    self.blocks
+                        .copy_within(src..(src + (1 << self.size[0])), dst);
+                    self.blocks[(src + (1 << self.size[0]))..(src + (1 << new_size[0]))]
+                        .fill(self.fill);
+                }
+            }
+            self.corner = new_corner;
+            self.size = new_size;
+        }
+        self.blocks[(pos[0] + ((pos[1] + (pos[2] << self.size[1])) << self.size[0])) as usize] =
+            block;
+    }
+
+    /// copy the contents of the block buffer over to the given chunk.
+    /// locates the block buffer origin at the given origin position, and locates the chunk at the
+    /// given chunk coordinates.
+    pub fn transfer(&self, origin: BlockPos, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
+        let chunkpos = chunkpos.to_block_floor();
+        // position of the buffer relative to the destination chunk
+        let pos = [
+            origin[0] + self.corner[0] - chunkpos[0],
+            origin[1] + self.corner[1] - chunkpos[1],
+            origin[2] + self.corner[2] - chunkpos[2],
+        ];
+
+        let skipchunk = [pos[0].max(0), pos[1].max(0), pos[2].max(0)];
+        let uptochunk = [
+            (pos[0] + (1 << self.size[0])).min(CHUNK_SIZE),
+            (pos[1] + (1 << self.size[1])).min(CHUNK_SIZE),
+            (pos[2] + (1 << self.size[2])).min(CHUNK_SIZE),
+        ];
+        let skipbuf = [-pos[0].min(0), -pos[1].min(0), -pos[2].min(0)];
+        let uptobuf = [
+            uptochunk[0] - pos[0],
+            uptochunk[1] - pos[1],
+            uptochunk[2] - pos[2],
+        ];
+
+        if uptobuf[0] <= skipbuf[0]
+            || uptobuf[1] <= skipbuf[1]
+            || uptobuf[2] <= skipbuf[2]
+            || uptochunk[0] <= skipchunk[0]
+            || uptochunk[1] <= skipchunk[1]
+            || uptochunk[2] <= skipchunk[2]
+        {
+            // chunk and buffer do not overlap
+            return;
+        }
+
+        // copy data from buffer to chunk
+        let chunk = chunk.blocks_mut();
+        let mut src = 0;
+        let mut dst = 0;
+        src += skipbuf[2] << (self.size[0] + self.size[1]);
+        dst += skipchunk[2] * CHUNK_SIZE * CHUNK_SIZE;
+        for _z in skipbuf[2]..uptobuf[2] {
+            src += skipbuf[1] << self.size[0];
+            dst += skipchunk[1] * CHUNK_SIZE;
+            for _y in skipbuf[1]..uptobuf[1] {
+                src += skipbuf[0];
+                dst += skipchunk[0];
+                for _x in skipbuf[0]..uptobuf[0] {
+                    if self.blocks[src as usize] != self.fill {
+                        chunk.set_idx(dst as usize, self.blocks[src as usize]);
+                    }
+                    src += 1;
+                    dst += 1;
+                }
+                src += (1 << self.size[0]) - uptobuf[0];
+                dst += CHUNK_SIZE - uptochunk[0];
+            }
+            src += ((1 << self.size[1]) - uptobuf[1]) << self.size[0];
+            dst += (CHUNK_SIZE - uptochunk[1]) * CHUNK_SIZE;
+        }
     }
 }

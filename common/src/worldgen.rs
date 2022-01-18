@@ -204,6 +204,9 @@ use crate::{prelude::*, terrain::GridKeeper2d};
 pub trait GenStore {
     fn register_raw(&self, name: &[u8], obj: [usize; 2], destroy: unsafe fn([usize; 2]));
     fn lookup_raw(&self, name: &[u8]) -> Option<[usize; 2]>;
+
+    fn listen_raw(&self, name: &[u8], listener: Box<dyn FnMut(*const u8)>);
+    unsafe fn trigger_raw(&self, name: &[u8], args: *const u8);
 }
 impl dyn GenStore {
     pub fn register<T: ?Sized>(&self, name: &str, t: Box<T>) {
@@ -227,6 +230,20 @@ impl dyn GenStore {
         let ptr = mem::transmute_copy::<[usize; 2], *mut T>(&obj);
         &*ptr
     }
+
+    pub unsafe fn listen<A, F>(&self, name: &str, mut listener: F)
+    where
+        F: FnMut(&A) + 'static,
+    {
+        self.listen_raw(
+            name.as_bytes(),
+            Box::new(move |a| listener(&*(a as *const A))),
+        )
+    }
+
+    pub unsafe fn trigger<A>(&self, name: &str, args: &A) {
+        self.trigger_raw(name.as_bytes(), args as *const A as *const u8)
+    }
 }
 
 pub trait ChunkFiller {
@@ -235,13 +252,56 @@ pub trait ChunkFiller {
 
 /// Divides a chunk into 8x8 equal pieces, assigning each piece a single bit.
 /// This means that the entire chunk can be stored in a single `u64`.
-pub struct FreeChunk {
-    bits: Cell<u64>,
+#[derive(Default)]
+pub struct OccupChunk {
+    bits: u64,
 }
-impl FreeChunk {
-    pub fn is_free(&self, x: i32, y: i32) {}
+impl OccupChunk {
+    pub fn is_occup(&self, [x, y]: [i32; 2]) -> bool {
+        (self.bits >> (x + y * 8)) & 1 != 0
+    }
+
+    pub fn set_occup(&mut self, [x, y]: [i32; 2]) {
+        self.bits |= 1 << (x + y * 8);
+    }
 }
 
-pub struct FreeMap {
-    free: GridKeeper2d<FreeChunk>,
+pub struct OccupMap {
+    map: RefCell<GridKeeper2d<OccupChunk>>,
+}
+impl OccupMap {
+    pub fn new(size: i32) -> Self {
+        Self {
+            map: GridKeeper2d::new(size, [0, 0]).into(),
+        }
+    }
+
+    pub fn set_center(&self, center: [i32; 2]) {
+        self.map.borrow_mut().set_center(center);
+    }
+
+    fn decompose(&self, pos: [i32; 2]) -> ([i32; 2], [i32; 2]) {
+        let cnkpos = [pos[0].div_euclid(CHUNK_SIZE), pos[1].div_euclid(CHUNK_SIZE)];
+        let subpos = [
+            pos[0].rem_euclid(CHUNK_SIZE) / (CHUNK_SIZE / 8),
+            pos[1].rem_euclid(CHUNK_SIZE) / (CHUNK_SIZE / 8),
+        ];
+        (cnkpos, subpos)
+    }
+
+    pub fn is_occup(&self, pos: [i32; 2]) -> bool {
+        let (cnkpos, subpos) = self.decompose(pos);
+        match self.map.borrow().get(cnkpos) {
+            Some(cnk) => cnk.is_occup(subpos),
+            None => false,
+        }
+    }
+
+    pub fn set_occup(&self, pos: [i32; 2]) {
+        let (cnkpos, subpos) = self.decompose(pos);
+        match self.map.borrow_mut().get_mut(cnkpos) {
+            Some(cnk) => cnk.set_occup(subpos),
+            None => (),
+        }
+    }
 }

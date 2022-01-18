@@ -133,6 +133,10 @@ function World:tick()
 
     --Advance day cycle
     self.day_cycle = (self.day_cycle + 1 / (64*120)) % 1
+    --DEBUG: Advance day cycle quicker when in nighttime
+    if self.day_cycle < 0.3 or self.day_cycle > 0.6 then
+        self.day_cycle = self.day_cycle + 1 / (64*5)
+    end
 
     --Bookkeep terrain
     local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
@@ -292,7 +296,7 @@ function World:draw()
         self.shaders.skybox:set_vec3('highest', sky.highest:at(cycle))
         self.shaders.skybox:set_vec3('lowest', sky.lowest:at(cycle))
         self.shaders.skybox:set_vec3('sunrise', sky.sunrise:at(cycle))
-        self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), -math.cos(2*math.pi*cycle), 0)
+        self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
         self.shaders.skybox:draw(sky.screen, frame.params_hud)
         frame.mv_world:pop()
     end

@@ -178,7 +178,7 @@ fn run_bookkeep(state: BookKeepState) {
 struct Terrain {
     mesher: MesherHandle,
     _bookkeeper: BookKeepHandle,
-    _generator: GeneratorHandle,
+    generator: GeneratorHandle,
     state: Rc<State>,
     chunks: Arc<RwLock<ChunkStorage>>,
     meshes: MeshKeeper,
@@ -187,12 +187,12 @@ impl Terrain {
     fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let bookkeeper = BookKeepHandle::new(chunks.clone());
-        let mut generator = unsafe { GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper)? };
+        let generator = unsafe { GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper)? };
         Ok(Terrain {
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
             mesher: MesherHandle::new(state, chunks.clone()),
-            _generator: generator,
+            generator: generator,
             _bookkeeper: bookkeeper,
             chunks,
         })
@@ -200,6 +200,8 @@ impl Terrain {
 
     fn set_view_radius(&mut self, radius: f32) {
         self.meshes = MeshKeeper::new(radius / CHUNK_SIZE as f32, self.meshes.center());
+        self.generator
+            .reshape(self.meshes.size(), self.meshes.center());
     }
 
     fn hint_center(&mut self, center: BlockPos) {
@@ -209,6 +211,7 @@ impl Terrain {
             .offset(CHUNK_SIZE / 2, CHUNK_SIZE / 2, CHUNK_SIZE / 2)
             .to_chunk();
         self.chunks.read().center_hint.store(center);
+        self.generator.reshape(self.meshes.size(), center);
         self.meshes.set_center(center);
         //Receive buffers from mesher thread
         for (pos, buf_pkg) in self.mesher.recv_bufs.try_iter() {
@@ -473,7 +476,7 @@ lua_type! {TerrainRef,
     }
 
     fn chunk_gen_time(lua, this, ()) {
-        this.rc.borrow()._generator.avg_gen_time.load()
+        this.rc.borrow().generator.avg_gen_time.load()
     }
     fn chunk_mesh_time(lua, this, ()) {
         this.rc.borrow().mesher.avg_mesh_time.load()

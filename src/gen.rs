@@ -13,6 +13,8 @@ const AVERAGE_WEIGHT: f32 = 0.02;
 
 pub struct GeneratorHandle {
     shared: Arc<SharedState>,
+    reshape_send: Sender<(i32, ChunkPos)>,
+    last_shape: Cell<(i32, ChunkPos)>,
     thread: Option<JoinHandle<Result<()>>>,
 }
 impl GeneratorHandle {
@@ -28,6 +30,7 @@ impl GeneratorHandle {
             close: false.into(),
             avg_gen_time: 0f32.into(),
         });
+        let (reshape_send, reshape_recv) = channel::bounded(64);
         let cfg = cfg.to_vec();
         //let (colorizer_send, colorizer_recv) = channel::bounded(0);
         let join_handle = {
@@ -40,6 +43,7 @@ impl GeneratorHandle {
                     let state = GenState {
                         chunks,
                         shared,
+                        reshape_recv,
                         generated_send,
                     };
                     gen_thread(state, &cfg)
@@ -55,6 +59,8 @@ impl GeneratorHandle {
         };*/
         Ok(Self {
             shared,
+            reshape_send,
+            last_shape: (0, ChunkPos([0, 0, 0])).into(),
             thread: Some(join_handle),
         })
         /*
@@ -92,6 +98,13 @@ impl GeneratorHandle {
             join.thread().unpark();
         }
     }
+
+    pub fn reshape(&self, size: i32, center: ChunkPos) {
+        if self.last_shape.get() != (size, center) {
+            self.last_shape.set((size, center));
+            let _ = self.reshape_send.send((size, center));
+        }
+    }
 }
 impl ops::Deref for GeneratorHandle {
     type Target = SharedState;
@@ -117,6 +130,7 @@ pub struct SharedState {
 struct GenState {
     shared: Arc<SharedState>,
     chunks: Arc<RwLock<ChunkStorage>>,
+    reshape_recv: Receiver<(i32, ChunkPos)>,
     generated_send: Sender<(ChunkPos, ChunkBox)>,
 }
 
@@ -140,6 +154,7 @@ impl GridSlot for GenChunk {
 #[derive(Default)]
 struct GenStoreConcrete {
     capsules: RefCell<HashMap<Vec<u8>, ([usize; 2], unsafe fn([usize; 2]))>>,
+    events: RefCell<HashMap<Vec<u8>, Vec<Box<dyn FnMut(*const u8)>>>>,
 }
 impl GenStore for GenStoreConcrete {
     fn register_raw(&self, name: &[u8], obj: [usize; 2], destroy: unsafe fn([usize; 2])) {
@@ -155,6 +170,27 @@ impl GenStore for GenStoreConcrete {
     fn lookup_raw(&self, name: &[u8]) -> Option<[usize; 2]> {
         let caps = self.capsules.borrow();
         caps.get(name).map(|(obj, _destroy)| *obj)
+    }
+
+    fn listen_raw(&self, name: &[u8], listener: Box<dyn FnMut(*const u8)>) {
+        let mut evs = self.events.borrow_mut();
+        match evs.get_mut(name) {
+            Some(listeners) => {
+                listeners.push(listener);
+            }
+            None => {
+                evs.insert(name.to_vec(), vec![listener]);
+            }
+        }
+    }
+
+    unsafe fn trigger_raw(&self, name: &[u8], args: *const u8) {
+        let mut evs = self.events.borrow_mut();
+        if let Some(listeners) = evs.get_mut(name) {
+            for l in listeners {
+                l(args);
+            }
+        }
     }
 }
 impl Drop for GenStoreConcrete {
@@ -207,9 +243,11 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
     let mut provider = GenProvider::new(store);
     'outer: loop {
         //Make sure provider structure has the right size
-        {
-            let chunks = gen.chunks.read();
-            provider.reshape(chunks.size(), chunks.center());
+        for (size, center) in gen.reshape_recv.try_iter() {
+            provider.reshape(size, center);
+            unsafe {
+                store.trigger("base.recenter", &center);
+            }
         }
         //Find a suitable chunk and generate it
         let mut priority_idx = 0;
