@@ -4,7 +4,7 @@ use crate::{
 };
 
 /// Base-2 logarithm of the chunk size.
-pub const CHUNK_BITS: u32 = 5;
+pub const CHUNK_BITS: i32 = 5;
 
 /// Guaranteed to be a power of 2.
 pub const CHUNK_SIZE: i32 = 1 << CHUNK_BITS;
@@ -79,7 +79,7 @@ impl<'a> ChunkRef<'a> {
     }
 
     #[inline]
-    pub fn sub_get(&self, pos: [i32; 3]) -> BlockData {
+    pub fn sub_get(&self, pos: Int3) -> BlockData {
         if let Some(blocks) = self.blocks() {
             blocks.sub_get(pos)
         } else if self.is_empty() {
@@ -285,86 +285,16 @@ impl Drop for ChunkBox {
     }
 }
 
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ChunkPos(pub [i32; 3]);
-impl ops::Deref for ChunkPos {
-    type Target = [i32; 3];
-    fn deref(&self) -> &[i32; 3] {
-        &self.0
-    }
-}
-impl ops::DerefMut for ChunkPos {
-    fn deref_mut(&mut self) -> &mut [i32; 3] {
-        &mut self.0
-    }
-}
-impl ChunkPos {
-    pub fn offset(&self, x: i32, y: i32, z: i32) -> ChunkPos {
-        ChunkPos([self[0] + x, self[1] + y, self[2] + z])
-    }
-
-    pub fn to_block_floor(&self) -> BlockPos {
-        BlockPos([
-            self[0] * CHUNK_SIZE,
-            self[1] * CHUNK_SIZE,
-            self[2] * CHUNK_SIZE,
-        ])
-    }
-    pub fn to_block_center(&self) -> BlockPos {
-        BlockPos([
-            self[0] * CHUNK_SIZE + CHUNK_SIZE / 2,
-            self[1] * CHUNK_SIZE + CHUNK_SIZE / 2,
-            self[2] * CHUNK_SIZE + CHUNK_SIZE / 2,
-        ])
-    }
-
-    pub fn xy(&self) -> [i32; 2] {
-        [self[0], self[1]]
-    }
+pub type ChunkPos = Int3;
+#[allow(non_snake_case)]
+pub fn ChunkPos(x: [i32; 3]) -> ChunkPos {
+    Int3::new(x)
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct BlockPos(pub [i32; 3]);
-impl ops::Deref for BlockPos {
-    type Target = [i32; 3];
-    fn deref(&self) -> &[i32; 3] {
-        &self.0
-    }
-}
-impl ops::DerefMut for BlockPos {
-    fn deref_mut(&mut self) -> &mut [i32; 3] {
-        &mut self.0
-    }
-}
-impl BlockPos {
-    pub fn offset(&self, x: i32, y: i32, z: i32) -> BlockPos {
-        BlockPos([self[0] + x, self[1] + y, self[2] + z])
-    }
-    pub fn from_float(pos: [f64; 3]) -> BlockPos {
-        BlockPos([
-            pos[0].floor() as i32,
-            pos[1].floor() as i32,
-            pos[2].floor() as i32,
-        ])
-    }
-    pub fn to_float_floor(&self) -> [f64; 3] {
-        [self[0] as f64, self[1] as f64, self[2] as f64]
-    }
-    pub fn to_float_center(&self) -> [f64; 3] {
-        [
-            self[0] as f64 + 0.5,
-            self[1] as f64 + 0.5,
-            self[2] as f64 + 0.5,
-        ]
-    }
-    pub fn to_chunk(&self) -> ChunkPos {
-        ChunkPos([
-            self[0].div_euclid(CHUNK_SIZE),
-            self[1].div_euclid(CHUNK_SIZE),
-            self[2].div_euclid(CHUNK_SIZE),
-        ])
-    }
+pub type BlockPos = Int3;
+#[allow(non_snake_case)]
+pub fn BlockPos(x: [i32; 3]) -> BlockPos {
+    Int3::new(x)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -372,6 +302,7 @@ pub struct BlockData {
     pub data: u8,
 }
 impl BlockData {
+    #[inline]
     pub fn is_solid(&self) -> bool {
         self.data != 0
     }
@@ -387,26 +318,23 @@ pub struct ChunkData {
 impl ChunkData {
     #[track_caller]
     #[inline]
-    pub fn sub_get(&self, sub_pos: [i32; 3]) -> BlockData {
-        match self.blocks.get(
-            (sub_pos[0] | sub_pos[1] * CHUNK_SIZE | sub_pos[2] * (CHUNK_SIZE * CHUNK_SIZE))
-                as usize,
-        ) {
+    pub fn sub_get(&self, sub_pos: Int3) -> BlockData {
+        match self.blocks.get(sub_pos.to_index([CHUNK_BITS; 3].into())) {
             Some(&b) => b,
             None => panic!(
                 "block index [{}, {}, {}] outside chunk boundaries",
-                sub_pos[0], sub_pos[1], sub_pos[2]
+                sub_pos.x, sub_pos.y, sub_pos.z
             ),
         }
     }
 
     #[track_caller]
     #[inline]
-    pub fn sub_get_mut(&mut self, sub_pos: [i32; 3]) -> &mut BlockData {
-        match self.blocks.get_mut(
-            (sub_pos[0] | sub_pos[1] * CHUNK_SIZE | sub_pos[2] * (CHUNK_SIZE * CHUNK_SIZE))
-                as usize,
-        ) {
+    pub fn sub_get_mut(&mut self, sub_pos: Int3) -> &mut BlockData {
+        match self
+            .blocks
+            .get_mut(sub_pos.to_index([CHUNK_BITS; 3].into()))
+        {
             Some(b) => b,
             None => panic!(
                 "block index [{}, {}, {}] outside chunk boundaries",
@@ -448,11 +376,7 @@ impl<T: GridSlot> GridKeeper<T> {
         slots.resize_with(total, T::new);
         //Group em up
         Self {
-            corner_pos: center.offset(
-                -(1 << (size_log2 - 1)),
-                -(1 << (size_log2 - 1)),
-                -(1 << (size_log2 - 1)),
-            ),
+            corner_pos: center - ChunkPos::splat(1 << (size_log2 - 1)),
             size_log2,
             origin_idx: 0,
             slots,
@@ -461,10 +385,8 @@ impl<T: GridSlot> GridKeeper<T> {
 
     /// Will slide chunks and remove chunks that went over the border.
     pub fn set_center(&mut self, new_center: ChunkPos) {
-        let new_corner = new_center.offset(-self.half_size(), -self.half_size(), -self.half_size());
-        let adj_x = new_corner[0] - self.corner_pos[0];
-        let adj_y = new_corner[1] - self.corner_pos[1];
-        let adj_z = new_corner[2] - self.corner_pos[2];
+        let new_corner = new_center + [-self.half_size(), -self.half_size(), -self.half_size()];
+        let adj = new_corner - self.corner_pos;
         let clear_range =
             |this: &mut Self, x: ops::Range<i32>, y: ops::Range<i32>, z: ops::Range<i32>| {
                 // OPTIMIZE: Store lists of active slots in each plane slice, so as to only visit
@@ -472,43 +394,43 @@ impl<T: GridSlot> GridKeeper<T> {
                 for z in z.clone() {
                     for y in y.clone() {
                         for x in x.clone() {
-                            this.sub_get_mut([x, y, z]).reset();
+                            this.sub_get_mut([x, y, z].into()).reset();
                         }
                     }
                 }
             };
-        if adj_x > 0 {
-            clear_range(self, 0..adj_x, 0..self.size(), 0..self.size());
-        } else if adj_x < 0 {
+        if adj.x > 0 {
+            clear_range(self, 0..adj.x, 0..self.size(), 0..self.size());
+        } else if adj.x < 0 {
             clear_range(
                 self,
-                self.size() + adj_x..self.size(),
+                self.size() + adj.x..self.size(),
                 0..self.size(),
                 0..self.size(),
             );
         }
-        if adj_y > 0 {
-            clear_range(self, 0..self.size(), 0..adj_y, 0..self.size());
-        } else if adj_y < 0 {
+        if adj.y > 0 {
+            clear_range(self, 0..self.size(), 0..adj.y, 0..self.size());
+        } else if adj.y < 0 {
             clear_range(
                 self,
                 0..self.size(),
-                self.size() + adj_y..self.size(),
+                self.size() + adj.y..self.size(),
                 0..self.size(),
             );
         }
-        if adj_z > 0 {
-            clear_range(self, 0..self.size(), 0..self.size(), 0..adj_z);
-        } else if adj_z < 0 {
+        if adj.z > 0 {
+            clear_range(self, 0..self.size(), 0..self.size(), 0..adj.z);
+        } else if adj.z < 0 {
             clear_range(
                 self,
                 0..self.size(),
                 0..self.size(),
-                self.size() + adj_z..self.size(),
+                self.size() + adj.z..self.size(),
             );
         }
         self.origin_idx =
-            (self.origin_idx + adj_x + adj_y * self.size() + adj_z * (self.size() * self.size()))
+            (self.origin_idx + adj.x + adj.y * self.size() + adj.z * (self.size() * self.size()))
                 .rem_euclid(self.total_len());
         self.corner_pos = new_corner;
     }
@@ -516,8 +438,7 @@ impl<T: GridSlot> GridKeeper<T> {
 impl<T> GridKeeper<T> {
     #[inline]
     pub fn center(&self) -> ChunkPos {
-        self.corner_pos
-            .offset(self.half_size(), self.half_size(), self.half_size())
+        self.corner_pos + [self.half_size(), self.half_size(), self.half_size()]
     }
 
     #[inline]
@@ -542,36 +463,18 @@ impl<T> GridKeeper<T> {
 
     #[inline]
     pub fn get(&self, pos: ChunkPos) -> Option<&T> {
-        if pos[0] >= self.corner_pos[0]
-            && pos[0] < self.corner_pos[0] + self.size()
-            && pos[1] >= self.corner_pos[1]
-            && pos[1] < self.corner_pos[1] + self.size()
-            && pos[2] >= self.corner_pos[2]
-            && pos[2] < self.corner_pos[2] + self.size()
-        {
-            Some(self.sub_get([
-                pos[0] - self.corner_pos[0],
-                pos[1] - self.corner_pos[1],
-                pos[2] - self.corner_pos[2],
-            ]))
+        let pos = pos - self.corner_pos;
+        if pos.is_within(Int3::splat(self.size())) {
+            Some(self.sub_get(pos))
         } else {
             None
         }
     }
     #[inline]
     pub fn get_mut(&mut self, pos: ChunkPos) -> Option<&mut T> {
-        if pos[0] >= self.corner_pos[0]
-            && pos[0] < self.corner_pos[0] + self.size()
-            && pos[1] >= self.corner_pos[1]
-            && pos[1] < self.corner_pos[1] + self.size()
-            && pos[2] >= self.corner_pos[2]
-            && pos[2] < self.corner_pos[2] + self.size()
-        {
-            Some(self.sub_get_mut([
-                pos[0] - self.corner_pos[0],
-                pos[1] - self.corner_pos[1],
-                pos[2] - self.corner_pos[2],
-            ]))
+        let pos = pos - self.corner_pos;
+        if pos.is_within(Int3::splat(self.size())) {
+            Some(self.sub_get_mut(pos))
         } else {
             None
         }
@@ -587,43 +490,40 @@ impl<T> GridKeeper<T> {
         &mut self.slots[idx]
     }
     #[inline]
-    pub fn sub_get(&self, pos: [i32; 3]) -> &T {
+    pub fn sub_get(&self, pos: Int3) -> &T {
         &self.slots[(self.origin_idx
-            + pos[0]
-            + pos[1] * self.size()
-            + pos[2] * (self.size() * self.size()))
+            + pos.x
+            + pos.y * self.size()
+            + pos.z * (self.size() * self.size()))
         .rem_euclid(self.total_len()) as usize]
     }
     #[inline]
-    pub fn sub_get_mut(&mut self, pos: [i32; 3]) -> &mut T {
+    pub fn sub_get_mut(&mut self, pos: Int3) -> &mut T {
         let size = self.size();
         let total_len = self.total_len();
-        &mut self.slots[(self.origin_idx + pos[0] + pos[1] * size + pos[2] * (size * size))
+        &mut self.slots[(self.origin_idx + pos.x + pos.y * size + pos.z * (size * size))
             .rem_euclid(total_len) as usize]
     }
 
     #[inline]
     pub fn sub_idx_to_pos(&self, idx: i32) -> ChunkPos {
-        let x = idx % self.size();
-        let y = idx / self.size() % self.size();
-        let z = idx / self.size() / self.size();
-        self.corner_pos.offset(x, y, z)
+        self.corner_pos + Int3::from_index([self.size_log2 as i32; 3].into(), idx as usize)
     }
 }
 
 pub struct GridKeeper2d<T> {
-    corner_pos: [i32; 2],
+    corner_pos: Int2,
     size_log2: u32,
     origin_idx: i32,
     slots: Vec<T>,
 }
 impl<T: GridSlot> GridKeeper2d<T> {
-    pub fn with_radius(radius: f32, center: [i32; 2]) -> Self {
+    pub fn with_radius(radius: f32, center: Int2) -> Self {
         let size = ((radius * 2.).max(2.) as u32).next_power_of_two().max(1) as i32;
         Self::new(size, center)
     }
 
-    pub fn new(size: i32, center: [i32; 2]) -> Self {
+    pub fn new(size: i32, center: Int2) -> Self {
         //Make sure length is a power of two
         let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
         assert_eq!(
@@ -637,10 +537,7 @@ impl<T: GridSlot> GridKeeper2d<T> {
         slots.resize_with(total, T::new);
         //Group em up
         Self {
-            corner_pos: [
-                center[0] - (1 << (size_log2 - 1)),
-                center[1] - (1 << (size_log2 - 1)),
-            ],
+            corner_pos: center - Int2::splat(1 << (size_log2 - 1)),
             size_log2,
             origin_idx: 0,
             slots,
@@ -648,42 +545,35 @@ impl<T: GridSlot> GridKeeper2d<T> {
     }
 
     /// Will slide chunks and remove chunks that went over the border.
-    pub fn set_center(&mut self, new_center: [i32; 2]) {
-        let new_corner = [
-            new_center[0] - self.half_size(),
-            new_center[1] - self.half_size(),
-        ];
-        let adj_x = new_corner[0] - self.corner_pos[0];
-        let adj_y = new_corner[1] - self.corner_pos[1];
+    pub fn set_center(&mut self, new_center: Int2) {
+        let new_corner = new_center - Int2::splat(self.half_size());
+        let adj = new_corner - self.corner_pos;
         let clear_range = |this: &mut Self, x: ops::Range<i32>, y: ops::Range<i32>| {
             for y in y.clone() {
                 for x in x.clone() {
-                    this.sub_get_mut([x, y]).reset();
+                    this.sub_get_mut([x, y].into()).reset();
                 }
             }
         };
-        if adj_x > 0 {
-            clear_range(self, 0..adj_x, 0..self.size());
-        } else if adj_x < 0 {
-            clear_range(self, self.size() + adj_x..self.size(), 0..self.size());
+        if adj.x > 0 {
+            clear_range(self, 0..adj.x, 0..self.size());
+        } else if adj.x < 0 {
+            clear_range(self, self.size() + adj.x..self.size(), 0..self.size());
         }
-        if adj_y > 0 {
-            clear_range(self, 0..self.size(), 0..adj_y);
-        } else if adj_y < 0 {
-            clear_range(self, 0..self.size(), self.size() + adj_y..self.size());
+        if adj.y > 0 {
+            clear_range(self, 0..self.size(), 0..adj.y);
+        } else if adj.y < 0 {
+            clear_range(self, 0..self.size(), self.size() + adj.y..self.size());
         }
         self.origin_idx =
-            (self.origin_idx + adj_x + adj_y * self.size()).rem_euclid(self.total_len());
+            (self.origin_idx + adj.x + adj.y * self.size()).rem_euclid(self.total_len());
         self.corner_pos = new_corner;
     }
 }
 impl<T> GridKeeper2d<T> {
     #[inline]
-    pub fn center(&self) -> [i32; 2] {
-        [
-            self.corner_pos[0] + self.half_size(),
-            self.corner_pos[1] + self.half_size(),
-        ]
+    pub fn center(&self) -> Int2 {
+        self.corner_pos + Int2::splat(self.half_size())
     }
 
     #[inline]
@@ -707,25 +597,19 @@ impl<T> GridKeeper2d<T> {
     }
 
     #[inline]
-    pub fn get(&self, pos: [i32; 2]) -> Option<&T> {
-        if pos[0] >= self.corner_pos[0]
-            && pos[0] < self.corner_pos[0] + self.size()
-            && pos[1] >= self.corner_pos[1]
-            && pos[1] < self.corner_pos[1] + self.size()
-        {
-            Some(self.sub_get([pos[0] - self.corner_pos[0], pos[1] - self.corner_pos[1]]))
+    pub fn get(&self, pos: Int2) -> Option<&T> {
+        let pos = pos - self.corner_pos;
+        if pos.is_within([self.size(); 2].into()) {
+            Some(self.sub_get(pos))
         } else {
             None
         }
     }
     #[inline]
-    pub fn get_mut(&mut self, pos: [i32; 2]) -> Option<&mut T> {
-        if pos[0] >= self.corner_pos[0]
-            && pos[0] < self.corner_pos[0] + self.size()
-            && pos[1] >= self.corner_pos[1]
-            && pos[1] < self.corner_pos[1] + self.size()
-        {
-            Some(self.sub_get_mut([pos[0] - self.corner_pos[0], pos[1] - self.corner_pos[1]]))
+    pub fn get_mut(&mut self, pos: Int2) -> Option<&mut T> {
+        let pos = pos - self.corner_pos;
+        if pos.is_within([self.size(); 2].into()) {
+            Some(self.sub_get_mut(pos))
         } else {
             None
         }
@@ -741,22 +625,20 @@ impl<T> GridKeeper2d<T> {
         &mut self.slots[idx]
     }
     #[inline]
-    pub fn sub_get(&self, pos: [i32; 2]) -> &T {
-        &self.slots[(self.origin_idx + pos[0] + pos[1] * self.size()).rem_euclid(self.total_len())
-            as usize]
+    pub fn sub_get(&self, pos: Int2) -> &T {
+        &self.slots
+            [(self.origin_idx + pos.x + pos.y * self.size()).rem_euclid(self.total_len()) as usize]
     }
     #[inline]
-    pub fn sub_get_mut(&mut self, pos: [i32; 2]) -> &mut T {
+    pub fn sub_get_mut(&mut self, pos: Int2) -> &mut T {
         let size = self.size();
         let total_len = self.total_len();
-        &mut self.slots[(self.origin_idx + pos[0] + pos[1] * size).rem_euclid(total_len) as usize]
+        &mut self.slots[(self.origin_idx + pos.x + pos.y * size).rem_euclid(total_len) as usize]
     }
 
     #[inline]
-    pub fn sub_idx_to_pos(&self, idx: i32) -> [i32; 2] {
-        let x = idx % self.size();
-        let y = idx / self.size();
-        [self.corner_pos[0] + x, self.corner_pos[1] + y]
+    pub fn sub_idx_to_pos(&self, idx: i32) -> Int2 {
+        self.corner_pos + Int2::from_index([self.size(); 2].into(), idx as usize)
     }
 }
 
@@ -791,18 +673,19 @@ pub struct BlockBuf {
     fill: BlockData,
     /// the lowest coordinate represented by the physical block buffer, in buffer-local coordinates.
     /// usually negative.
-    corner: [i32; 3],
+    corner: Int3,
     /// log2 of the size.
     /// forces sizes to be a power of two.
-    size: [i32; 3],
+    size: Int3,
 }
 impl BlockBuf {
-    pub fn with_filler(fill: BlockData, corner: [i32; 3], size: [i32; 3]) -> Self {
+    pub fn with_filler(fill: BlockData, corner: Int3, size: Int3) -> Self {
         let size_log2 = [
-            (mem::size_of_val(&size[0]) * 8) as i32 - (size[0] - 1).leading_zeros() as i32,
-            (mem::size_of_val(&size[1]) * 8) as i32 - (size[1] - 1).leading_zeros() as i32,
-            (mem::size_of_val(&size[2]) * 8) as i32 - (size[2] - 1).leading_zeros() as i32,
-        ];
+            (mem::size_of_val(&size.x) * 8) as i32 - (size.x - 1).leading_zeros() as i32,
+            (mem::size_of_val(&size.y) * 8) as i32 - (size.y - 1).leading_zeros() as i32,
+            (mem::size_of_val(&size.z) * 8) as i32 - (size.z - 1).leading_zeros() as i32,
+        ]
+        .into();
         Self {
             fill,
             corner,
@@ -811,50 +694,34 @@ impl BlockBuf {
         }
     }
 
-    pub fn with_capacity(corner: [i32; 3], size: [i32; 3]) -> Self {
+    pub fn with_capacity(corner: Int3, size: Int3) -> Self {
         Self::with_filler(BlockData { data: 255 }, corner, size)
     }
 
     /// creates a new block buffer with its origin at [0, 0, 0].
     pub fn new() -> Self {
-        Self::with_capacity([-2, -2, -2], [4, 4, 4])
+        Self::with_capacity([-2, -2, -2].into(), [4, 4, 4].into())
     }
 
     /// get the block data at the given position relative to the block buffer origin.
     /// if the position is out of bounds, return the filler block.
     pub fn get(&self, pos: BlockPos) -> BlockData {
-        let pos = [
-            pos[0] - self.corner[0],
-            pos[1] - self.corner[1],
-            pos[2] - self.corner[2],
-        ];
-        if (pos[0] as u32) < 1u32 << self.size[0]
-            && (pos[1] as u32) < 1u32 << self.size[1]
-            && (pos[2] as u32) < 1u32 << self.size[2]
-        {
-            self.blocks[(pos[0] + ((pos[1] + (pos[2] << self.size[1])) << self.size[0])) as usize]
+        let pos = pos - self.corner;
+        if pos.is_within([1 << self.size[0], 1 << self.size[1], 1 << self.size[2]].into()) {
+            self.blocks[pos.to_index(self.size)]
         } else {
             self.fill
         }
     }
 
-    /// set the block data at the given position relative to the block buffer origin.
-    /// if the position is out of bounds, allocates new blocks filled with the filler block and
-    /// only then sets the given position.
-    pub fn set(&mut self, abs_pos: BlockPos, block: BlockData) {
-        let mut pos = [
-            abs_pos[0] - self.corner[0],
-            abs_pos[1] - self.corner[1],
-            abs_pos[2] - self.corner[2],
-        ];
-        if (pos[0] as u32) >= 1u32 << self.size[0]
-            || (pos[1] as u32) >= 1u32 << self.size[1]
-            || (pos[2] as u32) >= 1u32 << self.size[2]
-        {
+    /// extend the inner box buffer so that the given block is covered by it.
+    pub fn reserve(&mut self, pos: BlockPos) {
+        let mut pos = pos - self.corner;
+        if !pos.is_within([1 << self.size[0], 1 << self.size[1], 1 << self.size[2]].into()) {
             // determine a new fitting bounding box
             let mut new_corner = self.corner;
             let mut new_size = self.size;
-            let mut shift = [0, 0, 0];
+            let mut shift = Int3::zero();
             for i in 0..3 {
                 while pos[i] < 0 {
                     new_corner[i] -= 1 << new_size[i];
@@ -869,60 +736,65 @@ impl BlockBuf {
 
             // allocate space for new blocks and move block data around to fit new layout
             self.blocks
-                .resize(1 << (new_size[0] + new_size[1] + new_size[2]), self.fill);
-            let mut src = 1 << (self.size[0] + self.size[1] + self.size[2]);
-            let mut dst = 1 << (new_size[0] + new_size[1] + new_size[2]);
-            dst += shift[0] + ((shift[1] + (shift[2] << new_size[1])) << new_size[0]);
-            dst -= ((1 << new_size[2]) - (1 << self.size[2])) << (new_size[0] + new_size[1]);
-            for _z in 0..1 << self.size[2] {
-                dst -= ((1 << new_size[1]) - (1 << self.size[1])) << new_size[0];
-                for _y in 0..1 << self.size[1] {
-                    src -= 1 << self.size[0];
-                    dst -= 1 << new_size[0];
+                .resize(1 << (new_size.x + new_size.y + new_size.z), self.fill);
+            let mut src = 1 << (self.size.x + self.size.y + self.size.z);
+            let mut dst = 1 << (new_size.x + new_size.y + new_size.z);
+            dst += shift.x + ((shift.y + (shift.z << new_size.y)) << new_size.x);
+            dst -= ((1 << new_size.z) - (1 << self.size.z)) << (new_size.x + new_size.y);
+            for _z in 0..1 << self.size.z {
+                dst -= ((1 << new_size.y) - (1 << self.size.y)) << new_size.x;
+                for _y in 0..1 << self.size.y {
+                    src -= 1 << self.size.x;
+                    dst -= 1 << new_size.x;
                     self.blocks
-                        .copy_within(src..(src + (1 << self.size[0])), dst);
-                    self.blocks[(src + (1 << self.size[0]))..(src + (1 << new_size[0]))]
+                        .copy_within(src..(src + (1 << self.size.x)), dst as usize);
+                    self.blocks[(src + (1 << self.size.x))..(src + (1 << new_size.x))]
                         .fill(self.fill);
                 }
             }
             self.corner = new_corner;
             self.size = new_size;
         }
-        self.blocks[(pos[0] + ((pos[1] + (pos[2] << self.size[1])) << self.size[0])) as usize] =
-            block;
+    }
+
+    /// fill a sphere with a certain block.
+    pub fn fill_sphere(&mut self, center: BlockPos, radius: f32, block: BlockData) {
+        let ri = radius.ceil() as i32;
+        self.reserve(center - Int3::splat(ri));
+        self.reserve(center + Int3::splat(ri));
+        todo!()
+    }
+
+    /// set the block data at the given position relative to the block buffer origin.
+    /// if the position is out of bounds, allocates new blocks filled with the filler block and
+    /// only then sets the given position.
+    pub fn set(&mut self, pos: BlockPos, block: BlockData) {
+        self.reserve(pos);
+        let pos = pos - self.corner;
+        self.blocks[pos.to_index(self.size)] = block;
     }
 
     /// copy the contents of the block buffer over to the given chunk.
     /// locates the block buffer origin at the given origin position, and locates the chunk at the
     /// given chunk coordinates.
     pub fn transfer(&self, origin: BlockPos, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
-        let chunkpos = chunkpos.to_block_floor();
+        let chunkpos = chunkpos << CHUNK_BITS;
         // position of the buffer relative to the destination chunk
-        let pos = [
-            origin[0] + self.corner[0] - chunkpos[0],
-            origin[1] + self.corner[1] - chunkpos[1],
-            origin[2] + self.corner[2] - chunkpos[2],
-        ];
+        let pos = origin + self.corner - chunkpos;
 
-        let skipchunk = [pos[0].max(0), pos[1].max(0), pos[2].max(0)];
-        let uptochunk = [
-            (pos[0] + (1 << self.size[0])).min(CHUNK_SIZE),
-            (pos[1] + (1 << self.size[1])).min(CHUNK_SIZE),
-            (pos[2] + (1 << self.size[2])).min(CHUNK_SIZE),
-        ];
-        let skipbuf = [-pos[0].min(0), -pos[1].min(0), -pos[2].min(0)];
-        let uptobuf = [
-            uptochunk[0] - pos[0],
-            uptochunk[1] - pos[1],
-            uptochunk[2] - pos[2],
-        ];
+        let skipchunk = pos.max(Int3::splat(0));
+        let uptochunk = (pos
+            + Int3::new([1 << self.size[0], 1 << self.size[1], 1 << self.size[2]]))
+        .min(Int3::splat(CHUNK_SIZE));
+        let skipbuf = -pos.min(Int3::splat(0));
+        let uptobuf = uptochunk - pos;
 
-        if uptobuf[0] <= skipbuf[0]
-            || uptobuf[1] <= skipbuf[1]
-            || uptobuf[2] <= skipbuf[2]
-            || uptochunk[0] <= skipchunk[0]
-            || uptochunk[1] <= skipchunk[1]
-            || uptochunk[2] <= skipchunk[2]
+        if uptobuf.x <= skipbuf.x
+            || uptobuf.y <= skipbuf.y
+            || uptobuf.z <= skipbuf.z
+            || uptochunk.x <= skipchunk.x
+            || uptochunk.y <= skipchunk.y
+            || uptochunk.z <= skipchunk.z
         {
             // chunk and buffer do not overlap
             return;
@@ -932,26 +804,26 @@ impl BlockBuf {
         let chunk = chunk.blocks_mut();
         let mut src = 0;
         let mut dst = 0;
-        src += skipbuf[2] << (self.size[0] + self.size[1]);
-        dst += skipchunk[2] * CHUNK_SIZE * CHUNK_SIZE;
-        for _z in skipbuf[2]..uptobuf[2] {
-            src += skipbuf[1] << self.size[0];
-            dst += skipchunk[1] * CHUNK_SIZE;
-            for _y in skipbuf[1]..uptobuf[1] {
-                src += skipbuf[0];
-                dst += skipchunk[0];
-                for _x in skipbuf[0]..uptobuf[0] {
+        src += skipbuf.z << (self.size.x + self.size.y);
+        dst += skipchunk.z * CHUNK_SIZE * CHUNK_SIZE;
+        for _z in skipbuf.z..uptobuf.z {
+            src += skipbuf.y << self.size.x;
+            dst += skipchunk.y * CHUNK_SIZE;
+            for _y in skipbuf.y..uptobuf.y {
+                src += skipbuf.x;
+                dst += skipchunk.x;
+                for _x in skipbuf.x..uptobuf.x {
                     if self.blocks[src as usize] != self.fill {
                         chunk.set_idx(dst as usize, self.blocks[src as usize]);
                     }
                     src += 1;
                     dst += 1;
                 }
-                src += (1 << self.size[0]) - uptobuf[0];
-                dst += CHUNK_SIZE - uptochunk[0];
+                src += (1 << self.size.x) - uptobuf.x;
+                dst += CHUNK_SIZE - uptochunk.x;
             }
-            src += ((1 << self.size[1]) - uptobuf[1]) << self.size[0];
-            dst += (CHUNK_SIZE - uptochunk[1]) * CHUNK_SIZE;
+            src += ((1 << self.size.y) - uptobuf.y) << self.size.x;
+            dst += (CHUNK_SIZE - uptochunk.y) * CHUNK_SIZE;
         }
     }
 }

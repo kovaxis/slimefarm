@@ -72,13 +72,13 @@ impl Spread2d {
     /// Generate the point at the given grid square.
     /// The generated point is in the `[0, 1]^2` unit square, such that to obtain the absolute point
     /// position it must be added to the absolute integer `pos` coordinates.
-    pub fn gen(&self, pos: [i32; 2]) -> Vec2 {
+    pub fn gen(&self, pos: Int2) -> Vec2 {
         let mut grid2 = [Vec2::zero(); 5 * 5];
         let mut idx = 0;
         for y in -2..=2 {
             for x in -2..=2 {
                 grid2[idx] =
-                    random_pos(self.salt, [pos[0] + x, pos[1] + y]) + Vec2::new(x as f32, y as f32);
+                    random_pos(self.salt, [pos.x + x, pos.y + y]) + Vec2::new(x as f32, y as f32);
                 idx += 1;
             }
         }
@@ -116,7 +116,7 @@ fn test_spread() {
     let mut idx = 0;
     for y in 0..WIDTH {
         for x in 0..WIDTH {
-            fpoints[idx] = spread.gen([x, y]) + Vec2::new(x as f32, y as f32);
+            fpoints[idx] = spread.gen([x, y].into()) + Vec2::new(x as f32, y as f32);
             idx += 1;
         }
     }

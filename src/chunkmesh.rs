@@ -105,7 +105,7 @@ fn run_mesher(state: MesherState) {
                         chunk
                     }};
                     (@$x:expr, $y:expr, $z:expr) => {{
-                        chunks.chunk_at(pos.offset($x-1, $y-1, $z-1))?
+                        chunks.chunk_at(pos + [$x-1, $y-1, $z-1])?
                     }};
                     ($($x:tt, $y:tt, $z:tt;)*) => {{
                         [$(
@@ -422,39 +422,29 @@ impl Mesher {
     }
 
     pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkRef; 3 * 3 * 3]) -> &Mesh {
-        let chunk_at = |pos: [u32; 3]| {
-            &chunks[(pos[0] + pos[1] * 3 as u32 + pos[2] * (3 * 3) as u32) as usize]
-        };
-        let block_at = |pos: [i32; 3]| {
-            let chunk_pos = [
-                pos[0] as u32 / CHUNK_SIZE as u32,
-                pos[1] as u32 / CHUNK_SIZE as u32,
-                pos[2] as u32 / CHUNK_SIZE as u32,
-            ];
-            let sub_pos = [
-                (pos[0] as u32 % CHUNK_SIZE as u32) as i32,
-                (pos[1] as u32 % CHUNK_SIZE as u32) as i32,
-                (pos[2] as u32 % CHUNK_SIZE as u32) as i32,
-            ];
+        let chunk_at = |pos: Int3| &chunks[(pos[0] + pos[1] * 3 + pos[2] * (3 * 3)) as usize];
+        let block_at = |pos: Int3| {
+            let chunk_pos = pos >> CHUNK_BITS;
+            let sub_pos = pos.lowbits(CHUNK_BITS);
             chunk_at(chunk_pos).sub_get(sub_pos)
         };
 
         self.mesh.clear();
 
         // Special case empty chunks
-        if chunk_at([1, 1, 1]).is_empty() {
+        if chunk_at([1, 1, 1].into()).is_empty() {
             //Empty chunks have no geometry
             return &self.mesh;
         }
 
         // Special case solid chunks surrounded by solid chunks
-        if chunk_at([1, 1, 1]).is_solid()
-            && chunk_at([1, 1, 0]).is_solid()
-            && chunk_at([1, 0, 1]).is_solid()
-            && chunk_at([0, 1, 1]).is_solid()
-            && chunk_at([2, 1, 1]).is_solid()
-            && chunk_at([1, 2, 1]).is_solid()
-            && chunk_at([1, 1, 2]).is_solid()
+        if chunk_at([1, 1, 1].into()).is_solid()
+            && chunk_at([1, 1, 0].into()).is_solid()
+            && chunk_at([1, 0, 1].into()).is_solid()
+            && chunk_at([0, 1, 1].into()).is_solid()
+            && chunk_at([2, 1, 1].into()).is_solid()
+            && chunk_at([1, 2, 1].into()).is_solid()
+            && chunk_at([1, 1, 2].into()).is_solid()
         {
             //Solid chunks surrounded by solid chunks have no visible geometry
             return &self.mesh;
@@ -470,7 +460,7 @@ impl Mesher {
             let mut idx = 0;
             for z in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                 for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
-                    *self.front_mut(idx) = block_at([x, y, z]);
+                    *self.front_mut(idx) = block_at([x, y, z].into());
                     idx += 1;
                 }
             }
@@ -502,7 +492,7 @@ impl Mesher {
             let mut idx = 0;
             for z in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                 for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
-                    *self.front_mut(idx) = block_at([x, y, z]);
+                    *self.front_mut(idx) = block_at([x, y, z].into());
                     idx += 1;
                 }
             }
@@ -534,7 +524,7 @@ impl Mesher {
             let mut idx = 0;
             for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                 for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
-                    *self.front_mut(idx) = block_at([x, y, z]);
+                    *self.front_mut(idx) = block_at([x, y, z].into());
                     idx += 1;
                 }
             }

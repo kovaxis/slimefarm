@@ -88,13 +88,8 @@ impl ChunkStorage {
     }
 
     pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
-        self.chunk_at(pos.to_chunk()).map(|chunk| {
-            chunk.sub_get([
-                pos[0].rem_euclid(CHUNK_SIZE),
-                pos[1].rem_euclid(CHUNK_SIZE),
-                pos[2].rem_euclid(CHUNK_SIZE),
-            ])
-        })
+        self.chunk_at(pos >> CHUNK_BITS)
+            .map(|chunk| chunk.sub_get(pos.lowbits(CHUNK_BITS)))
     }
 }
 impl ops::Deref for ChunkStorage {
@@ -207,9 +202,7 @@ impl Terrain {
     fn hint_center(&mut self, center: BlockPos) {
         //eprintln!("hinting center");
         //Adjust center
-        let center = center
-            .offset(CHUNK_SIZE / 2, CHUNK_SIZE / 2, CHUNK_SIZE / 2)
-            .to_chunk();
+        let center = (center + Int3::splat(CHUNK_SIZE / 2)) >> CHUNK_BITS;
         self.chunks.read().center_hint.store(center);
         self.generator.reshape(self.meshes.size(), center);
         self.meshes.set_center(center);
@@ -448,7 +441,7 @@ lua_type! {TerrainRef,
         for &idx in terrain.meshes.render_order.iter() {
             if terrain.meshes.get_by_idx(idx).mesh.is_none() {
                 // This mesh is not visible
-                let block = terrain.meshes.sub_idx_to_pos(idx).to_block_center();
+                let block = (terrain.meshes.sub_idx_to_pos(idx) << CHUNK_BITS) + Int3::splat(CHUNK_SIZE/2);
                 let dx = block[0] as f64 - x;
                 let dy = block[1] as f64 - y;
                 let dz = block[2] as f64 - z;
@@ -467,8 +460,8 @@ lua_type! {TerrainRef,
         //making better use of the depth buffer.
         for &idx in this.meshes.render_order.iter() {
             if let Some(buf) = &this.meshes.get_by_idx(idx).mesh.as_ref().and_then(|mesh| mesh.buf.as_ref()) {
-                let pos = this.meshes.sub_idx_to_pos(idx).to_block_floor();
-                let offset = Vec3::new((pos[0] as f64 - x) as f32, (pos[1] as f64 - y) as f32, (pos[2] as f64 - z) as f32);
+                let pos = this.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
+                let offset = Vec3::new((pos.x as f64 - x) as f32, (pos.y as f64 - y) as f32, (pos.z as f64 - z) as f32);
                 uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = crate::UniformVal::Vec3(offset.into());
                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
             }

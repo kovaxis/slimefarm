@@ -64,33 +64,6 @@ where
     }
 }
 
-struct ChunkWindow<'a> {
-    chunk: &'a mut ChunkData,
-    corner: BlockPos,
-}
-impl ChunkWindow<'_> {
-    fn new(pos: ChunkPos, chunk: &mut ChunkBox) -> ChunkWindow {
-        ChunkWindow {
-            chunk: chunk.blocks_mut(),
-            corner: pos.to_block_floor(),
-        }
-    }
-
-    fn set(&mut self, pos: BlockPos, block: BlockData) {
-        let pos = [
-            (pos[0] - self.corner[0]),
-            (pos[1] - self.corner[1]),
-            (pos[2] - self.corner[2]),
-        ];
-        if (pos[0] as u32) < CHUNK_SIZE as u32
-            && (pos[1] as u32) < CHUNK_SIZE as u32
-            && (pos[2] as u32) < CHUNK_SIZE as u32
-        {
-            *self.chunk.sub_get_mut(pos) = block;
-        }
-    }
-}
-
 #[derive(Deserialize)]
 struct Config {
     seed: u64,
@@ -142,7 +115,7 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
         //*
         noise_scaler.fill(
             &noise_gen,
-            pos.to_block_floor().to_float_floor(),
+            (pos << CHUNK_BITS).to_float_floor(),
             CHUNK_SIZE as f64,
         );
         // */
@@ -175,12 +148,17 @@ struct Plains {
     xy_scale: f64,
     z_scale: f32,
     detail: i32,
+    tree_width: [f32; 2],
+    tree_height: [f32; 3],
+    tree_undergen: i32,
+    tree_taperpow: f32,
     color: [f32; 3],
     log_color: [f32; 3],
 }
 fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
     const TREESPACING: i32 = 16;
     const TREESUBDIV: i32 = CHUNK_SIZE / TREESPACING;
+    const EXTRAGEN: i32 = 2;
 
     struct PlainsGen {
         cfg: Config,
@@ -192,7 +170,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
     }
     impl PlainsGen {
         /// generate the heightmap of the given chunk.
-        fn gen_hmap(&mut self, pos: [i32; 2]) -> Option<&(i16, i16, LoafBox<i16>)> {
+        fn gen_hmap(&mut self, pos: Int2) -> Option<&(i16, i16, LoafBox<i16>)> {
             let k = &self.k;
             let noise2d = &self.noise2d;
             Some(self.cols.get_mut(pos)?.get_or_insert_with(|| {
@@ -234,7 +212,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 let mut idx_2d = 0;
                 for _y in 0..CHUNK_SIZE {
                     for _x in 0..CHUNK_SIZE {
-                        let real_z = pos[2] * CHUNK_SIZE + z;
+                        let real_z = pos.z * CHUNK_SIZE + z;
                         blocks.set_idx(
                             idx_3d,
                             BlockData {
@@ -251,15 +229,13 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
 
         /// generate the tree at the given tree-coord.
         /// (`TREESUBDIV` tree-units per chunk.)
-        fn gen_tree(&mut self, tcoord: [i32; 2]) -> Option<&(BlockPos, BlockBuf)> {
-            let chunkpos = [
-                tcoord[0].div_euclid(TREESUBDIV),
-                tcoord[1].div_euclid(TREESUBDIV),
-            ];
+        fn gen_tree(&mut self, tcoord: Int2) -> Option<&(BlockPos, BlockBuf)> {
+            let chunkpos = tcoord / TREESUBDIV;
             self.gen_hmap(chunkpos)?;
             let tree_spread = &self.tree_spread;
             let cols = &self.cols;
             let cfg = &self.cfg;
+            let k = &self.k;
             Some(self.trees.get_mut(tcoord)?.get_or_insert_with(|| {
                 // generate a tree at this tree-grid position
                 let thorizpos = tree_spread.gen(tcoord) * TREESPACING as f32;
@@ -278,18 +254,18 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 //let mut bbuf = BlockBuf::with_capacity([-8, -8, 0], [4, 4, 32]);
 
                 // actually generate tree in the buffer
-                let mut rng = FastRng::seed_from_u64(fxhash::hash64(&(cfg.seed, tcoord)));
+                let mut rng = FastRng::seed_from_u64(fxhash::hash64(&(cfg.seed, "trees", tcoord)));
                 let wood = BlockData { data: 2 };
-                let td = rng.gen_range(2. ..5.);
-                let th: f32 = rng.gen_range(10. ..20.);
-                let tbh = 5.;
-                for z in 0..th.ceil() as i32 {
-                    let d = td * ((th - z as f32) / (th - tbh)).powf(0.8);
-                    let di = d.ceil() as i32;
-                    let d2 = d * d;
-                    for y in -di..=di {
-                        for x in -di..=di {
-                            if (x * x + y * y) as f32 <= d2 {
+                let tr = rng.gen_range(k.tree_width[0]..k.tree_width[1]) / 2.;
+                let th: f32 = rng.gen_range(k.tree_height[0]..k.tree_height[1]);
+                let tbh = k.tree_height[2];
+                for z in -k.tree_undergen..th.ceil() as i32 {
+                    let r = tr * ((th - z as f32) / (th - tbh)).powf(k.tree_taperpow);
+                    let ri = r.ceil() as i32;
+                    let r2 = r * r;
+                    for y in -ri..=ri {
+                        for x in -ri..=ri {
+                            if (x * x + y * y) as f32 <= r2 {
                                 bbuf.set(BlockPos([x, y, z]), wood);
                             }
                         }
@@ -305,11 +281,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             self.gen_hmap(pos.xy())?;
             let mut chunk = self.gen_terrain(pos)?;
 
-            let xy = pos.xy();
-            let xy = [xy[0] * TREESUBDIV, xy[1] * TREESUBDIV];
-            for y in -2..=TREESUBDIV + 2 {
-                for x in -2..=TREESUBDIV + 2 {
-                    let tcoord = [xy[0] + x, xy[1] + y];
+            let xy = pos.xy() * TREESUBDIV;
+            for y in -EXTRAGEN..TREESUBDIV + EXTRAGEN {
+                for x in -EXTRAGEN..TREESUBDIV + EXTRAGEN {
+                    let tcoord = xy + [x, y];
                     let (tpos, treebuf) = self.gen_tree(tcoord)?;
                     treebuf.transfer(*tpos, pos, &mut chunk);
                 }
@@ -436,11 +411,13 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
 
         fn recenter(&mut self, center: ChunkPos) {
             self.cols.set_center(center.xy());
+            self.trees.set_center(center.xy() * TREESUBDIV);
+            eprintln!("set tree center to {:?}", center.xy() * TREESUBDIV);
         }
     }
     let gen = PlainsGen {
-        cols: GridKeeper2d::with_radius(cfg.gen_radius, [0, 0]),
-        trees: GridKeeper2d::with_radius(cfg.gen_radius * TREESUBDIV as f32, [0, 0]),
+        cols: GridKeeper2d::with_radius(cfg.gen_radius / CHUNK_SIZE as f32, Int2::zero()),
+        trees: GridKeeper2d::with_radius(cfg.gen_radius / TREESPACING as f32, Int2::zero()),
         noise2d: Noise2d::new_octaves(cfg.seed, k.xy_scale, k.detail),
         tree_spread: Spread2d::new(cfg.seed),
         cfg,

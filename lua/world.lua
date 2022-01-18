@@ -19,10 +19,16 @@ function World:new()
             "xy_scale": 256,
             "detail": 3,
             "z_scale": 40,
+
+            "tree_width": [3, 5],
+            "tree_height": [20, 30, 3],
+            "tree_taperpow": 0.8,
+            "tree_undergen": 5,
+
             "color": [0.01, 0.92, 0.20],
             "log_color": [0.53, 0.12, 0.01]
         }},
-        "gen_radius": 16,
+        "gen_radius": 512,
         "seed": 123443
     }]]
     --[[

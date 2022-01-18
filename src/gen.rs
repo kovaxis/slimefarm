@@ -252,7 +252,8 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
         //Find a suitable chunk and generate it
         let mut priority_idx = 0;
         let mut generated = 0;
-        while priority_idx < provider.priority.len() && generated < 4 {
+        let mut failed = 0;
+        while priority_idx < provider.priority.len() && generated < 4 && failed < 8 {
             let gen_start = Instant::now();
             let idx = provider.priority[priority_idx];
             priority_idx += 1;
@@ -263,7 +264,10 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
             }
             let chunk = match provider.fill.fill(pos) {
                 Some(chunk) => chunk,
-                None => continue,
+                None => {
+                    failed += 1;
+                    continue;
+                }
             };
             //Keep chunkgen timing statistics
             {

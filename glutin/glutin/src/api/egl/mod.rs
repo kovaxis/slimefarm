@@ -1217,7 +1217,7 @@ where
             }
             value
         }};
-    };
+    }
 
     let desc = PixelFormat {
         hardware_accelerated: attrib!(egl, display, config_id, ffi::egl::CONFIG_CAVEAT)

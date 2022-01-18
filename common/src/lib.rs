@@ -7,6 +7,7 @@ use crate::prelude::*;
 pub mod prelude {
     pub use crate::{
         arena::{Box as ArenaBox, BoxUninit as ArenaBoxUninit},
+        ivec::{Int2, Int3},
         slotmap::{SlotId, SlotMap},
         terrain::{
             BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, LoafBox, CHUNK_BITS,
@@ -64,6 +65,7 @@ pub mod prelude {
 }
 
 pub mod arena;
+pub mod ivec;
 pub mod noise2d;
 pub mod noise3d;
 pub mod slotmap;

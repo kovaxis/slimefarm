@@ -257,12 +257,12 @@ pub struct OccupChunk {
     bits: u64,
 }
 impl OccupChunk {
-    pub fn is_occup(&self, [x, y]: [i32; 2]) -> bool {
-        (self.bits >> (x + y * 8)) & 1 != 0
+    pub fn is_occup(&self, u: Int2) -> bool {
+        (self.bits >> (u.x | u.y * 8)) & 1 != 0
     }
 
-    pub fn set_occup(&mut self, [x, y]: [i32; 2]) {
-        self.bits |= 1 << (x + y * 8);
+    pub fn set_occup(&mut self, u: Int2) {
+        self.bits |= 1 << (u.x | u.y * 8);
     }
 }
 
@@ -272,24 +272,23 @@ pub struct OccupMap {
 impl OccupMap {
     pub fn new(size: i32) -> Self {
         Self {
-            map: GridKeeper2d::new(size, [0, 0]).into(),
+            map: GridKeeper2d::new(size, Int2::zero()).into(),
         }
     }
 
-    pub fn set_center(&self, center: [i32; 2]) {
+    pub fn set_center(&self, center: Int2) {
         self.map.borrow_mut().set_center(center);
     }
 
-    fn decompose(&self, pos: [i32; 2]) -> ([i32; 2], [i32; 2]) {
-        let cnkpos = [pos[0].div_euclid(CHUNK_SIZE), pos[1].div_euclid(CHUNK_SIZE)];
-        let subpos = [
-            pos[0].rem_euclid(CHUNK_SIZE) / (CHUNK_SIZE / 8),
-            pos[1].rem_euclid(CHUNK_SIZE) / (CHUNK_SIZE / 8),
-        ];
-        (cnkpos, subpos)
+    /// Decompose an absolute block position into a `(chunk, subchunk_occup)` coordinate pair.
+    fn decompose(&self, pos: Int2) -> (Int2, Int2) {
+        (
+            pos >> CHUNK_BITS,
+            pos.lowbits(CHUNK_BITS) >> (CHUNK_BITS - 3),
+        )
     }
 
-    pub fn is_occup(&self, pos: [i32; 2]) -> bool {
+    pub fn is_occup(&self, pos: Int2) -> bool {
         let (cnkpos, subpos) = self.decompose(pos);
         match self.map.borrow().get(cnkpos) {
             Some(cnk) => cnk.is_occup(subpos),
@@ -297,7 +296,7 @@ impl OccupMap {
         }
     }
 
-    pub fn set_occup(&self, pos: [i32; 2]) {
+    pub fn set_occup(&self, pos: Int2) {
         let (cnkpos, subpos) = self.decompose(pos);
         match self.map.borrow_mut().get_mut(cnkpos) {
             Some(cnk) => cnk.set_occup(subpos),
