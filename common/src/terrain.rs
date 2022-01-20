@@ -734,7 +734,8 @@ impl BlockBuf {
                 }
             }
 
-            // allocate space for new blocks and move block data around to fit new layout
+            // Allocate space for new blocks and move block data around to fit new layout
+            // OPTIMIZE: If only resizing on the Z axis, bulk move blocks around.
             self.blocks
                 .resize(1 << (new_size.x + new_size.y + new_size.z), self.fill);
             let mut src = 1 << (self.size.x + self.size.y + self.size.z);
@@ -746,10 +747,9 @@ impl BlockBuf {
                 for _y in 0..1 << self.size.y {
                     src -= 1 << self.size.x;
                     dst -= 1 << new_size.x;
-                    self.blocks
-                        .copy_within(src..(src + (1 << self.size.x)), dst as usize);
-                    self.blocks[(src + (1 << self.size.x))..(src + (1 << new_size.x))]
-                        .fill(self.fill);
+                    let (start, end) = (src, src + (1 << self.size.x));
+                    self.blocks.copy_within(start..end, dst as usize);
+                    self.blocks[start..end.min(dst as usize)].fill(self.fill);
                 }
             }
             self.corner = new_corner;
@@ -757,12 +757,60 @@ impl BlockBuf {
         }
     }
 
-    /// fill a sphere with a certain block.
-    pub fn fill_sphere(&mut self, center: BlockPos, radius: f32, block: BlockData) {
-        let ri = radius.ceil() as i32;
-        self.reserve(center - Int3::splat(ri));
-        self.reserve(center + Int3::splat(ri));
-        todo!()
+    /// Fill a sphere with a certain block.
+    pub fn fill_sphere(&mut self, center: Vec3, radius: f32, block: BlockData) {
+        let mn = Int3::from_f32((center - Vec3::broadcast(radius)).map(f32::floor));
+        let mx = Int3::from_f32((center + Vec3::broadcast(radius)).map(f32::ceil));
+        self.reserve(mn);
+        self.reserve(mx);
+        let r2 = radius * radius;
+        for z in mn.z..=mx.z {
+            for y in mn.y..=mx.z {
+                // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
+                // end, and write all the row blocks in one go.
+                for x in mn.x..=mx.x {
+                    let d = Vec3::new(x as f32, y as f32, z as f32) - center;
+                    if d.mag_sq() <= r2 {
+                        self.set([x, y, z].into(), block);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fill a cylinder with a certain block.
+    /// The cylinder need not be axis-oriented.
+    /// The cylinder endpoints are capped with a sphere.
+    /// Receives the two endpoints of the cylinder skeleton segment, as well as two radii, one for
+    /// each endpoint.
+    pub fn fill_cylinder(&mut self, u0: Vec3, u1: Vec3, r0: f32, r1: f32, block: BlockData) {
+        let mn = Int3::from_f32(
+            (u0 - Vec3::broadcast(r0))
+                .min_by_component(u1 - Vec3::broadcast(r1))
+                .map(f32::floor),
+        );
+        let mx = Int3::from_f32(
+            (u0 + Vec3::broadcast(r0))
+                .max_by_component(u1 + Vec3::broadcast(r1))
+                .map(f32::ceil),
+        );
+        self.reserve(mn);
+        self.reserve(mx);
+        let n = u1 - u0;
+        let inv = n.mag_sq().recip();
+        for z in mn.z..=mx.z {
+            for y in mn.y..=mx.y {
+                for x in mn.x..=mx.x {
+                    let p = Vec3::new(x as f32, y as f32, z as f32) - u0;
+                    let s = (n.dot(p) * inv).min(1.).max(0.);
+                    let r = r0 + (r1 - r0) * s;
+                    let d2 = (n * s - p).mag_sq();
+                    if d2 <= r * r {
+                        self.set([x, y, z].into(), block);
+                    }
+                }
+            }
+        }
     }
 
     /// set the block data at the given position relative to the block buffer origin.

@@ -8,7 +8,7 @@ local world = World{}
 table.insert(world.entities, Player{
     x = 0,
     y = 0,
-    z = 0,
+    z = 100,
 })
 for x = -10, 10 do
     table.insert(world.entities, Enemy{

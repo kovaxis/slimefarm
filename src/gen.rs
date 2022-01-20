@@ -18,10 +18,7 @@ pub struct GeneratorHandle {
     thread: Option<JoinHandle<Result<()>>>,
 }
 impl GeneratorHandle {
-    /// # Safety
-    ///
-    /// `share_with` must be of the same type that the `cfg` bytestring will generate.
-    pub(crate) unsafe fn new(
+    pub(crate) fn new(
         cfg: &[u8],
         chunks: Arc<RwLock<ChunkStorage>>,
         bookkeep: &BookKeepHandle,
@@ -46,7 +43,11 @@ impl GeneratorHandle {
                         reshape_recv,
                         generated_send,
                     };
-                    gen_thread(state, &cfg)
+                    let res = gen_thread(state, &cfg);
+                    if let Err(err) = &res {
+                        eprintln!("fatal error initializing gen thread: {:#}", err);
+                    }
+                    res
                 })
                 .unwrap()
         };
@@ -195,6 +196,7 @@ impl GenStore for GenStoreConcrete {
 }
 impl Drop for GenStoreConcrete {
     fn drop(&mut self) {
+        eprintln!("destroying GenStore capsules");
         for (cap, destroy) in self.capsules.borrow_mut().values() {
             unsafe {
                 destroy(*cap);
@@ -244,10 +246,12 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
     'outer: loop {
         //Make sure provider structure has the right size
         for (size, center) in gen.reshape_recv.try_iter() {
+            eprintln!("recentering to {:?}", center);
             provider.reshape(size, center);
             unsafe {
                 store.trigger("base.recenter", &center);
             }
+            eprintln!("  finished recentering");
         }
         //Find a suitable chunk and generate it
         let mut priority_idx = 0;

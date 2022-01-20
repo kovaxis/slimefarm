@@ -20,9 +20,25 @@ function World:new()
             "detail": 3,
             "z_scale": 40,
 
-            "tree_width": [3, 5],
-            "tree_height": [20, 30, 3],
-            "tree_taperpow": 0.8,
+            "tree": {
+                "spacing": 64,
+                "extragen": 1,
+                "initial_incl": [0, 0.2],
+                "initial_area": [12, 16],
+                "area_per_len": [0.02, 0.03],
+                "trunk_len": [26, 28],
+                "halflen": [74, 75],
+                "rot_angle": [2.313, 2.713],
+                "offshoot_area": [0.15, 0.35],
+                "offshoot_perturb": [0.4, 0.7],
+                "main_perturb": [-0.3, -0.1],
+                "prune_area": 2,
+                "prune_depth": 120
+            },
+
+            "tree_width": [6, 9],
+            "tree_height": [200, 240, 10],
+            "tree_taperpow": 0.6,
             "tree_undergen": 5,
 
             "color": [0.01, 0.92, 0.20],

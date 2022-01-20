@@ -115,7 +115,7 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
         //*
         noise_scaler.fill(
             &noise_gen,
-            (pos << CHUNK_BITS).to_float_floor(),
+            (pos << CHUNK_BITS).to_f64_floor(),
             CHUNK_SIZE as f64,
         );
         // */
@@ -144,22 +144,60 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
 }
 
 #[derive(Deserialize)]
+struct TreeCfg {
+    /// Spacing between trees.
+    /// Should be a power of two.
+    spacing: i32,
+    /// How many trees to generate from the nearby chunks.
+    /// Usually 1 or 2 are enough, unless trees are very closely packed with huge foliages.
+    extragen: i32,
+    /// Initial vertical inclination.
+    /// 0 is directly upwards, PI/2 is directly horizontal.
+    initial_incl: [f32; 2],
+    /// Initial tree sectional area.
+    initial_area: [f32; 2],
+    /// Area loss per unit of branch length/depth.
+    area_per_len: [f32; 2],
+    /// Initial trunk length, serves as a base for the length of the rest of the branches.
+    trunk_len: [f32; 2],
+    /// How much does tree depth affect branch length.
+    /// Every `halflen` units of depth, the branch length is halved.
+    halflen: [f32; 2],
+    /// How much to rotate the branching angle per branch-off.
+    /// Seems to be a fibonacci ratio?
+    /// 1, 1, 2, 3, 5, 8, 13
+    /// Angles like 2PI * 1/2, 2PI * 1/3, 2PI * 2/5, 2PI * 3/8, etc...
+    rot_angle: [f32; 2],
+    /// How much sectional area of the branch should offshoots steal from the main branch.
+    /// Eg. `0.2` means a fifth of the area goes to the offshoot.
+    offshoot_area: [f32; 2],
+    /// How much perturbation should the offshoot receive, in radians.
+    /// `0` = directly forward
+    /// `PI/2` = 90 degrees perpendicular from the main branch
+    offshoot_perturb: [f32; 2],
+    /// How much perturbation should the main branch receive from an offshoot in radians.
+    /// Usually negative to compensate for the offshoot.
+    /// `0` = no perturbation
+    /// `-PI/2` = 90 degrees against from the offshoot
+    main_perturb: [f32; 2],
+    /// If less than this sectional area is attributed to a tree, stop generating branches.
+    prune_area: f32,
+    /// If tree depth (total distance to the root along the branches) is higher than this number,
+    /// stop generating branches.
+    prune_depth: f32,
+}
+
+#[derive(Deserialize)]
 struct Plains {
     xy_scale: f64,
     z_scale: f32,
     detail: i32,
-    tree_width: [f32; 2],
-    tree_height: [f32; 3],
-    tree_undergen: i32,
-    tree_taperpow: f32,
+
+    tree: TreeCfg,
     color: [f32; 3],
     log_color: [f32; 3],
 }
 fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
-    const TREESPACING: i32 = 16;
-    const TREESUBDIV: i32 = CHUNK_SIZE / TREESPACING;
-    const EXTRAGEN: i32 = 2;
-
     struct PlainsGen {
         cfg: Config,
         k: Plains,
@@ -227,53 +265,133 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             Some(chunk)
         }
 
+        fn gen_branch(
+            &self,
+            rng: &mut FastRng,
+            bbuf: &mut BlockBuf,
+            pos: Vec3,
+            up: Vec3,
+            norm: Vec3,
+            area: f32,
+            depth: f32,
+        ) {
+            let wood = BlockData { data: 2 };
+            let k = &self.k.tree;
+
+            if area < k.prune_area || depth > k.prune_depth {
+                return;
+            }
+
+            let offshoot_area = rng.gen_range(k.offshoot_area[0]..=k.offshoot_area[1]);
+            let len = rng.gen_range(k.trunk_len[0]..=k.trunk_len[1])
+                * (-depth / rng.gen_range(k.halflen[0]..=k.halflen[1])).exp2();
+            let top = pos + up * len;
+            let norm = norm.rotated_by(Rotor3::from_angle_plane(
+                rng.gen_range(k.rot_angle[0]..=k.rot_angle[1]),
+                Bivec3::from_normalized_axis(up),
+            ));
+
+            let newarea = area - rng.gen_range(k.area_per_len[0]..=k.area_per_len[1]) * len;
+            let newdepth = depth + len;
+            bbuf.fill_cylinder(pos, top, area.sqrt(), newarea.sqrt(), wood);
+
+            let perturb_plane = up.wedge(norm);
+
+            let subperturb = Rotor3::from_angle_plane(
+                rng.gen_range(k.main_perturb[0]..=k.main_perturb[1]),
+                perturb_plane,
+            );
+            let subup = up.rotated_by(subperturb);
+            let subnorm = norm.rotated_by(subperturb);
+            self.gen_branch(
+                rng,
+                bbuf,
+                top,
+                subup,
+                subnorm,
+                newarea * (1. - offshoot_area),
+                newdepth,
+            );
+
+            let offperturb = Rotor3::from_angle_plane(
+                rng.gen_range(k.offshoot_perturb[0]..=k.offshoot_perturb[1]),
+                perturb_plane,
+            );
+            let offup = up.rotated_by(offperturb);
+            let offnorm = norm.rotated_by(offperturb);
+            self.gen_branch(
+                rng,
+                bbuf,
+                top,
+                offup,
+                offnorm,
+                newarea * offshoot_area,
+                newdepth,
+            );
+        }
+
         /// generate the tree at the given tree-coord.
         /// (`TREESUBDIV` tree-units per chunk.)
-        fn gen_tree(&mut self, tcoord: Int2) -> Option<&(BlockPos, BlockBuf)> {
-            let chunkpos = tcoord / TREESUBDIV;
-            self.gen_hmap(chunkpos)?;
-            let tree_spread = &self.tree_spread;
-            let cols = &self.cols;
-            let cfg = &self.cfg;
-            let k = &self.k;
-            Some(self.trees.get_mut(tcoord)?.get_or_insert_with(|| {
-                // generate a tree at this tree-grid position
-                let thorizpos = tree_spread.gen(tcoord) * TREESPACING as f32;
-                let thorizpos = [
-                    tcoord[0] * TREESPACING + thorizpos[0] as i32,
-                    tcoord[1] * TREESPACING + thorizpos[1] as i32,
-                ];
-                let subchunkpos = [
-                    thorizpos[0].rem_euclid(CHUNK_SIZE),
-                    thorizpos[1].rem_euclid(CHUNK_SIZE),
-                ];
-                let (_, _, hmap) = cols.get(chunkpos).unwrap().as_ref().unwrap();
-                let theight = hmap[(subchunkpos[0] + subchunkpos[1] * CHUNK_SIZE) as usize];
-                let tpos = BlockPos([thorizpos[0], thorizpos[1], theight as i32]);
-                let mut bbuf = BlockBuf::new();
-                //let mut bbuf = BlockBuf::with_capacity([-8, -8, 0], [4, 4, 32]);
+        fn gen_tree(&mut self, tcoord: Int2) -> Option<()> {
+            let k = &self.k.tree;
+            if self.trees.get(tcoord)?.is_some() {
+                return Some(());
+            }
+            // generate a tree at this tree-grid position
+            let thorizpos = self.tree_spread.gen(tcoord) * k.spacing as f32;
+            let tfracpos = thorizpos.map(f32::fract);
+            let thorizpos = tcoord * k.spacing + Int2::from_f32(thorizpos);
+            let chunkpos = thorizpos >> CHUNK_BITS;
+            let subchunkpos = thorizpos.lowbits(CHUNK_BITS);
+            let (_, _, hmap) = self.gen_hmap(chunkpos)?;
+            let theight = hmap[subchunkpos.to_index([CHUNK_BITS; 2].into())];
+            let tpos = thorizpos.with_z(theight as i32);
+            let mut bbuf = BlockBuf::new();
+            //let mut bbuf = BlockBuf::with_capacity([-32, -32, -16].into(), [64, 64, 128].into());
 
-                // actually generate tree in the buffer
-                let mut rng = FastRng::seed_from_u64(fxhash::hash64(&(cfg.seed, "trees", tcoord)));
-                let wood = BlockData { data: 2 };
-                let tr = rng.gen_range(k.tree_width[0]..k.tree_width[1]) / 2.;
-                let th: f32 = rng.gen_range(k.tree_height[0]..k.tree_height[1]);
-                let tbh = k.tree_height[2];
-                for z in -k.tree_undergen..th.ceil() as i32 {
-                    let r = tr * ((th - z as f32) / (th - tbh)).powf(k.tree_taperpow);
-                    let ri = r.ceil() as i32;
-                    let r2 = r * r;
-                    for y in -ri..=ri {
-                        for x in -ri..=ri {
-                            if (x * x + y * y) as f32 <= r2 {
-                                bbuf.set(BlockPos([x, y, z]), wood);
-                            }
+            // actually generate tree in the buffer
+            let mut rng = FastRng::seed_from_u64(fxhash::hash64(&(self.cfg.seed, "trees", tcoord)));
+
+            let k = &self.k.tree;
+            let initial_area = rng.gen_range(k.initial_area[0]..=k.initial_area[1]);
+            let up = Vec3::unit_x().rotated_by(
+                Rotor3::from_rotation_xy(rng.gen_range(0. ..f32::PI * 2.))
+                    * Rotor3::from_rotation_xz(
+                        f32::PI / 2. + rng.gen_range(k.initial_incl[0]..=k.initial_incl[1]),
+                    ),
+            );
+            let horiz = Vec3::unit_x()
+                .rotated_by(Rotor3::from_rotation_xy(rng.gen_range(0. ..2. * f32::PI)));
+            self.gen_branch(
+                &mut rng,
+                &mut bbuf,
+                Vec3::new(tfracpos.x, tfracpos.y, 0.),
+                up,
+                horiz,
+                initial_area,
+                0.,
+            );
+
+            /*
+            let tr = rng.gen_range(k.tree_width[0]..k.tree_width[1]) / 2.;
+            let th: f32 = rng.gen_range(k.tree_height[0]..k.tree_height[1]);
+            let tbh = k.tree_height[2];
+            for z in -k.tree_undergen..th.ceil() as i32 {
+                let r = tr * ((th - z as f32) / (th - tbh)).powf(k.tree_taperpow);
+                let ri = r.ceil() as i32;
+                let r2 = r * r;
+                for y in -ri..=ri {
+                    for x in -ri..=ri {
+                        if (x * x + y * y) as f32 <= r2 {
+                            bbuf.set(BlockPos([x, y, z]), wood);
                         }
                     }
                 }
+            }
+            */
 
-                (tpos, bbuf)
-            }))
+            self.trees.get_mut(tcoord)?.get_or_insert((tpos, bbuf));
+            Some(())
         }
     }
     impl Generator for PlainsGen {
@@ -281,143 +399,31 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             self.gen_hmap(pos.xy())?;
             let mut chunk = self.gen_terrain(pos)?;
 
-            let xy = pos.xy() * TREESUBDIV;
-            for y in -EXTRAGEN..TREESUBDIV + EXTRAGEN {
-                for x in -EXTRAGEN..TREESUBDIV + EXTRAGEN {
+            let extragen = self.k.tree.extragen;
+            let subdiv = (CHUNK_SIZE / self.k.tree.spacing).max(1);
+            let xy = (pos.xy() << CHUNK_BITS) / self.k.tree.spacing;
+            for y in -extragen..subdiv + extragen {
+                for x in -extragen..subdiv + extragen {
                     let tcoord = xy + [x, y];
-                    let (tpos, treebuf) = self.gen_tree(tcoord)?;
+                    self.gen_tree(tcoord)?;
+                    let (tpos, treebuf) = self.trees.get(tcoord)?.as_ref()?;
                     treebuf.transfer(*tpos, pos, &mut chunk);
                 }
             }
 
             Some(chunk)
-
-            /*
-            let (min, max, hmap) = cols.get(args.pos.xz())?.as_ref()?;
-            if args.pos[1] << CHUNK_BITS < *max as i32
-                && (args.pos[1] + 1) << CHUNK_BITS > *min as i32
-            {
-                for _ in 0..1 {
-                    let chunk_xz = args.pos.xz();
-                    let mut counter: u32 = 0xfb4;
-                    let mut rand = fxhash::hash64(&(chunk_xz, counter));
-                    let mut bits_left: i32 = 64;
-                    let mut rand_num = |bits| {
-                        bits_left -= bits as i32;
-                        if bits_left < 0 {
-                            rand = fxhash::hash64(&(chunk_xz, counter));
-                            bits_left = 64 - bits as i32;
-                            counter = counter.wrapping_add(1);
-                        }
-                        let num = rand as i32 & ((1 << bits) - 1);
-                        rand >>= bits;
-                        num
-                    };
-                    let pos = [rand_num(CHUNK_BITS), rand_num(CHUNK_BITS)];
-                    let y = hmap[(pos[0] | (pos[1] << CHUNK_BITS)) as usize];
-                    if (y as i32) >> CHUNK_BITS == args.pos[1] {
-                        //Generate a tree here
-                        let base_y = y as i32 & CHUNK_MASK;
-                        let pos_f = Vec2::new(
-                            pos[0] as f32 + rand_num(3) as f32 / 8. - 0.5,
-                            pos[1] as f32 + rand_num(3) as f32 / 8. - 0.5,
-                        );
-                        let n = (2 + rand_num(4) % 5) as usize;
-                        let r = 2. + rand_num(4) as f32 * (2.4 / 16.);
-                        let h = 5 + rand_num(5) * 7 / 32;
-                        let angle_vel = (rand_num(4) as f32 + 0.5) * (0.44 / 8.) - 1.;
-                        let mut attrs = [Vec2::broadcast(0.); 8];
-                        let mut base_angle = rand_num(6) as f32 * (f32::PI / 64.);
-                        let approach =
-                            |attrs: &mut [Vec2], base_angle: f32, factor, radius| {
-                                let mut angle = base_angle;
-                                for i in 0..n {
-                                    let target = pos_f
-                                        + radius * Vec2::new(angle.cos(), angle.sin());
-                                    attrs[i] += (target - attrs[i]) * factor;
-                                    angle += 2. * f32::PI / n as f32;
-                                }
-                            };
-                        approach(&mut attrs, base_angle, 1., r);
-                        for dy in -2..h {
-                            let y = base_y + dy;
-                            let extra_r = r;
-                            let r = if dy <= 0 {
-                                ((-dy + 1) * (-dy + 1)) as f32
-                            } else {
-                                let s = (dy + 1) as f32 / h as f32;
-                                s.powi(4) * r
-                            };
-                            let coef = {
-                                let mut angle: f32 = 0.;
-                                let mut sum = 0.;
-                                for _ in 0..n {
-                                    sum += (extra_r * extra_r
-                                        + 2. * (extra_r + r) * r * (1. - angle.cos()))
-                                    .sqrt()
-                                    .sqrt();
-                                    angle += 2. * f32::PI / n as f32;
-                                }
-                                sum
-                            };
-                            let r_int = (r + extra_r).ceil() as i32;
-                            //Perturb attractors
-                            base_angle += angle_vel;
-                            approach(&mut attrs, base_angle, 0.8, r);
-                            for i in 0..n {
-                                let disturb = Vec2::new(
-                                    (rand_num(5) as f32 + 0.5) / 16. - 1.,
-                                    (rand_num(5) as f32 + 0.5) / 16. - 1.,
-                                );
-                                attrs[i] += disturb * 0.8;
-                            }
-                            eprintln!(
-                                "setting layer [{}, {}] -> [{}, {}] on height {}",
-                                pos[0] - r_int,
-                                pos[1] - r_int,
-                                pos[0] + r_int,
-                                pos[1] + r_int,
-                                y
-                            );
-                            for z in pos[1] - r_int..=pos[1] + r_int {
-                                for x in pos[0] - r_int..=pos[0] + r_int {
-                                    // TODO
-                                    /*if args.substrate.get([x, y, z]).is_solid() {
-                                        continue;
-                                    }*/
-                                    let block_pos = Vec2::new(x as f32, z as f32);
-                                    if (block_pos - pos_f).mag_sq()
-                                        <= (r + extra_r) * (r + extra_r)
-                                    {
-                                        //TODO
-                                        //args.output.set([x, y, z], BlockData { data: 1 });
-                                    }
-                                    /*
-                                    let mut sum = 0.;
-                                    for i in 0..n {
-                                        sum += (attrs[i] - block_pos).mag().sqrt();
-                                    }
-                                    if sum <= coef {
-                                        args.output.set([x, y, z], BlockData { data: 1 });
-                                    }*/
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            */
         }
 
         fn recenter(&mut self, center: ChunkPos) {
             self.cols.set_center(center.xy());
-            self.trees.set_center(center.xy() * TREESUBDIV);
-            eprintln!("set tree center to {:?}", center.xy() * TREESUBDIV);
+            self.trees
+                .set_center((center.xy() << CHUNK_BITS) / self.k.tree.spacing);
         }
     }
+    eprintln!("creating PlainsGen");
     let gen = PlainsGen {
         cols: GridKeeper2d::with_radius(cfg.gen_radius / CHUNK_SIZE as f32, Int2::zero()),
-        trees: GridKeeper2d::with_radius(cfg.gen_radius / TREESPACING as f32, Int2::zero()),
+        trees: GridKeeper2d::with_radius(cfg.gen_radius / k.tree.spacing as f32, Int2::zero()),
         noise2d: Noise2d::new_octaves(cfg.seed, k.xy_scale, k.detail),
         tree_spread: Spread2d::new(cfg.seed),
         cfg,
@@ -450,7 +456,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
 }
 
 pub fn new_generator<'a>(cfg: &[u8], store: &'static dyn GenStore) -> Result<()> {
-    let mut cfg: Config = serde_json::from_slice(cfg)?;
+    eprintln!("new_generator");
+    let mut cfg: Config =
+        serde_json::from_slice(cfg).context("failed to parse worldgen config string")?;
+    eprintln!("deserialized");
     let kind = mem::replace(&mut cfg.kind, GenKind::Void);
     match kind {
         GenKind::Void => void(store, cfg),

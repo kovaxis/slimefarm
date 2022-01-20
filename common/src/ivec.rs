@@ -240,17 +240,32 @@ impl Int2 {
     }
 
     #[inline]
-    pub fn from_float(float: [f64; 2]) -> Self {
+    pub fn from_f32(float: Vec2) -> Self {
+        Self::new([float.x.floor() as i32, float.y.floor() as i32])
+    }
+
+    #[inline]
+    pub fn from_f64(float: [f64; 2]) -> Self {
         Self::new([float[0].floor() as i32, float[1].floor() as i32])
     }
 
     #[inline]
-    pub fn to_float_floor(self) -> [f64; 2] {
+    pub fn to_f32_floor(self) -> Vec2 {
+        Vec2::new(self.x as f32, self.y as f32)
+    }
+
+    #[inline]
+    pub fn to_f32_center(self) -> Vec2 {
+        Vec2::new(self.x as f32 + 0.5, self.y as f32 + 0.5)
+    }
+
+    #[inline]
+    pub fn to_f64_floor(self) -> [f64; 2] {
         [self.x as f64, self.y as f64]
     }
 
     #[inline]
-    pub fn to_float_center(self) -> [f64; 2] {
+    pub fn to_f64_center(self) -> [f64; 2] {
         [self.x as f64 + 0.5, self.y as f64 + 0.5]
     }
 
@@ -535,7 +550,16 @@ impl Int3 {
     }
 
     #[inline]
-    pub fn from_float(float: [f64; 3]) -> Self {
+    pub fn from_f32(float: Vec3) -> Self {
+        Self::new([
+            float.x.floor() as i32,
+            float.y.floor() as i32,
+            float.z.floor() as i32,
+        ])
+    }
+
+    #[inline]
+    pub fn from_f64(float: [f64; 3]) -> Self {
         Self::new([
             float[0].floor() as i32,
             float[1].floor() as i32,
@@ -544,12 +568,26 @@ impl Int3 {
     }
 
     #[inline]
-    pub fn to_float_floor(self) -> [f64; 3] {
+    pub fn to_f32_floor(self) -> Vec3 {
+        Vec3::new(self.x as f32, self.y as f32, self.z as f32)
+    }
+
+    #[inline]
+    pub fn to_f32_center(self) -> Vec3 {
+        Vec3::new(
+            self.x as f32 + 0.5,
+            self.y as f32 + 0.5,
+            self.z as f32 + 0.5,
+        )
+    }
+
+    #[inline]
+    pub fn to_f64_floor(self) -> [f64; 3] {
         [self.x as f64, self.y as f64, self.z as f64]
     }
 
     #[inline]
-    pub fn to_float_center(self) -> [f64; 3] {
+    pub fn to_f64_center(self) -> [f64; 3] {
         [
             self.x as f64 + 0.5,
             self.y as f64 + 0.5,
