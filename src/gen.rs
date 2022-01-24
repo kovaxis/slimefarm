@@ -9,7 +9,7 @@ use common::{
     worldgen::{ChunkFiller, GenStore},
 };
 
-const AVERAGE_WEIGHT: f32 = 0.02;
+const AVERAGE_WEIGHT: f32 = 0.005;
 
 pub struct GeneratorHandle {
     shared: Arc<SharedState>,
@@ -239,8 +239,19 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
     let raw_store = Box::new(GenStoreConcrete::default());
     let store: &'static dyn GenStore = unsafe { &*(&*raw_store as *const _) };
 
+    let lua = Rc::new(Lua::new());
+    lua.context(|lua| {
+        crate::lua::open_generic_libs(lua);
+        lua.load(&cfg)
+            .set_name("worldgen.lua")
+            .unwrap()
+            .exec()
+            .expect_lua("running worldgen.lua");
+    });
+    store.register("base.lua", Box::new(lua));
+
     let mut last_stall_warning = Instant::now();
-    worldgen::new_generator(cfg, store)?;
+    worldgen::new_generator(store)?;
 
     let mut provider = GenProvider::new(store);
     'outer: loop {

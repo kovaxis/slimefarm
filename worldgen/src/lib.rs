@@ -1,13 +1,26 @@
 #![allow(unused_imports)]
 
-use common::{
-    noise2d::{Noise2d, NoiseScaler2d},
-    noise3d::{Noise3d, NoiseScaler3d},
-    prelude::*,
-    spread2d::Spread2d,
-    terrain::{BlockBuf, GridKeeper, GridKeeper2d},
-    worldgen::{ChunkFiller, GenStore},
-};
+use common::lua::LuaRng;
+
+use crate::prelude::*;
+
+mod prelude {
+    pub(crate) use crate::serde::LuaFuncRef;
+    pub(crate) use common::{
+        noise2d::{Noise2d, NoiseScaler2d},
+        noise3d::{Noise3d, NoiseScaler3d},
+        prelude::*,
+        spread2d::Spread2d,
+        terrain::{BlockBuf, GridKeeper, GridKeeper2d},
+        worldgen::{ChunkFiller, GenStore},
+    };
+}
+mod serde;
+
+fn get_lua(store: &'static dyn GenStore) -> Rc<Lua> {
+    let lua = unsafe { store.lookup::<Rc<Lua>>("base.lua") };
+    lua.clone()
+}
 
 struct ClosureFill<F> {
     fill: RefCell<F>,
@@ -151,6 +164,9 @@ struct TreeCfg {
     /// How many trees to generate from the nearby chunks.
     /// Usually 1 or 2 are enough, unless trees are very closely packed with huge foliages.
     extragen: i32,
+
+    make: LuaFuncRef,
+    /*
     /// Initial vertical inclination.
     /// 0 is directly upwards, PI/2 is directly horizontal.
     initial_incl: [f32; 2],
@@ -185,6 +201,7 @@ struct TreeCfg {
     /// If tree depth (total distance to the root along the branches) is higher than this number,
     /// stop generating branches.
     prune_depth: f32,
+    */
 }
 
 #[derive(Deserialize)]
@@ -199,12 +216,22 @@ struct Plains {
 }
 fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
     struct PlainsGen {
+        lua: Rc<Lua>,
         cfg: Config,
         k: Plains,
         cols: GridKeeper2d<Option<(i16, i16, LoafBox<i16>)>>,
         trees: GridKeeper2d<Option<(BlockPos, BlockBuf)>>,
         noise2d: Noise2d,
         tree_spread: Spread2d,
+    }
+    #[derive(Deserialize)]
+    struct Branch {
+        yaw: f32,
+        pitch: f32,
+        len: f32,
+        r0: f32,
+        r1: f32,
+        children: Vec<Branch>,
     }
     impl PlainsGen {
         /// generate the heightmap of the given chunk.
@@ -265,6 +292,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             Some(chunk)
         }
 
+        /*
         fn gen_branch(
             &self,
             rng: &mut FastRng,
@@ -329,6 +357,27 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 newdepth,
             );
         }
+        */
+
+        fn gen_branch(&self, bbuf: &mut BlockBuf, branch: Branch, pos: Vec3, up: Vec3, norm: Vec3) {
+            let wood = BlockData { data: 2 };
+
+            let norm = norm.rotated_by(Rotor3::from_angle_plane(
+                branch.yaw,
+                Bivec3::from_normalized_axis(up),
+            ));
+            let perturb = Rotor3::from_angle_plane(branch.pitch, up.wedge(norm));
+            let up = up.rotated_by(perturb);
+            let norm = norm.rotated_by(perturb);
+            // Maybe renormalize?
+
+            let top = pos + up * branch.len;
+            bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, wood);
+
+            for b in branch.children {
+                self.gen_branch(bbuf, b, top, up, norm);
+            }
+        }
 
         /// generate the tree at the given tree-coord.
         /// (`TREESUBDIV` tree-units per chunk.)
@@ -350,8 +399,26 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             //let mut bbuf = BlockBuf::with_capacity([-32, -32, -16].into(), [64, 64, 128].into());
 
             // actually generate tree in the buffer
-            let mut rng = FastRng::seed_from_u64(fxhash::hash64(&(self.cfg.seed, "trees", tcoord)));
+            let rng = FastRng::seed_from_u64(fxhash::hash64(&(self.cfg.seed, "trees", tcoord)));
 
+            let res = self.lua.context(|lua| -> LuaResult<()> {
+                let tree_root: LuaValue = self.k.tree.make.get(lua)?.call(LuaRng::new(rng))?;
+                let tree_root: Branch = crate::serde::deserialize(lua, tree_root)
+                    .map_err(|e| LuaError::RuntimeError(format!("{}", e)))?;
+                self.gen_branch(
+                    &mut bbuf,
+                    tree_root,
+                    Vec3::new(tfracpos.x, tfracpos.y, 0.),
+                    [0., 0., 1.].into(),
+                    [1., 0., 0.].into(),
+                );
+                Ok(())
+            });
+            if let Err(e) = res {
+                eprintln!("error building tree: {}", e);
+            }
+
+            /*
             let k = &self.k.tree;
             let initial_area = rng.gen_range(k.initial_area[0]..=k.initial_area[1]);
             let up = Vec3::unit_x().rotated_by(
@@ -371,6 +438,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 initial_area,
                 0.,
             );
+            */
 
             /*
             let tr = rng.gen_range(k.tree_width[0]..k.tree_width[1]) / 2.;
@@ -420,8 +488,8 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 .set_center((center.xy() << CHUNK_BITS) / self.k.tree.spacing);
         }
     }
-    eprintln!("creating PlainsGen");
     let gen = PlainsGen {
+        lua: get_lua(store),
         cols: GridKeeper2d::with_radius(cfg.gen_radius / CHUNK_SIZE as f32, Int2::zero()),
         trees: GridKeeper2d::with_radius(cfg.gen_radius / k.tree.spacing as f32, Int2::zero()),
         noise2d: Noise2d::new_octaves(cfg.seed, k.xy_scale, k.detail),
@@ -455,11 +523,19 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
     };*/
 }
 
-pub fn new_generator<'a>(cfg: &[u8], store: &'static dyn GenStore) -> Result<()> {
-    eprintln!("new_generator");
-    let mut cfg: Config =
-        serde_json::from_slice(cfg).context("failed to parse worldgen config string")?;
-    eprintln!("deserialized");
+pub fn new_generator<'a>(store: &'static dyn GenStore) -> Result<()> {
+    let lua = get_lua(store);
+    let mut cfg = lua.context(|lua| -> Result<Config> {
+        let cfg = lua
+            .globals()
+            .get::<_, LuaFunction>("config")
+            .context("failed to get worldgen config() global function")?
+            .call::<_, LuaValue>(())
+            .context("config() function errored out")?;
+        Ok(crate::serde::deserialize(lua, cfg).context("failed to deserialize worldgen config")?)
+    })?;
+    /*let mut cfg: Config =
+    serde_json::from_slice(cfg).context("failed to parse worldgen config string")?;*/
     let kind = mem::replace(&mut cfg.kind, GenKind::Void);
     match kind {
         GenKind::Void => void(store, cfg),

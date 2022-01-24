@@ -9,61 +9,10 @@ local World = class{}
 
 function World:new()
     self.tick_count = 0
-    self.terrain = system.terrain [[{
-        "_kind": {"Parkour": {
-            "z_offset": 0.008,
-            "delta": 0.4,
-            "color": [0.43, 0.43, 0.43]
-        }},
-        "kind": {"Plains": {
-            "xy_scale": 256,
-            "detail": 3,
-            "z_scale": 40,
-
-            "tree": {
-                "spacing": 64,
-                "extragen": 1,
-                "initial_incl": [0, 0.2],
-                "initial_area": [12, 16],
-                "area_per_len": [0.02, 0.03],
-                "trunk_len": [26, 28],
-                "halflen": [74, 75],
-                "rot_angle": [2.313, 2.713],
-                "offshoot_area": [0.15, 0.35],
-                "offshoot_perturb": [0.4, 0.7],
-                "main_perturb": [-0.3, -0.1],
-                "prune_area": 2,
-                "prune_depth": 120
-            },
-
-            "tree_width": [6, 9],
-            "tree_height": [200, 240, 10],
-            "tree_taperpow": 0.6,
-            "tree_undergen": 5,
-
-            "color": [0.01, 0.92, 0.20],
-            "log_color": [0.53, 0.12, 0.01]
-        }},
-        "gen_radius": 512,
-        "seed": 123443
-    }]]
-    --[[
-        {Parkour = {
-            z_offset = 0.008,
-            delta = 0.4,
-            color = {0.43, 0.43, 0.43},
-        }},
-    ]]
-    --[[
-        "kind": {"Plains" = {
-            xy_scale = 256,
-            detail = 3,
-            z_scale = 40,
-            color = [0.01, 0.12, 0.78],
-        }},
-    ]]
-    self.terrain:set_view_distance(32*12)
     self.entities = {}
+
+    self.worldgen_watcher = fs.watch("worldgen.lua")
+    self:load_terrain()
 
     self.shaders = {
         terrain = util.Shader{
@@ -148,6 +97,12 @@ function World:new()
 end
 
 function World:tick()
+    --Check whether terrain file changed
+    if self.worldgen_watcher:changed() then
+        print("reloading terrain")
+        self:load_terrain()
+    end
+
     --Tick entities
     for _, ent in ipairs(self.entities) do
         ent:tick(self)
@@ -190,6 +145,14 @@ function World:update()
     
     --print(timer:to_str())
     timer:start()
+end
+
+function World:load_terrain()
+    local file = io.open("worldgen.lua", 'r')
+    local worldgen = file:read('a')
+    file:close()
+    self.terrain = system.terrain(worldgen)
+    self.terrain:set_view_distance(32*12)
 end
 
 local sky = {}

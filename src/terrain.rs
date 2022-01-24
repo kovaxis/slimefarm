@@ -170,16 +170,16 @@ fn run_bookkeep(state: BookKeepState) {
     }
 }
 
-struct Terrain {
-    mesher: MesherHandle,
-    _bookkeeper: BookKeepHandle,
-    generator: GeneratorHandle,
-    state: Rc<State>,
-    chunks: Arc<RwLock<ChunkStorage>>,
-    meshes: MeshKeeper,
+pub(crate) struct Terrain {
+    pub _bookkeeper: BookKeepHandle,
+    pub mesher: MesherHandle,
+    pub generator: GeneratorHandle,
+    pub state: Rc<State>,
+    pub chunks: Arc<RwLock<ChunkStorage>>,
+    pub meshes: MeshKeeper,
 }
 impl Terrain {
-    fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
+    pub fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let bookkeeper = BookKeepHandle::new(chunks.clone());
         let generator = unsafe { GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper)? };
@@ -193,13 +193,13 @@ impl Terrain {
         })
     }
 
-    fn set_view_radius(&mut self, radius: f32) {
+    pub fn set_view_radius(&mut self, radius: f32) {
         self.meshes = MeshKeeper::new(radius / CHUNK_SIZE as f32, self.meshes.center());
         self.generator
             .reshape(self.meshes.size(), self.meshes.center());
     }
 
-    fn hint_center(&mut self, center: BlockPos) {
+    pub fn hint_center(&mut self, center: BlockPos) {
         //eprintln!("hinting center");
         //Adjust center
         let center = (center + Int3::splat(CHUNK_SIZE / 2)) >> CHUNK_BITS;
@@ -229,13 +229,13 @@ impl Terrain {
         }
     }
 
-    fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
+    pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
         self.chunks.read().block_at(pos)
     }
 }
 
 /// Keeps track of chunk meshes in an efficient grid structure.
-struct MeshKeeper {
+pub(crate) struct MeshKeeper {
     pub radius: f32,
     pub meshes: GridKeeper<ChunkMeshSlot>,
     pub render_order: Vec<i32>,
@@ -274,15 +274,15 @@ impl ops::DerefMut for MeshKeeper {
 }
 
 #[derive(Default)]
-struct ChunkMeshSlot {
-    mesh: Option<ChunkMesh>,
+pub(crate) struct ChunkMeshSlot {
+    pub mesh: Option<ChunkMesh>,
 }
 
-struct ChunkMesh {
-    buf: Option<Buffer3d>,
+pub(crate) struct ChunkMesh {
+    pub buf: Option<Buffer3d>,
 }
 
-fn check_collisions(
+pub(crate) fn check_collisions(
     from: [f64; 3],
     mut delta: [f64; 3],
     size: [f64; 3],
@@ -398,83 +398,4 @@ fn check_collisions(
         limit[1] - size[1] * dir[1],
         limit[2] - size[2] * dir[2],
     ]
-}
-
-#[derive(Clone)]
-pub struct TerrainRef {
-    rc: AssertSync<Rc<RefCell<Terrain>>>,
-}
-impl TerrainRef {
-    pub(crate) fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<TerrainRef> {
-        Ok(TerrainRef {
-            rc: AssertSync(Rc::new(RefCell::new(Terrain::new(state, gen_cfg)?))),
-        })
-    }
-}
-lua_type! {TerrainRef,
-    fn hint_center(lua, this, (x, y, z): (i32, i32, i32)) {
-        this.rc.borrow_mut().hint_center(BlockPos([x, y, z]));
-    }
-
-    fn set_view_distance(lua, this, dist: f32) {
-        this.rc.borrow_mut().set_view_radius(dist)
-    }
-
-    fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
-        let terrain = this.rc.borrow();
-        let [fx, fy, fz] = check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
-            terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
-        }, false);
-        (fx, fy, fz)
-    }
-
-    fn raycast(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
-        let terrain = this.rc.borrow();
-        let [fx, fy, fz] = check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
-            terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
-        }, true);
-        (fx, fy, fz)
-    }
-
-    fn visible_radius(lua, this, (x, y, z): (f64, f64, f64)) {
-        let terrain = this.rc.borrow();
-        for &idx in terrain.meshes.render_order.iter() {
-            if terrain.meshes.get_by_idx(idx).mesh.is_none() {
-                // This mesh is not visible
-                let block = (terrain.meshes.sub_idx_to_pos(idx) << CHUNK_BITS) + Int3::splat(CHUNK_SIZE/2);
-                let dx = block[0] as f64 - x;
-                let dy = block[1] as f64 - y;
-                let dz = block[2] as f64 - z;
-                let delta = Vec3::new(dx as f32, dy as f32, dz as f32);
-                let radius = delta.mag() - (CHUNK_SIZE as f32 / 2.) * 3f32.cbrt();
-                return Ok(radius.max(0.));
-            }
-        }
-        terrain.meshes.radius * CHUNK_SIZE as f32
-    }
-
-    fn draw(lua, this, (shader, uniforms, offset_uniform, params, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, f64, f64, f64)) {
-        let this = this.rc.borrow();
-        let mut frame = this.state.frame.borrow_mut();
-        //Rendering in this order has the nice property that closer chunks are rendered first,
-        //making better use of the depth buffer.
-        for &idx in this.meshes.render_order.iter() {
-            if let Some(buf) = &this.meshes.get_by_idx(idx).mesh.as_ref().and_then(|mesh| mesh.buf.as_ref()) {
-                let pos = this.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
-                let offset = Vec3::new((pos.x as f64 - x) as f32, (pos.y as f64 - y) as f32, (pos.z as f64 - z) as f32);
-                uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = crate::UniformVal::Vec3(offset.into());
-                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
-            }
-        }
-    }
-
-    fn chunk_gen_time(lua, this, ()) {
-        this.rc.borrow().generator.avg_gen_time.load()
-    }
-    fn chunk_mesh_time(lua, this, ()) {
-        this.rc.borrow().mesher.avg_mesh_time.load()
-    }
-    fn chunk_mesh_upload_time(lua, this, ()) {
-        this.rc.borrow().mesher.avg_upload_time.load()
-    }
 }

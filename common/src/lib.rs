@@ -24,6 +24,7 @@ pub mod prelude {
     pub use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
     pub use rand::{Rng, SeedableRng};
     pub use rand_xoshiro::Xoshiro128Plus as FastRng;
+    pub use rlua::prelude::*;
     pub use serde::{Deserialize, Serialize};
     pub use serde_derive::{Deserialize, Serialize};
     pub use std::{
@@ -31,9 +32,11 @@ pub mod prelude {
         cell::{Cell, RefCell},
         cmp,
         collections::VecDeque,
+        convert::{TryFrom, TryInto},
+        error::Error as StdError,
         f32::consts as f32,
         f64::consts as f64,
-        fmt,
+        fmt::{self, Write as _},
         fs::{self, File},
         marker::PhantomData,
         mem::{self, MaybeUninit as Uninit},
@@ -44,7 +47,7 @@ pub mod prelude {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
-    pub use uv::{Lerp, Mat2, Mat3, Mat4, Vec2, Vec3, Vec4, Rotor2, Rotor3, Bivec2, Bivec3};
+    pub use uv::{Bivec2, Bivec3, Lerp, Mat2, Mat3, Mat4, Rotor2, Rotor3, Vec2, Vec3, Vec4};
 
     /// Unsafe as fuck, but whatever.
     #[derive(Copy, Clone, Debug, Default)]
@@ -64,8 +67,10 @@ pub mod prelude {
     }
 }
 
+#[macro_use]
 pub mod arena;
 pub mod ivec;
+pub mod lua;
 pub mod noise2d;
 pub mod noise3d;
 pub mod slotmap;
