@@ -1,17 +1,17 @@
 #![allow(unused_imports)]
 
-use common::lua::LuaRng;
-
 use crate::prelude::*;
 
 mod prelude {
     pub(crate) use crate::serde::LuaFuncRef;
     pub(crate) use common::{
+        lua::LuaRng,
         noise2d::{Noise2d, NoiseScaler2d},
         noise3d::{Noise3d, NoiseScaler3d},
         prelude::*,
         spread2d::Spread2d,
         terrain::{BlockBuf, GridKeeper, GridKeeper2d},
+        worldgen::BlockIdAlloc,
         worldgen::{ChunkFiller, GenStore},
     };
 }
@@ -20,6 +20,14 @@ mod serde;
 fn get_lua(store: &'static dyn GenStore) -> Rc<Lua> {
     let lua = unsafe { store.lookup::<Rc<Lua>>("base.lua") };
     lua.clone()
+}
+
+fn get_blockreg(store: &'static dyn GenStore) -> &'static dyn BlockIdAlloc {
+    unsafe { store.lookup::<dyn BlockIdAlloc>("base.blockregister") }
+}
+
+fn get_blocktextures(store: &'static dyn GenStore) -> &'static BlockTextures {
+    unsafe { store.lookup::<BlockTextures>("base.blocktextures") }
 }
 
 struct ClosureFill<F> {
@@ -45,9 +53,7 @@ where
 }
 
 trait Generator {
-    fn fill(&mut self, _pos: ChunkPos) -> Option<ChunkBox> {
-        Some(ChunkBox::new_empty())
-    }
+    fn fill(&mut self, _pos: ChunkPos) -> Option<ChunkBox>;
 
     fn recenter(&mut self, _center: ChunkPos) {}
 }
@@ -77,11 +83,23 @@ where
     }
 }
 
+fn register_block(store: &'static dyn GenStore, name: &str, tex: &BlockTexture) -> BlockData {
+    let id = get_blockreg(store).get(name);
+    get_blocktextures(store).set(id, tex.clone());
+    id
+}
+
+fn lookup_block(store: &'static dyn GenStore, name: &str) -> BlockData {
+    get_blockreg(store).get(name)
+}
+
 #[derive(Deserialize)]
 struct Config {
     seed: u64,
     gen_radius: f32,
     kind: GenKind,
+    air_tex: BlockTexture,
+    void_tex: BlockTexture,
 }
 
 #[derive(Deserialize)]
@@ -92,7 +110,8 @@ enum GenKind {
 }
 
 fn void(store: &'static dyn GenStore, _cfg: Config) {
-    wrap_gen(store, |_pos| Some(ChunkBox::new_empty()))
+    let air = lookup_block(store, "base.air");
+    wrap_gen(store, move |_pos| Some(ChunkBox::new_nonsolid(air)))
 }
 
 #[derive(Deserialize, Clone)]
@@ -158,6 +177,8 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
 
 #[derive(Deserialize)]
 struct TreeCfg {
+    /// Texture of the wood block.
+    wood_tex: BlockTexture,
     /// Spacing between trees.
     /// Should be a power of two.
     spacing: i32,
@@ -209,10 +230,9 @@ struct Plains {
     xy_scale: f64,
     z_scale: f32,
     detail: i32,
+    grass_tex: BlockTexture,
 
     tree: TreeCfg,
-    color: [f32; 3],
-    log_color: [f32; 3],
 }
 fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
     struct PlainsGen {
@@ -223,6 +243,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         trees: GridKeeper2d<Option<(BlockPos, BlockBuf)>>,
         noise2d: Noise2d,
         tree_spread: Spread2d,
+        void: BlockData,
+        air: BlockData,
+        grass: BlockData,
+        wood: BlockData,
     }
     #[derive(Deserialize)]
     struct Branch {
@@ -265,10 +289,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             let (col_min, col_max, col) = self.cols.get(pos.xy())?.as_ref()?;
             if pos[2] * CHUNK_SIZE >= *col_max as i32 {
                 //Chunk is high enough to be all-air
-                return Some(ChunkBox::new_empty());
+                return Some(ChunkBox::new_nonsolid(self.air));
             } else if (pos[2] + 1) * CHUNK_SIZE <= *col_min as i32 {
                 //Chunk is low enough to be all-ground
-                return Some(ChunkBox::new_solid());
+                return Some(ChunkBox::new_solid(self.grass));
             }
             let mut chunk = ChunkBox::new_quick();
             let blocks = chunk.blocks_mut();
@@ -280,8 +304,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                         let real_z = pos.z * CHUNK_SIZE + z;
                         blocks.set_idx(
                             idx_3d,
-                            BlockData {
-                                data: (real_z < col[idx_2d] as i32) as u8,
+                            if real_z < col[idx_2d] as i32 {
+                                self.grass
+                            } else {
+                                self.air
                             },
                         );
                         idx_2d += 1;
@@ -360,8 +386,6 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         */
 
         fn gen_branch(&self, bbuf: &mut BlockBuf, branch: Branch, pos: Vec3, up: Vec3, norm: Vec3) {
-            let wood = BlockData { data: 2 };
-
             let norm = norm.rotated_by(Rotor3::from_angle_plane(
                 branch.yaw,
                 Bivec3::from_normalized_axis(up),
@@ -372,7 +396,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             // Maybe renormalize?
 
             let top = pos + up * branch.len;
-            bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, wood);
+            bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, self.wood);
 
             for b in branch.children {
                 self.gen_branch(bbuf, b, top, up, norm);
@@ -395,7 +419,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             let (_, _, hmap) = self.gen_hmap(chunkpos)?;
             let theight = hmap[subchunkpos.to_index([CHUNK_BITS; 2].into())];
             let tpos = thorizpos.with_z(theight as i32);
-            let mut bbuf = BlockBuf::new();
+            let mut bbuf = BlockBuf::new(self.void);
             //let mut bbuf = BlockBuf::with_capacity([-32, -32, -16].into(), [64, 64, 128].into());
 
             // actually generate tree in the buffer
@@ -489,6 +513,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         }
     }
     let gen = PlainsGen {
+        void: lookup_block(store, "base.void"),
+        air: lookup_block(store, "base.air"),
+        grass: register_block(store, "base.grass", &k.grass_tex),
+        wood: register_block(store, "base.wood", &k.tree.wood_tex),
         lua: get_lua(store),
         cols: GridKeeper2d::with_radius(cfg.gen_radius / CHUNK_SIZE as f32, Int2::zero()),
         trees: GridKeeper2d::with_radius(cfg.gen_radius / k.tree.spacing as f32, Int2::zero()),
@@ -534,6 +562,8 @@ pub fn new_generator<'a>(store: &'static dyn GenStore) -> Result<()> {
             .context("config() function errored out")?;
         Ok(crate::serde::deserialize(lua, cfg).context("failed to deserialize worldgen config")?)
     })?;
+    register_block(store, "base.air", &cfg.air_tex);
+    register_block(store, "base.void", &cfg.void_tex);
     /*let mut cfg: Config =
     serde_json::from_slice(cfg).context("failed to parse worldgen config string")?;*/
     let kind = mem::replace(&mut cfg.kind, GenKind::Void);

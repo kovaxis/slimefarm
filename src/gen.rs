@@ -6,44 +6,49 @@ use crate::{
 };
 use common::{
     terrain::{GridKeeper, GridSlot},
-    worldgen::{ChunkFiller, GenStore},
+    worldgen::{BlockIdAlloc, ChunkFiller, GenStore},
 };
 
 const AVERAGE_WEIGHT: f32 = 0.005;
 
 pub struct GeneratorHandle {
-    shared: Arc<SharedState>,
+    shared: Arc<GenSharedState>,
     reshape_send: Sender<(i32, ChunkPos)>,
     last_shape: Cell<(i32, ChunkPos)>,
+    tex_recv: Receiver<BlockTextures>,
     thread: Option<JoinHandle<Result<()>>>,
 }
 impl GeneratorHandle {
     pub(crate) fn new(
         cfg: &[u8],
+        global: &Arc<GlobalState>,
         chunks: Arc<RwLock<ChunkStorage>>,
         bookkeep: &BookKeepHandle,
     ) -> Result<Self> {
-        let shared = Arc::new(SharedState {
+        let shared = Arc::new(GenSharedState {
             close: false.into(),
             avg_gen_time: 0f32.into(),
         });
         let (reshape_send, reshape_recv) = channel::bounded(64);
+        let (tex_send, tex_recv) = channel::bounded(0);
         let cfg = cfg.to_vec();
         //let (colorizer_send, colorizer_recv) = channel::bounded(0);
         let join_handle = {
             let shared = shared.clone();
+            let global = global.clone();
             let chunks = chunks.clone();
             let generated_send = bookkeep.generated_send.clone();
             thread::Builder::new()
                 .name("worldgen".to_string())
                 .spawn(move || {
                     let state = GenState {
-                        chunks,
+                        _chunks: chunks,
                         shared,
+                        global,
                         reshape_recv,
                         generated_send,
                     };
-                    let res = gen_thread(state, &cfg);
+                    let res = gen_thread(state, tex_send, &cfg);
                     if let Err(err) = &res {
                         eprintln!("fatal error initializing gen thread: {:#}", err);
                     }
@@ -62,6 +67,7 @@ impl GeneratorHandle {
             shared,
             reshape_send,
             last_shape: (0, ChunkPos([0, 0, 0])).into(),
+            tex_recv,
             thread: Some(join_handle),
         })
         /*
@@ -106,10 +112,14 @@ impl GeneratorHandle {
             let _ = self.reshape_send.send((size, center));
         }
     }
+
+    pub fn take_block_textures(&self) -> Result<BlockTextures> {
+        self.tex_recv.recv().context("block texture channel closed")
+    }
 }
 impl ops::Deref for GeneratorHandle {
-    type Target = SharedState;
-    fn deref(&self) -> &SharedState {
+    type Target = GenSharedState;
+    fn deref(&self) -> &GenSharedState {
         &self.shared
     }
 }
@@ -123,33 +133,17 @@ impl Drop for GeneratorHandle {
     }
 }
 
-pub struct SharedState {
+pub struct GenSharedState {
     close: AtomicCell<bool>,
     pub avg_gen_time: AtomicCell<f32>,
 }
 
 struct GenState {
-    shared: Arc<SharedState>,
-    chunks: Arc<RwLock<ChunkStorage>>,
+    shared: Arc<GenSharedState>,
+    global: Arc<GlobalState>,
+    _chunks: Arc<RwLock<ChunkStorage>>,
     reshape_recv: Receiver<(i32, ChunkPos)>,
     generated_send: Sender<(ChunkPos, ChunkBox)>,
-}
-
-struct GenChunk {
-    data: Cell<ChunkBox>,
-    layer: Cell<i32>,
-}
-impl GridSlot for GenChunk {
-    fn new() -> Self {
-        Self {
-            layer: 0.into(),
-            data: ChunkBox::new_empty().into(),
-        }
-    }
-    fn reset(&mut self) {
-        *self.layer.get_mut() = 0;
-        self.data.get_mut().make_empty();
-    }
 }
 
 #[derive(Default)]
@@ -205,6 +199,48 @@ impl Drop for GenStoreConcrete {
     }
 }
 
+struct BlockIdAllocConcrete {
+    adv: u8,
+    nxt: Cell<u8>,
+    nxt_seq: Cell<u8>,
+    map: RefCell<HashMap<u64, u8>>,
+}
+impl BlockIdAllocConcrete {
+    fn new() -> Self {
+        let rnd = fxhash::hash64(&Instant::now());
+        Self {
+            adv: (rnd >> 8) as u8 | 1,
+            nxt: (rnd as u8).into(),
+            nxt_seq: 0.into(),
+            map: default(),
+        }
+    }
+
+    #[track_caller]
+    fn alloc(&self) -> u8 {
+        if self.nxt_seq.get() == u8::max_value() {
+            panic!("ran out of block ids!");
+        }
+        let id = self.nxt.get();
+        self.nxt.set(id.wrapping_add(self.adv));
+        self.nxt_seq.set(self.nxt_seq.get() + 1);
+        id
+    }
+
+    fn get_hash(&self, hash: u64) -> u8 {
+        let mut map = self.map.borrow_mut();
+        *map.entry(hash).or_insert_with(|| self.alloc())
+    }
+}
+
+impl BlockIdAlloc for BlockIdAllocConcrete {
+    fn get_hash(&self, hash: u64) -> BlockData {
+        BlockData {
+            data: self.get_hash(hash),
+        }
+    }
+}
+
 struct GenProvider {
     priority: Vec<i32>,
     provided: GridKeeper<bool>,
@@ -235,13 +271,19 @@ impl GenProvider {
     }
 }
 
-fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
+fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Result<()> {
     let raw_store = Box::new(GenStoreConcrete::default());
     let store: &'static dyn GenStore = unsafe { &*(&*raw_store as *const _) };
 
+    store.register(
+        "base.blockregister",
+        Box::new(BlockIdAllocConcrete::new()) as Box<dyn BlockIdAlloc>,
+    );
+    store.register("base.blocktextures", Box::new(BlockTextures::default()));
+
     let lua = Rc::new(Lua::new());
     lua.context(|lua| {
-        crate::lua::open_generic_libs(lua);
+        crate::lua::open_generic_libs(&gen.global, lua);
         lua.load(&cfg)
             .set_name("worldgen.lua")
             .unwrap()
@@ -252,6 +294,12 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
 
     let mut last_stall_warning = Instant::now();
     worldgen::new_generator(store)?;
+
+    let tex = unsafe { store.lookup::<BlockTextures>("base.blocktextures").clone() };
+    let solid = SolidTable::new(&tex);
+    tex_send
+        .send(tex)
+        .map_err(|_| Error::msg("failed to send block textures"))?;
 
     let mut provider = GenProvider::new(store);
     'outer: loop {
@@ -277,13 +325,14 @@ fn gen_thread(gen: GenState, cfg: &[u8]) -> Result<()> {
             if *provided {
                 continue;
             }
-            let chunk = match provider.fill.fill(pos) {
+            let mut chunk = match provider.fill.fill(pos) {
                 Some(chunk) => chunk,
                 None => {
                     failed += 1;
                     continue;
                 }
             };
+            chunk.mark_solidity(&solid);
             //Keep chunkgen timing statistics
             {
                 //Dont care about data races here, after all it's just stats

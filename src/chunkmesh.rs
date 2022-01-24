@@ -14,7 +14,11 @@ pub struct MesherHandle {
     thread: Option<JoinHandle<()>>,
 }
 impl MesherHandle {
-    pub(crate) fn new(state: &Rc<State>, chunks: Arc<RwLock<ChunkStorage>>) -> Self {
+    pub(crate) fn new(
+        state: &Rc<State>,
+        chunks: Arc<RwLock<ChunkStorage>>,
+        textures: BlockTextures,
+    ) -> Self {
         let shared = Arc::new(SharedState {
             close: false.into(),
             avg_mesh_time: 0f32.into(),
@@ -30,12 +34,15 @@ impl MesherHandle {
             thread::spawn(move || {
                 let gl_ctx =
                     Display::from_gl_window(gl_ctx).expect("failed to create headless gl context");
-                run_mesher(MesherState {
-                    shared,
-                    chunks,
-                    gl_ctx,
-                    send_bufs,
-                });
+                run_mesher(
+                    MesherState {
+                        shared,
+                        chunks,
+                        gl_ctx,
+                        send_bufs,
+                    },
+                    textures,
+                );
             })
         };
         Self {
@@ -75,8 +82,8 @@ struct MesherState {
     send_bufs: Sender<BufPackage>,
 }
 
-fn run_mesher(state: MesherState) {
-    let mut mesher = Mesher::new();
+fn run_mesher(state: MesherState, textures: BlockTextures) {
+    let mut mesher = Mesher::new(textures);
     let mut chunks = state.chunks.read();
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
@@ -227,11 +234,29 @@ struct LayerParams {
 }
 
 struct Mesher {
-    vert_cache: [VertIdx; Self::VERT_ROW * 2],
+    /// Associate vertex positions with mesh vertex indices.
+    /// Keep this info for two rows only, swapping them on every row change.
+    /// At most 1 vertex can be stored per vertex position.
+    /// If multiple block types coincide at a vertex, vertices are just duplicated.
+    /// An empty cache position is signalled by a `VertIdx::max_value()`.
+    vert_cache: [(u8, VertIdx); Self::VERT_ROW * 2],
+    /// Store 2 layers of blocks, one being the front layer and one being the back layer.
+    /// The meshing algorithm works on layers, so blocks are collected into this buffer and the
+    /// algorithm is run for every layer in the chunk, in all 3 axes.
     block_buf: [BlockData; Self::BLOCK_COUNT * 2],
+    /// Store a buffer of noise to give blocks texture.
+    noise_buf: [f32; Self::NOISE_COUNT],
+    /// Store which blocks are solid.
+    solid: SolidTable,
+    /// Store the instructions to generate the color for every block type.
+    block_textures: [BlockTexture; 256],
+    /// The offset of the front block buffer within `block_buf`.
     front: i32,
+    /// The offset of the back block buffer within `block_buf`.
     back: i32,
+    /// The current position of the chunk being meshed.
     chunk_pos: ChunkPos,
+    /// A temporary mesh buffer, storing vertex and index data.
     mesh: Mesh,
 }
 impl Mesher {
@@ -240,14 +265,28 @@ impl Mesher {
     const VERT_ROW: usize = (CHUNK_SIZE + 1) as usize;
     const BLOCK_COUNT: usize =
         ((CHUNK_SIZE + Self::EXTRA_BLOCKS * 2) * (CHUNK_SIZE + Self::EXTRA_BLOCKS * 2)) as usize;
+    const NOISE_COUNT: usize = ((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1) * (CHUNK_SIZE + 1)) as usize;
 
     const ADV_X: i32 = 1;
     const ADV_Y: i32 = CHUNK_SIZE + Self::EXTRA_BLOCKS * 2;
 
-    pub fn new() -> Self {
+    pub fn new(textures: BlockTextures) -> Self {
         Self {
-            vert_cache: [0; Self::VERT_ROW * 2],
+            vert_cache: [(0, 0); Self::VERT_ROW * 2],
             block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
+            noise_buf: [0.; Self::NOISE_COUNT],
+            solid: SolidTable::new(&textures),
+            block_textures: {
+                let mut blocks: Uninit<[BlockTexture; 256]> = Uninit::uninit();
+                for (src, dst) in textures.blocks.iter().zip(0..256) {
+                    unsafe {
+                        (blocks.as_mut_ptr() as *mut BlockTexture)
+                            .offset(dst)
+                            .write(src.take());
+                    }
+                }
+                unsafe { blocks.assume_init() }
+            },
             front: Self::BLOCK_COUNT as i32,
             back: 0,
             chunk_pos: ChunkPos([0, 0, 0]),
@@ -272,8 +311,49 @@ impl Mesher {
     }
 
     /// Expects a chunk-relative position.
-    fn color_at(&mut self, id: u8, pos: [i32; 3]) -> [f32; 3] {
-        [1., 1., 1.]
+    fn color_at(&mut self, id: u8, pos: Int3) -> Vec3 {
+        let noise_at = |pos: [i32; 3]| {
+            self.noise_buf[(pos[0]
+                + pos[1] * (CHUNK_SIZE + 1)
+                + pos[2] * ((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1)))
+                as usize]
+        };
+        let floorceil = |x: i32, i: usize| {
+            let c = if x & ((1 << i) - 1) == 0 {
+                x
+            } else {
+                x + (1 << i)
+            };
+            let m = (-1) << i;
+            (x & m, c & m)
+        };
+        let tex = &self.block_textures[id as usize];
+        let mut color = Vec3::from(tex.base);
+        color += Vec3::from(tex.noise[0]) * noise_at(*pos);
+        for i in 1..BlockTexture::NOISE_LEVELS {
+            let (x0, x1) = floorceil(pos.x, i);
+            let (y0, y1) = floorceil(pos.y, i);
+            let (z0, z1) = floorceil(pos.z, i);
+            let f = pos
+                .lowbits(i as i32)
+                .to_f32_floor() / (1 << i) as f32;
+            let s = Lerp::lerp(
+                &Lerp::lerp(
+                    &Lerp::lerp(&noise_at([x0, y0, z0]), noise_at([x1, y0, z0]), f.x),
+                    Lerp::lerp(&noise_at([x0, y1, z0]), noise_at([x1, y1, z0]), f.x),
+                    f.y,
+                ),
+                Lerp::lerp(
+                    &Lerp::lerp(&noise_at([x0, y0, z1]), noise_at([x1, y0, z1]), f.x),
+                    Lerp::lerp(&noise_at([x0, y1, z1]), noise_at([x1, y1, z1]), f.x),
+                    f.y,
+                ),
+                f.z,
+            );
+            color += Vec3::from(tex.noise[i]) * s;
+        }
+        color
+
         /*const BITS_PER_ELEM: usize = mem::size_of::<usize>() * 8;
         //Make sure buffer is created
         let buf = &mut self.color_bufs[id as usize];
@@ -344,34 +424,44 @@ impl Mesher {
     fn get_vert(
         &mut self,
         params: &LayerParams,
-        x: i32,
-        y: i32,
+        pos: Int2,
+        blockpos: Int2,
         cache_offset: usize,
         idx: i32,
+        id: u8,
     ) -> VertIdx {
-        let cache_idx = cache_offset as usize + x as usize;
+        let tex = &self.block_textures[id as usize];
+        let cache_idx = cache_offset as usize + pos.x as usize;
         let mut cached = self.vert_cache[cache_idx];
-        if cached == VertIdx::max_value() {
+        if cached.1 == VertIdx::max_value() || !tex.smooth || id != cached.0 {
             //Create vertex
             //[NONE, BACK_ONLY, FRONT_ONLY, BOTH]
             const LIGHT_TABLE: [f32; 4] = [0.02, 0.0, -0.11, -0.11];
             let mut lightness = 1.;
             {
                 let mut process = |idx| {
-                    lightness += LIGHT_TABLE[(self.front(idx).is_solid() as usize) << 1
-                        | self.back(idx).is_solid() as usize];
+                    lightness += LIGHT_TABLE[(self.front(idx).is_solid(&self.solid) as usize) << 1
+                        | self.back(idx).is_solid(&self.solid) as usize];
                 };
                 process(idx);
                 process(idx - Self::ADV_X);
                 process(idx - Self::ADV_Y);
                 process(idx - Self::ADV_X - Self::ADV_Y);
             };
-            let pos_3d = [
-                x & params.x[0] | y & params.y[0] | params.mov[0],
-                x & params.x[1] | y & params.y[1] | params.mov[1],
-                x & params.x[2] | y & params.y[2] | params.mov[2],
-            ];
-            let color = self.color_at(self.back(idx).data, pos_3d);
+            let conv_2d_3d = |pos: Int2| {
+                Int3::from([
+                    pos.x & params.x[0] | pos.y & params.y[0] | params.mov[0],
+                    pos.x & params.x[1] | pos.y & params.y[1] | params.mov[1],
+                    pos.x & params.x[2] | pos.y & params.y[2] | params.mov[2],
+                ])
+            };
+            let pos_3d = conv_2d_3d(pos);
+            let color_pos = if tex.smooth {
+                pos_3d
+            } else {
+                conv_2d_3d(blockpos)
+            };
+            let color = self.color_at(id, color_pos);
             lightness *= 256.;
             let color_normal = [
                 (color[0] * lightness) as u8,
@@ -381,28 +471,37 @@ impl Mesher {
             ];
             //Apply transform
             let vert = Vec3::new(pos_3d[0] as f32, pos_3d[1] as f32, pos_3d[2] as f32);
-            cached = self.mesh.add_vertex(vert, color_normal);
+            cached = (id, self.mesh.add_vertex(vert, color_normal));
             self.vert_cache[cache_idx] = cached;
         }
-        cached
+        cached.1
     }
 
     fn layer(&mut self, params: &LayerParams) {
         let mut idx = Self::ADV_X + Self::ADV_Y;
-        for vidx in self.vert_cache.iter_mut().take(Self::VERT_ROW) {
+        for (_id, vidx) in self.vert_cache.iter_mut().take(Self::VERT_ROW) {
             *vidx = VertIdx::max_value();
         }
         let mut back = 0;
         let mut front = Self::VERT_ROW;
         for y in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                if self.back(idx).is_solid() && !self.front(idx).is_solid() {
+                if self.back(idx).is_solid(&self.solid) && !self.front(idx).is_solid(&self.solid) {
                     //Place a face here
-                    let v00 = self.get_vert(params, x, y, back, idx);
-                    let v01 = self.get_vert(params, x, y + 1, front, idx + Self::ADV_Y);
-                    let v10 = self.get_vert(params, x + 1, y, back, idx + Self::ADV_X);
-                    let v11 =
-                        self.get_vert(params, x + 1, y + 1, front, idx + Self::ADV_X + Self::ADV_Y);
+                    let pos = Int2::new([x, y]);
+                    let id = self.back(idx).data;
+                    let v00 = self.get_vert(params, pos + [0, 0], pos, back, idx, id);
+                    let v01 =
+                        self.get_vert(params, pos + [0, 1], pos, front, idx + Self::ADV_Y, id);
+                    let v10 = self.get_vert(params, pos + [1, 0], pos, back, idx + Self::ADV_X, id);
+                    let v11 = self.get_vert(
+                        params,
+                        pos + [1, 1],
+                        pos,
+                        front,
+                        idx + Self::ADV_X + Self::ADV_Y,
+                        id,
+                    );
                     if params.flip {
                         self.mesh.add_face(v01, v11, v00);
                         self.mesh.add_face(v00, v11, v10);
@@ -414,7 +513,7 @@ impl Mesher {
                 idx += 1;
             }
             mem::swap(&mut front, &mut back);
-            for vert in self.vert_cache.iter_mut().skip(front).take(Self::VERT_ROW) {
+            for (_id, vert) in self.vert_cache.iter_mut().skip(front).take(Self::VERT_ROW) {
                 *vert = VertIdx::max_value();
             }
             idx += Self::ADV_Y - CHUNK_SIZE;
@@ -432,7 +531,7 @@ impl Mesher {
         self.mesh.clear();
 
         // Special case empty chunks
-        if chunk_at([1, 1, 1].into()).is_empty() {
+        if chunk_at([1, 1, 1].into()).is_nonsolid() {
             //Empty chunks have no geometry
             return &self.mesh;
         }
@@ -451,9 +550,23 @@ impl Mesher {
         }
 
         self.chunk_pos = chunk_pos;
-        /*for ready_bits in self.ready_color_bufs.iter_mut() {
-            *ready_bits = 0;
-        }*/
+
+        // Generate texture noise
+        {
+            let mut idx = 0;
+            let base_pos = chunk_pos << CHUNK_BITS;
+            for z in 0..=CHUNK_SIZE {
+                for y in 0..=CHUNK_SIZE {
+                    for x in 0..=CHUNK_SIZE {
+                        let rnd = fxhash::hash32(&(base_pos + [x, y, z]));
+                        let val = 0x3f800000 | (rnd >> 9);
+                        let val = f32::from_bits(val) * 2. - 3.;
+                        self.noise_buf[idx] = val;
+                        idx += 1;
+                    }
+                }
+            }
+        }
 
         // X
         for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {

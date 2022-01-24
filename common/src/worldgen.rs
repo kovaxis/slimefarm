@@ -250,6 +250,17 @@ pub trait ChunkFiller {
     fn fill(&self, pos: ChunkPos) -> Option<ChunkBox>;
 }
 
+pub trait BlockIdAlloc {
+    fn get_hash(&self, hash: u64) -> BlockData;
+
+    #[inline]
+    fn get(&self, name: &str) -> BlockData {
+        let id = self.get_hash(fxhash::hash64(name));
+        eprintln!("associated `{}` to id {}", name, id.data);
+        id
+    }
+}
+
 /// Divides a chunk into 8x8 equal pieces, assigning each piece a single bit.
 /// This means that the entire chunk can be stored in a single `u64`.
 #[derive(Default)]

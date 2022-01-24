@@ -300,7 +300,7 @@ impl<'de, 'a> MapAccess<'de> for Map<'de, 'a> {
                 let (k, v) = t.map_err(|e| self.parent.error(e))?;
                 let kname = stringify(&k);
                 let selfkname = format!("{{{}}}", kname);
-                if let LuaValue::String(s) = &k {
+                if let LuaValue::String(_) = &k {
                     self.kname = format!(".{}", kname);
                 } else {
                     self.kname = format!("[{}]", kname);

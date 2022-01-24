@@ -10,8 +10,8 @@ pub mod prelude {
         ivec::{Int2, Int3},
         slotmap::{SlotId, SlotMap},
         terrain::{
-            BlockData, BlockPos, ChunkBox, ChunkData, ChunkPos, ChunkRef, LoafBox, CHUNK_BITS,
-            CHUNK_MASK, CHUNK_SIZE,
+            BlockData, BlockPos, BlockTexture, BlockTextures, ChunkBox, ChunkData, ChunkPos,
+            ChunkRef, LoafBox, SolidTable, CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
         },
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
@@ -64,6 +64,19 @@ pub mod prelude {
         fn deref_mut(&mut self) -> &mut T {
             &mut self.0
         }
+    }
+
+    pub fn default<T>() -> T
+    where
+        T: Default,
+    {
+        T::default()
+    }
+
+    /// Stupid workaround for serde.
+    #[inline]
+    pub fn default_true() -> bool {
+        true
     }
 }
 

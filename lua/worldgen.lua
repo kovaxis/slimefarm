@@ -64,34 +64,49 @@ function config()
             xy_scale = 256,
             detail = 3,
             z_scale = 40,
+            grass_tex = {
+                solid = true,
+                smooth = true,
+                base = {0.43, 0.61, 0.10},
+                noise = {
+                    {0,0,0},
+                    {0,0,0},
+                    {0,0,0},
+                    {0,0,0},
+                    {0,0,0},
+                    {0.116, 0.131, 0.053},
+                },
+            },
 
             tree = {
                 spacing = spacing,
                 extragen = 1,
+                wood_tex = {
+                    solid = true,
+                    smooth = false,
+                    base = {0.31, 0.19, 0.13},
+                    noise = {
+                        {0.136, 0.089, 0.065},
+                        {0.136 * 0.2, 0.089 * 0.2, 0.065 * 0.2},
+                        {0,0,0},
+                        {0,0,0},
+                        {0,0,0},
+                        {0,0,0},
+                    },
+                },
                 make = function(rng)
                     return makebranch(rng, 0, 1, rng:normal(initial_area[1], initial_area[2]), rng:uniform(2*math.pi), rng:normal(-initial_incl, initial_incl))
                 end,
             },
-
-            _tree = {
-                spacing = 128,
-                extragen = 1,
-                initial_incl = {0, 0.2},
-                initial_area = {12, 60},
-                area_per_len = {0.02, 0.03},
-                trunk_len = {26, 28},
-                halflen = {74, 75},
-                rot_angle = {2.313, 2.713},
-                offshoot_area = {0, 0.35},
-                offshoot_perturb = {0.4, 0.7},
-                main_perturb = {-0.4, -0.2},
-                prune_area = 2,
-                prune_depth = 200
-            },
-
-            color = {0.01, 0.92, 0.20},
-            log_color = {0.53, 0.12, 0.01},
         }},
+
+        air_tex = {
+            solid = false,
+        },
+        void_tex = {
+            solid = false,
+        },
+
         gen_radius = 512,
         seed = 123443,
     }

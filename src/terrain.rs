@@ -172,6 +172,7 @@ fn run_bookkeep(state: BookKeepState) {
 
 pub(crate) struct Terrain {
     pub _bookkeeper: BookKeepHandle,
+    pub solid: SolidTable,
     pub mesher: MesherHandle,
     pub generator: GeneratorHandle,
     pub state: Rc<State>,
@@ -182,11 +183,13 @@ impl Terrain {
     pub fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let bookkeeper = BookKeepHandle::new(chunks.clone());
-        let generator = unsafe { GeneratorHandle::new(gen_cfg, chunks.clone(), &bookkeeper)? };
+        let generator = GeneratorHandle::new(gen_cfg, &state.global, chunks.clone(), &bookkeeper)?;
+        let tex = generator.take_block_textures()?;
         Ok(Terrain {
+            solid: SolidTable::new(&tex),
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
-            mesher: MesherHandle::new(state, chunks.clone()),
+            mesher: MesherHandle::new(state, chunks.clone(), tex),
             generator: generator,
             _bookkeeper: bookkeeper,
             chunks,

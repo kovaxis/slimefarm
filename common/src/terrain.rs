@@ -20,61 +20,82 @@ pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct ChunkRef<'a> {
-    blocks: NonNull<ChunkData>,
+    ptr: NonNull<ChunkData>,
     marker: PhantomData<&'a ChunkData>,
 }
 unsafe impl Send for ChunkRef<'_> {}
 unsafe impl Sync for ChunkRef<'_> {}
 impl fmt::Debug for ChunkRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.is_normal() {
-            write!(f, "ChunkRef({}KB)", mem::size_of::<ChunkData>() / 1024)
-        } else if self.is_solid() {
-            write!(f, "ChunkRef::Solid")
-        } else if self.is_empty() {
-            write!(f, "ChunkRef::Empty")
+        write!(f, "ChunkRef<")?;
+        if self.is_solid() {
+            write!(f, "solid")?;
+        }
+        if self.is_nonsolid() {
+            write!(f, "nonsolid")?;
+        }
+        if let Some(block) = self.homogeneous_block() {
+            write!(f, ">::Homogeneous({:?})", block)
         } else {
-            write!(f, "ChunkRef::Unknown")
+            write!(f, ">({}KB)", mem::size_of::<ChunkData>() / 1024)
         }
     }
 }
 impl<'a> ChunkRef<'a> {
-    const MASK: usize = 0b11;
-    const TAG_NORMAL: usize = 0;
-    const TAG_SOLID: usize = 1;
-    const TAG_EMPTY: usize = 2;
+    const MASK: usize = 0b111;
+    const FLAG_HOMOGENEOUS: usize = 0b001;
+    const FLAG_NONSOLID: usize = 0b010;
+    const FLAG_SOLID: usize = 0b100;
 
     #[inline]
-    fn tag(&self) -> usize {
-        self.blocks.as_ptr() as usize & Self::MASK
+    fn raw(&self) -> usize {
+        self.ptr.as_ptr() as usize
     }
 
     #[inline]
-    fn make_tag(tag: usize) -> NonNull<ChunkData> {
-        unsafe { NonNull::new_unchecked((0x100 | tag) as *mut ChunkData) }
+    pub fn is_homogeneous(&self) -> bool {
+        self.raw() & Self::FLAG_HOMOGENEOUS != 0
     }
 
     #[inline]
-    pub fn is_normal(&self) -> bool {
-        self.tag() == Self::TAG_NORMAL
+    pub fn is_nonsolid(&self) -> bool {
+        self.raw() & Self::FLAG_NONSOLID != 0
     }
 
     #[inline]
     pub fn is_solid(&self) -> bool {
-        self.tag() == Self::TAG_SOLID
+        self.raw() & Self::FLAG_SOLID != 0
+    }
+
+    /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
+    /// anyway.
+    #[inline]
+    pub fn homogeneous_block_unchecked(&self) -> BlockData {
+        BlockData {
+            data: (self.raw() >> 8) as u8,
+        }
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.tag() == Self::TAG_EMPTY
+    pub fn homogeneous_block(&self) -> Option<BlockData> {
+        if self.is_homogeneous() {
+            Some(self.homogeneous_block_unchecked())
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub unsafe fn blocks_unchecked(&self) -> &ChunkData {
+        &*((self.raw() & !Self::MASK) as *const ChunkData)
     }
 
     #[inline]
     pub fn blocks(&self) -> Option<&ChunkData> {
-        if self.is_normal() {
-            unsafe { Some(self.blocks.as_ref()) }
-        } else {
+        if self.is_homogeneous() {
             None
+        } else {
+            unsafe { Some(self.blocks_unchecked()) }
         }
     }
 
@@ -82,44 +103,58 @@ impl<'a> ChunkRef<'a> {
     pub fn sub_get(&self, pos: Int3) -> BlockData {
         if let Some(blocks) = self.blocks() {
             blocks.sub_get(pos)
-        } else if self.is_empty() {
-            BlockData { data: 0 }
         } else {
-            BlockData { data: 1 }
+            self.homogeneous_block_unchecked()
         }
     }
 
     pub fn into_raw(self) -> *const ChunkData {
-        self.blocks.as_ptr()
+        self.ptr.as_ptr()
     }
 
     pub unsafe fn from_raw(raw: *const ChunkData) -> Self {
         Self {
-            blocks: NonNull::new_unchecked(raw as *mut ChunkData),
+            ptr: NonNull::new_unchecked(raw as *mut ChunkData),
             marker: PhantomData,
         }
     }
 
     pub fn clone_chunk(&self) -> ChunkBox {
-        if self.is_normal() {
-            let mut uninit = ArenaBoxUninit::<ChunkData>::new();
-            unsafe {
-                ptr::copy_nonoverlapping(self.blocks.as_ptr(), uninit.as_mut().as_mut_ptr(), 1);
-                ChunkBox {
-                    blocks: ArenaBox::into_raw(uninit.assume_init()),
-                }
-            }
+        if self.is_homogeneous() {
+            ChunkBox { ptr: self.ptr }
         } else {
-            ChunkBox {
-                blocks: self.blocks,
+            let mut uninit = ArenaBoxUninit::<ChunkData>::new();
+            let blockmem = unsafe {
+                ptr::copy_nonoverlapping(self.blocks_unchecked(), uninit.as_mut().as_mut_ptr(), 1);
+                ArenaBox::into_raw(uninit.assume_init())
+            };
+            unsafe {
+                ChunkBox {
+                    ptr: NonNull::new_unchecked(
+                        (blockmem.as_ptr() as usize | (self.raw() & Self::MASK)) as *mut ChunkData,
+                    ),
+                }
             }
         }
     }
 }
 
+/// # `ChunkBox` pointer format
+///
+/// Since `ChunkData` has an alignment of 8, the `blocks` pointer has 3 bits to store tags.
+/// If bit 0 is set, the chunk has no associated memory, and the entire chunk is made up of a
+/// single block type, which is stored in bits 8..16.
+/// If bit 1 is set, the chunk is made entirely out of non-solid blocks (although they might be
+/// different). This flag is completely independent from bit 0.
+/// If bit 2 is set, the chunk is made entirely out of solid blocks (although they might be
+/// different types of solid blocks). This flag is completely independent from bit 0, although it
+/// is mutually exclusive with bit 1.
+///
+/// Note that flags 1 and 2 are not hints. If they are set, the chunk **must** be made out of
+/// entirely solid or nonsolid blocks, otherwise it is a logic error.
 #[repr(transparent)]
 pub struct ChunkBox {
-    blocks: NonNull<ChunkData>,
+    ptr: NonNull<ChunkData>,
 }
 unsafe impl Send for ChunkBox {}
 unsafe impl Sync for ChunkBox {}
@@ -131,28 +166,31 @@ impl ops::Deref for ChunkBox {
 }
 impl fmt::Debug for ChunkBox {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.is_normal() {
-            write!(f, "ChunkBox({}KB)", mem::size_of::<ChunkData>() / 1024)
-        } else if self.is_solid() {
-            write!(f, "ChunkBox::Solid")
-        } else if self.is_empty() {
-            write!(f, "ChunkBox::Empty")
+        write!(f, "ChunkBox<")?;
+        if self.is_solid() {
+            write!(f, "solid")?;
+        }
+        if self.is_nonsolid() {
+            write!(f, "nonsolid")?;
+        }
+        if let Some(block) = self.homogeneous_block() {
+            write!(f, ">::Homogeneous({:?})", block)
         } else {
-            write!(f, "ChunkBox::Unknown")
+            write!(f, ">({}KB)", mem::size_of::<ChunkData>() / 1024)
         }
     }
 }
-impl Default for ChunkBox {
-    fn default() -> Self {
-        Self::new_empty()
-    }
-}
 impl ChunkBox {
-    /// Create a new chunk box with memory allocated to its blocks, but all of them set to 0.
-    #[inline]
-    pub fn new() -> Self {
-        ChunkBox {
-            blocks: unsafe { ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().init_zero()) },
+    unsafe fn new_raw_nonhomogeneous(blockmem: NonNull<ChunkData>, tags: usize) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked((blockmem.as_ptr() as usize | tags) as *mut ChunkData),
+        }
+    }
+
+    /// `raw` must be nonzero! (and valid, of course)
+    unsafe fn new_raw(raw: usize) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(raw as *mut ChunkData),
         }
     }
 
@@ -160,26 +198,35 @@ impl ChunkBox {
     /// Inherently unsafe, but may work in most cases and speeds things up.
     #[inline]
     pub unsafe fn new_uninit() -> Self {
-        ChunkBox {
-            blocks: ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init()),
+        let blockmem = ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init());
+        ChunkBox::new_raw_nonhomogeneous(blockmem, 0)
+    }
+
+    /// Create a new chunk filled with the given block, without allocating any memory.
+    #[inline]
+    pub fn new_homogeneous(block: BlockData) -> Self {
+        unsafe { Self::new_raw(((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS) }
+    }
+
+    /// Create a new chunk filled with the given solid block, without allocating any memory.
+    /// The chunk is marked as being entirely solid, which speeds up many algorithms considerably.
+    #[inline]
+    pub fn new_solid(block: BlockData) -> Self {
+        unsafe {
+            Self::new_raw(
+                ((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS | ChunkRef::FLAG_SOLID,
+            )
         }
     }
 
-    /// Create a new empty chunk box without allocating any memory.
-    /// This is basically a compile-time constant.
+    /// Create a new chunk filled with the given nonsolid block, without allocating any memory.
+    /// The chunk is marked as being entirely nonsolid, which speeds up many algorithms considerably.
     #[inline]
-    pub fn new_empty() -> Self {
-        ChunkBox {
-            blocks: ChunkRef::make_tag(ChunkRef::TAG_EMPTY),
-        }
-    }
-
-    /// Create a new solid chunk box without allocating any memory.
-    /// This is basically a compile-time constant.
-    #[inline]
-    pub fn new_solid() -> Self {
-        ChunkBox {
-            blocks: ChunkRef::make_tag(ChunkRef::TAG_SOLID),
+    pub fn new_nonsolid(block: BlockData) -> Self {
+        unsafe {
+            Self::new_raw(
+                ((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS | ChunkRef::FLAG_NONSOLID,
+            )
         }
     }
 
@@ -195,66 +242,100 @@ impl ChunkBox {
     #[inline]
     pub fn as_ref(&self) -> ChunkRef {
         ChunkRef {
-            blocks: self.blocks,
+            ptr: self.ptr,
             marker: PhantomData,
         }
     }
 
+    pub unsafe fn blocks_mut_unchecked(&mut self) -> &mut ChunkData {
+        &mut *((self.ptr.as_ptr() as usize & !ChunkRef::MASK) as *mut ChunkData)
+    }
+
     /// Get a mutable reference to the inner blocks.
-    /// If there is no associated memory, this method will allocate and fill with empty or solid
-    /// blocks, according to the current state.
+    /// If there is no associated memory, this method will allocate and fill with the homogeneous
+    /// block, according to the current state.
     #[inline]
     pub fn blocks_mut(&mut self) -> &mut ChunkData {
-        if !self.is_normal() {
+        if let Some(block) = self.homogeneous_block() {
             unsafe {
-                let solid = self.is_solid();
                 *self = ChunkBox::new_uninit();
-                if solid {
-                    ptr::write_bytes(self.blocks.as_ptr(), 1, 1);
-                } else {
-                    ptr::write_bytes(self.blocks.as_ptr(), 0, 1);
-                }
+                ptr::write_bytes(self.blocks_mut_unchecked(), block.data, 1);
             }
         }
-        unsafe { self.blocks.as_mut() }
+        unsafe { self.blocks_mut_unchecked() }
     }
 
     /// Gets the inner blocks if there is memory associated to this chunk box.
     #[inline]
     pub fn try_blocks_mut(&mut self) -> Option<&mut ChunkData> {
-        if self.is_normal() {
-            unsafe { Some(self.blocks.as_mut()) }
-        } else {
+        if self.is_homogeneous() {
             None
+        } else {
+            unsafe { Some(self.blocks_mut_unchecked()) }
         }
     }
 
-    /// The `new_tag` must be a valid, non-normal tag.
+    /// Take the current blocks, if available, and replace by a given chunkbox.
     #[inline]
-    unsafe fn take_blocks(&mut self, new_tag: usize) -> Option<ArenaBox<ChunkData>> {
-        let out = if self.is_normal() {
-            let blocks = ArenaBox::from_raw(self.blocks);
-            Some(blocks)
-        } else {
-            None
-        };
-        self.blocks = ChunkRef::make_tag(new_tag);
-        out
+    fn take_blocks(&mut self, new_box: ChunkBox) -> Option<ArenaBox<ChunkData>> {
+        unsafe {
+            let out = if let Some(blocks) = self.try_blocks_mut() {
+                Some(ArenaBox::from_raw(NonNull::new_unchecked(
+                    blocks as *mut ChunkData,
+                )))
+            } else {
+                None
+            };
+            ptr::write(self, new_box);
+            out
+        }
+    }
+
+    /// Remove any memory associated with this box, and make all blocks homogeneous.
+    /// It is recommended to use `make_solid` instead.
+    pub fn make_homogeneous(&mut self, block: BlockData) {
+        self.take_blocks(Self::new_homogeneous(block));
     }
 
     /// Remove any memory associated with this box, and simply make all blocks solid.
     #[inline]
-    pub fn make_solid(&mut self) {
-        unsafe {
-            self.take_blocks(ChunkRef::TAG_SOLID);
-        }
+    pub fn make_solid(&mut self, block: BlockData) {
+        self.take_blocks(Self::new_solid(block));
     }
 
     /// Remove any memory associated with this box, and simply make all blocks empty.
     #[inline]
-    pub fn make_empty(&mut self) {
+    pub fn make_nonsolid(&mut self, block: BlockData) {
+        self.take_blocks(Self::new_nonsolid(block));
+    }
+
+    /// Mark the chunk as solid.
+    /// It is a logic error if the chunk is not actually solid!
+    #[inline]
+    pub fn mark_solid(&mut self) {
         unsafe {
-            self.take_blocks(ChunkRef::TAG_EMPTY);
+            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_SOLID));
+        }
+    }
+
+    /// Mark the chunk as nonsolid.
+    /// It is a logic error if the chunk is not actually solid!
+    #[inline]
+    pub fn mark_nonsolid(&mut self) {
+        unsafe {
+            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_NONSOLID));
+        }
+    }
+
+    /// If the chunk is homogeneous, mark the appropiate solidity (solid/nonsolid) tags.
+    #[inline]
+    pub fn mark_solidity(&mut self, solid: &SolidTable) {
+        if let Some(block) = self.homogeneous_block() {
+            if block.is_solid(solid) {
+                self.mark_solid();
+            } else {
+                self.mark_nonsolid();
+            }
         }
     }
 
@@ -264,22 +345,19 @@ impl ChunkBox {
     pub fn try_drop_blocks(&mut self) {
         if let Some(chunk_data) = self.blocks() {
             let blocks = &chunk_data.blocks;
-            if blocks.iter().skip(1).all(|&b| b.data == blocks[0].data) {
+            let block0 = blocks[0];
+            if blocks.iter().skip(1).all(|&b| b == block0) {
                 //All the same
-                if blocks[0].data == 0 {
-                    self.make_empty();
-                } else if blocks[0].data == 1 {
-                    self.make_solid();
-                }
+                self.make_homogeneous(block0);
             }
         }
     }
 }
 impl Drop for ChunkBox {
     fn drop(&mut self) {
-        if self.is_normal() {
-            unsafe {
-                drop(ArenaBox::from_raw(self.blocks));
+        unsafe {
+            if let Some(blocks) = self.try_blocks_mut() {
+                drop(ArenaBox::from_raw(NonNull::from(blocks)));
             }
         }
     }
@@ -302,16 +380,15 @@ pub struct BlockData {
     pub data: u8,
 }
 impl BlockData {
-    #[inline]
-    pub fn is_solid(&self) -> bool {
-        self.data != 0
+    pub fn is_solid(self, table: &SolidTable) -> bool {
+        table.is_solid(self)
     }
 }
 
 /// Holds the block data for a chunk.
-/// Has an alignment of 4 in order for `ChunkBox` to store tags in the last 2 bits of the pointer.
+/// Has an alignment of 8 in order for `ChunkBox` to store tags in the last 3 bits of the pointer.
 #[derive(Clone)]
-#[repr(align(4))]
+#[repr(align(8))]
 pub struct ChunkData {
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
 }
@@ -679,7 +756,7 @@ pub struct BlockBuf {
     size: Int3,
 }
 impl BlockBuf {
-    pub fn with_filler(fill: BlockData, corner: Int3, size: Int3) -> Self {
+    pub fn with_capacity(fill: BlockData, corner: Int3, size: Int3) -> Self {
         let size_log2 = [
             (mem::size_of_val(&size.x) * 8) as i32 - (size.x - 1).leading_zeros() as i32,
             (mem::size_of_val(&size.y) * 8) as i32 - (size.y - 1).leading_zeros() as i32,
@@ -694,13 +771,9 @@ impl BlockBuf {
         }
     }
 
-    pub fn with_capacity(corner: Int3, size: Int3) -> Self {
-        Self::with_filler(BlockData { data: 255 }, corner, size)
-    }
-
     /// creates a new block buffer with its origin at [0, 0, 0].
-    pub fn new() -> Self {
-        Self::with_capacity([-2, -2, -2].into(), [4, 4, 4].into())
+    pub fn new(fill: BlockData) -> Self {
+        Self::with_capacity(fill, [-2, -2, -2].into(), [4, 4, 4].into())
     }
 
     /// get the block data at the given position relative to the block buffer origin.
@@ -873,5 +946,89 @@ impl BlockBuf {
             src += ((1 << self.size.y) - uptobuf.y) << self.size.x;
             dst += (CHUNK_SIZE - uptochunk.y) * CHUNK_SIZE;
         }
+    }
+}
+
+#[derive(Default, Clone, Deserialize)]
+pub struct BlockTexture {
+    /// Whether the block is see-through and collidable or not.
+    #[serde(default = "default_true")]
+    pub solid: bool,
+    /// Whether to set color at the vertices or per-block.
+    /// If smooth, color is per-vertex, and therefore blocks represent a color gradient.
+    #[serde(default = "default_true")]
+    pub smooth: bool,
+    /// Constant base block color.
+    /// Other texture effects are added onto this base color.
+    #[serde(default)]
+    pub base: [f32; 3],
+    /// How much value noise to add of each scale.
+    /// 0 -> per-block value noise
+    /// 1 -> 2-block interpolated value noise
+    /// K -> 2^K-block interpolated value noise
+    #[serde(default)]
+    pub noise: [[f32; 3]; Self::NOISE_LEVELS],
+}
+impl BlockTexture {
+    pub const NOISE_LEVELS: usize = 6;
+}
+
+pub struct BlockTextures {
+    pub blocks: Box<[Cell<BlockTexture>; 256]>,
+}
+impl BlockTextures {
+    pub fn set(&self, id: BlockData, tex: BlockTexture) {
+        self.blocks[id.data as usize].set(tex);
+    }
+}
+impl Default for BlockTextures {
+    fn default() -> Self {
+        let mut arr: Uninit<[Cell<BlockTexture>; 256]> = Uninit::uninit();
+        for i in 0..256 {
+            unsafe {
+                (arr.as_mut_ptr() as *mut Cell<BlockTexture>)
+                    .offset(i)
+                    .write(default());
+            }
+        }
+        let arr = unsafe { arr.assume_init() };
+        Self {
+            blocks: Box::new(arr),
+        }
+    }
+}
+impl Clone for BlockTextures {
+    fn clone(&self) -> Self {
+        let new = Self::default();
+        let mut tmp: BlockTexture = default();
+        for (old, new) in self.blocks.iter().zip(new.blocks.iter()) {
+            tmp = old.replace(tmp);
+            new.set(tmp.clone());
+            tmp = old.replace(tmp);
+        }
+        new
+    }
+}
+
+pub struct SolidTable {
+    words: [usize; 256 / Self::BITS],
+}
+impl SolidTable {
+    const BITS: usize = mem::size_of::<usize>() * 8;
+
+    pub fn new(tex: &BlockTextures) -> Self {
+        let mut words = [0; 256 / Self::BITS];
+        for i in 0..256 {
+            let texcell = &tex.blocks[i as usize];
+            let tx = texcell.take();
+            words[i / Self::BITS] |= (tx.solid as usize) << (i % Self::BITS);
+            texcell.set(tx);
+        }
+        Self { words }
+    }
+
+    #[inline]
+    pub fn is_solid(&self, id: BlockData) -> bool {
+        (self.words[id.data as usize / Self::BITS] >> (id.data as usize % Self::BITS)) & 1 != 0
     }
 }

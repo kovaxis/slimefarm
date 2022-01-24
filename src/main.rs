@@ -20,7 +20,7 @@ pub mod prelude {
         gen::GeneratorHandle,
         mesh::Mesh,
         terrain::{ChunkStorage, Terrain},
-        AnyBuffer, Buffer2d, Buffer3d, SimpleVertex, State, TexturedVertex,
+        AnyBuffer, Buffer2d, Buffer3d, GlobalState, SimpleVertex, State, TexturedVertex,
     };
     pub use common::prelude::*;
     pub use glium::{
@@ -43,13 +43,6 @@ pub mod prelude {
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
 
     pub type VertIdx = u16;
-
-    pub fn default<T>() -> T
-    where
-        T: Default,
-    {
-        T::default()
-    }
 
     #[derive(Copy, Clone, Default, Debug)]
     pub struct Sortf32(pub f32);
@@ -151,11 +144,17 @@ mod lua;
 mod mesh;
 mod terrain;
 
+/// State shared by all threads.
+struct GlobalState {
+    base_time: Instant,
+}
+
+/// Main thread state.
 struct State {
+    global: Arc<GlobalState>,
     display: Display,
     text_sys: TextSystem,
     frame: RefCell<Frame>,
-    base_time: Instant,
     sec_gl_ctx: Cell<Option<glium::glutin::WindowedContext<glium::glutin::NotCurrent>>>,
 }
 impl Drop for State {
@@ -206,12 +205,15 @@ fn main() {
     let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
 
     //Pack it all up
+    let shared = Arc::new(GlobalState {
+        base_time: Instant::now(),
+    });
     let state = Rc::new(State {
+        global: shared,
         frame: RefCell::new(display.draw()),
         text_sys: TextSystem::new(&display),
         display,
         sec_gl_ctx: Cell::new(None),
-        base_time: Instant::now(),
     });
 
     //Load main.lua
@@ -222,7 +224,7 @@ fn main() {
     let lua = Lua::new();
     let mut main_reg_key = None;
     lua.context(|lua| {
-        crate::lua::open_generic_libs(lua);
+        crate::lua::open_generic_libs(&state.global, lua);
         crate::lua::open_system_lib(&state, lua);
         crate::lua::gfx::open_gfx_lib(&state, lua);
         let main_chunk = lua

@@ -143,7 +143,7 @@ lua_type! {TerrainRef,
     fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
         let [fx, fy, fz] = crate::terrain::check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
-            terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
+            terrain.block_at(block_pos).map(|data| data.is_solid(&terrain.solid)).unwrap_or(true)
         }, false);
         (fx, fy, fz)
     }
@@ -151,7 +151,7 @@ lua_type! {TerrainRef,
     fn raycast(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
         let [fx, fy, fz] = crate::terrain::check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
-            terrain.block_at(block_pos).map(|data| data.is_solid()).unwrap_or(true)
+            terrain.block_at(block_pos).map(|data| data.is_solid(&terrain.solid)).unwrap_or(true)
         }, true);
         (fx, fy, fz)
     }
@@ -242,11 +242,8 @@ lua_type! {WatcherRef,
     }
 }
 
-pub(crate) fn modify_std_lib(lua: LuaContext) {
-    let state = ();
-
+pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
     let os = lua.globals().get::<_, LuaTable>("os").unwrap();
-    let base_time = Instant::now();
     os.set(
         "sleep",
         lua_func!(lua, state, fn(secs: f64) {
@@ -257,7 +254,7 @@ pub(crate) fn modify_std_lib(lua: LuaContext) {
     os.set(
         "clock",
         lua_func!(lua, state, fn(()) {
-            (Instant::now() - base_time).as_secs_f64()
+            (Instant::now() - state.base_time).as_secs_f64()
         }),
     )
     .unwrap();
@@ -290,7 +287,7 @@ pub(crate) fn modify_std_lib(lua: LuaContext) {
     .unwrap();
 }
 
-pub(crate) fn open_vec3_lib(lua: LuaContext) {
+pub(crate) fn open_vec3_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
     let state = ();
     lua.globals()
         .set(
@@ -356,7 +353,7 @@ pub(crate) fn open_vec3_lib(lua: LuaContext) {
         .unwrap();
 }
 
-pub(crate) fn open_fs_lib(lua: LuaContext) {
+pub(crate) fn open_fs_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
     let state = ();
     lua.globals()
         .set(
@@ -398,8 +395,8 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
         .unwrap();
 }
 
-pub(crate) fn open_generic_libs(lua: LuaContext) {
-    modify_std_lib(lua);
-    open_fs_lib(lua);
-    open_vec3_lib(lua);
+pub(crate) fn open_generic_libs(state: &Arc<GlobalState>, lua: LuaContext) {
+    modify_std_lib(state, lua);
+    open_fs_lib(state, lua);
+    open_vec3_lib(state, lua);
 }
