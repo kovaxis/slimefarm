@@ -255,13 +255,13 @@ struct Mesher {
     /// At most 1 vertex can be stored per vertex position.
     /// If multiple block types coincide at a vertex, vertices are just duplicated.
     /// An empty cache position is signalled by a `VertIdx::max_value()`.
-    vert_cache: [(u8, VertIdx); Self::VERT_ROW * 2],
+    vert_cache: Box<[(u8, VertIdx)]>,
     /// Store 2 layers of blocks, one being the front layer and one being the back layer.
     /// The meshing algorithm works on layers, so blocks are collected into this buffer and the
     /// algorithm is run for every layer in the chunk, in all 3 axes.
-    block_buf: [BlockData; Self::BLOCK_COUNT * 2],
+    block_buf: Box<[BlockData]>,
     /// Store a buffer of noise to give blocks texture.
-    noise_buf: [f32; Self::NOISE_COUNT],
+    noise_buf: Box<[f32]>,
     /// Store which blocks are solid.
     solid: SolidTable,
     /// Store the instructions to generate the color for every block type.
@@ -288,9 +288,9 @@ impl Mesher {
 
     pub fn new(textures: BlockTextures) -> Self {
         Self {
-            vert_cache: [(0, 0); Self::VERT_ROW * 2],
-            block_buf: [BlockData { data: 0 }; Self::BLOCK_COUNT * 2],
-            noise_buf: [0.; Self::NOISE_COUNT],
+            vert_cache: vec![(0, 0); Self::VERT_ROW * 2].into_boxed_slice(),
+            block_buf: vec![BlockData { data: 0 }; Self::BLOCK_COUNT * 2].into_boxed_slice(),
+            noise_buf: vec![0.; Self::NOISE_COUNT].into_boxed_slice(),
             solid: SolidTable::new(&textures),
             block_textures: {
                 let mut blocks: Uninit<[BlockTexture; 256]> = Uninit::uninit();

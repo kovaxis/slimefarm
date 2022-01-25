@@ -188,6 +188,11 @@ struct TreeCfg {
     /// Usually 1 or 2 are enough, unless trees are very closely packed with huge foliages.
     extragen: i32,
 
+    /// The length of the underground root branch.
+    root_len: f32,
+    /// How much larger should the underground root branch be, compared to the trunk.
+    root_grow: f32,
+
     make: LuaFuncRef,
     /*
     /// Initial vertical inclination.
@@ -258,6 +263,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         len: f32,
         r0: f32,
         r1: f32,
+        leaf: [f32; 2],
         children: Vec<Branch>,
     }
     impl PlainsGen {
@@ -326,29 +332,45 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             bbuf: &mut ActionBuf,
             branch: Branch,
             pos: Vec3,
-            up: Vec3,
-            norm: Vec3,
+            mut up: Vec3,
+            mut norm: Vec3,
+            depth: i32,
         ) {
-            let norm = norm.rotated_by(Rotor3::from_angle_plane(
+            norm = norm.rotated_by(Rotor3::from_angle_plane(
                 branch.yaw,
                 Bivec3::from_normalized_axis(up),
             ));
             let perturb = Rotor3::from_angle_plane(branch.pitch, up.wedge(norm));
-            let up = up.rotated_by(perturb);
-            let norm = norm.rotated_by(perturb);
+            up = up.rotated_by(perturb);
+            norm = norm.rotated_by(perturb);
             // Maybe renormalize?
 
             let top = pos + up * branch.len;
+            if depth == 0 {
+                common::terrain::ActionCylinder::paint(
+                    bbuf,
+                    pos,
+                    pos - up * self.k.tree.root_len,
+                    branch.r0,
+                    branch.r0 * self.k.tree.root_grow,
+                    self.wood,
+                );
+            }
             common::terrain::ActionCylinder::paint(bbuf, pos, top, branch.r0, branch.r1, self.wood);
             //bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, self.wood);
 
-            if branch.children.is_empty() {
-                common::terrain::ActionSphere::paint(bbuf, top, 4., self.leaf);
+            if branch.leaf != [0.; 2] {
+                common::terrain::ActionOval::paint(
+                    bbuf,
+                    top,
+                    [branch.leaf[0], branch.leaf[0], branch.leaf[1]].into(),
+                    self.leaf,
+                );
                 //bbuf.fill_sphere(top, 4., self.leaf);
             }
 
             for b in branch.children {
-                self.gen_branch(bbuf, b, top, up, norm);
+                self.gen_branch(bbuf, b, top, up, norm, depth + 1);
             }
         }
 
@@ -385,6 +407,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     Vec3::new(tfracpos.x, tfracpos.y, 0.),
                     [0., 0., 1.].into(),
                     [1., 0., 0.].into(),
+                    0,
                 );
                 Ok(())
             });

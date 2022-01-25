@@ -1,6 +1,6 @@
 
 local scale = 2 --0.4
-local spacing = 20
+local spacing = 30 --24
 
 local initial_incl = 10 * math.pi / 180
 local maxdepth = 4
@@ -16,6 +16,8 @@ local branchweight = {0.2, 0.5}
 local initial_area = {scale * 18, scale * 22}
 local areaperlen = scale * 0.056
 local minbrancharea = 1
+local leafr = {scale * 2, scale * 5}
+local leafh = {scale * 1, scale * 3}
 local function makebranch(rng, total, depth, area, yaw, pitch)
     if area < minbrancharea then
         return nil
@@ -27,10 +29,12 @@ local function makebranch(rng, total, depth, area, yaw, pitch)
         len = rng:normal(seg[1], seg[2]) * 0.5 ^ (total / halfseg),
         r0 = math.sqrt(area),
         r1 = 0,
+        leaf = {0, 0},
         children = {},
     }
 
     area = area - areaperlen * b.len
+    total = total + b.len
     
     local areatake = rng:normal(areatake[1], areatake[2])
     if areatake * area < minbrancharea then
@@ -49,10 +53,13 @@ local function makebranch(rng, total, depth, area, yaw, pitch)
         table.insert(b.children, makebranch(rng, total, depth + 1, area * areatake, 0, mainpitch + splitpitch))
     end
 
-    total = total + b.len
     if total < maxtotal then
         -- Add branch continuation
         table.insert(b.children, makebranch(rng, total, depth, area * (1 - areatake), rng:normal(turn - turnjitter, turn + turnjitter), mainpitch))
+    end
+
+    if #b.children == 0 then
+        b.leaf = {rng:normal(leafr[1], leafr[2]), rng:normal(leafh[1], leafh[2])}
     end
 
     return b
@@ -94,6 +101,8 @@ function config()
             tree = {
                 spacing = spacing,
                 extragen = 30,
+                root_len = 4,
+                root_grow = 1,
                 wood_tex = texture({0.31, 0.19, 0.13, 0.01}, {0.136, 0.089, 0.065}, {0.2, 0.4}, true),
                 leaf_tex = texture({0.03, 0.26, 0.13, 0.025}, {0.045, 0.121, 0.116}, {0.1, 0, 0, 0.2}),
                 make = function(rng)
