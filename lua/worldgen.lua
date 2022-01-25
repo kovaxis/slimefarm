@@ -95,7 +95,7 @@ function config()
                 spacing = spacing,
                 extragen = 30,
                 wood_tex = texture({0.31, 0.19, 0.13, 0.01}, {0.136, 0.089, 0.065}, {0.2, 0.4}, true),
-                leaf_tex = texture({0.03, 0.26, 0.13, 0.025}, {0.045, 0.121, 0.116}, {0.1, 0, 0, 0.2}, true),
+                leaf_tex = texture({0.03, 0.26, 0.13, 0.025}, {0.045, 0.121, 0.116}, {0.1, 0, 0, 0.2}),
                 make = function(rng)
                     return makebranch(rng, 0, 1, rng:normal(initial_area[1], initial_area[2]), rng:uniform(2*math.pi), rng:normal(-initial_incl, initial_incl))
                 end,

@@ -47,10 +47,10 @@ impl Mesh<SimpleVertex> {
 
     /// Upload mesh to GPU.
     pub fn make_buffer<F: glium::backend::Facade + ?Sized>(&self, display: &F) -> Buffer3d {
-        if self.vertices.len() > u16::MAX as usize {
+        if self.vertices.len() > VertIdx::MAX as usize {
             eprintln!(
                 "over {} vertices in mesh! graphic glitches may occur",
-                u16::MAX
+                VertIdx::MAX
             );
         }
         Buffer3d {

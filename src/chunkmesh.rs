@@ -1,10 +1,11 @@
 use crate::prelude::*;
 use common::terrain::GridKeeper;
 
-pub(crate) type BufPackage = (
-    ChunkPos,
-    Option<(RawVertexPackage<SimpleVertex>, RawIndexPackage<VertIdx>)>,
-);
+pub(crate) struct BufPackage {
+    pub pos: ChunkPos,
+    pub mesh: Mesh,
+    pub buf: Option<(RawVertexPackage<SimpleVertex>, RawIndexPackage<VertIdx>)>,
+}
 
 const AVERAGE_WEIGHT: f32 = 0.02;
 
@@ -86,7 +87,7 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
     // The maximum amount of chunks to mesh in a single walk.
     const MAX_MESH: i32 = 2;
 
-    let mut mesher = Mesher::new(textures);
+    let mut mesher = Box::new(Mesher::new(textures));
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
     loop {
@@ -185,7 +186,12 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                     Some((buf.vertex.into_raw_package(), buf.index.into_raw_package()))
                 };
                 //Send the buffer back
-                match state.send_bufs.try_send((pos, buf_pkg)) {
+                let buf_pkg = BufPackage {
+                    pos,
+                    mesh,
+                    buf: buf_pkg,
+                };
+                match state.send_bufs.try_send(buf_pkg) {
                     Ok(()) => {}
                     Err(err) => {
                         if err.is_full() {
@@ -524,7 +530,7 @@ impl Mesher {
         }
     }
 
-    pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkArc; 3 * 3 * 3]) -> &Mesh {
+    pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkArc; 3 * 3 * 3]) -> Mesh {
         let chunk_at = |pos: Int3| &chunks[(pos[0] + pos[1] * 3 + pos[2] * (3 * 3)) as usize];
         let block_at = |pos: Int3| {
             let chunk_pos = pos >> CHUNK_BITS;
@@ -532,12 +538,10 @@ impl Mesher {
             chunk_at(chunk_pos).sub_get(sub_pos)
         };
 
-        self.mesh.clear();
-
         // Special case empty chunks
         if chunk_at([1, 1, 1].into()).is_nonsolid() {
             //Empty chunks have no geometry
-            return &self.mesh;
+            return mem::take(&mut self.mesh);
         }
 
         // Special case solid chunks surrounded by solid chunks
@@ -550,7 +554,7 @@ impl Mesher {
             && chunk_at([1, 1, 2].into()).is_solid()
         {
             //Solid chunks surrounded by solid chunks have no visible geometry
-            return &self.mesh;
+            return mem::take(&mut self.mesh);
         }
 
         self.chunk_pos = chunk_pos;
@@ -668,6 +672,6 @@ impl Mesher {
             }
         }
 
-        &self.mesh
+        mem::take(&mut self.mesh)
     }
 }

@@ -218,7 +218,7 @@ impl BlockIdAllocConcrete {
 
     #[track_caller]
     fn alloc(&self) -> u8 {
-        if self.nxt_seq.get() == u8::max_value() {
+        if self.nxt_seq.get() == u8::MAX {
             panic!("ran out of block ids!");
         }
         let id = self.nxt.get();
@@ -227,6 +227,7 @@ impl BlockIdAllocConcrete {
         id
     }
 
+    #[track_caller]
     fn get_hash(&self, hash: u64) -> u8 {
         let mut map = self.map.borrow_mut();
         *map.entry(hash).or_insert_with(|| self.alloc())
@@ -234,6 +235,7 @@ impl BlockIdAllocConcrete {
 }
 
 impl BlockIdAlloc for BlockIdAllocConcrete {
+    #[track_caller]
     fn get_hash(&self, hash: u64) -> BlockData {
         BlockData {
             data: self.get_hash(hash),

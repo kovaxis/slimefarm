@@ -207,30 +207,32 @@ impl Terrain {
     }
 
     pub fn hint_center(&mut self, center: BlockPos) {
-        //eprintln!("hinting center");
         //Adjust center
         let center = (center + Int3::splat(CHUNK_SIZE / 2)) >> CHUNK_BITS;
         self.chunks.read().center_hint.store(center);
         self.generator.reshape(self.meshes.size(), center);
         self.meshes.set_center(center);
+
         //Receive buffers from mesher thread
-        for (pos, buf_pkg) in self.mesher.recv_bufs.try_iter() {
-            let mesh = match buf_pkg {
-                None => {
-                    //A chunk with no geometry (ie. full air or full solid)
-                    ChunkMesh { buf: None }
-                }
-                Some((vert, idx)) => unsafe {
-                    //Deconstructed buffers
-                    ChunkMesh {
-                        buf: Some(Buffer3d {
+        for buf_pkg in self.mesher.recv_bufs.try_iter() {
+            let mesh = ChunkMesh {
+                mesh: buf_pkg.mesh,
+                buf: match buf_pkg.buf {
+                    None => {
+                        // A chunk with no geometry (ie. full air or full solid)
+                        None
+                    }
+                    Some((vert, idx)) => unsafe {
+                        // Deconstructed buffers
+                        // Construct them back
+                        Some(Buffer3d {
                             vertex: VertexBuffer::from_raw_package(&self.state.display, vert),
                             index: IndexBuffer::from_raw_package(&self.state.display, idx),
-                        }),
-                    }
+                        })
+                    },
                 },
             };
-            if let Some(slot) = self.meshes.get_mut(pos) {
+            if let Some(slot) = self.meshes.get_mut(buf_pkg.pos) {
                 slot.mesh = Some(mesh);
             }
         }
@@ -286,6 +288,7 @@ pub(crate) struct ChunkMeshSlot {
 }
 
 pub(crate) struct ChunkMesh {
+    pub mesh: Mesh,
     pub buf: Option<Buffer3d>,
 }
 

@@ -253,6 +253,7 @@ pub trait ChunkFiller {
 pub trait BlockIdAlloc {
     fn get_hash(&self, hash: u64) -> BlockData;
 
+    #[track_caller]
     #[inline]
     fn get(&self, name: &str) -> BlockData {
         let id = self.get_hash(fxhash::hash64(name));

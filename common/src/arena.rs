@@ -18,7 +18,11 @@ const fn class() -> Mutex<SizeClass> {
     })
 }
 
-static STATE: [Mutex<SizeClass>; 20] = [
+static STATE: [Mutex<SizeClass>; 24] = [
+    class(),
+    class(),
+    class(),
+    class(),
     class(),
     class(),
     class(),

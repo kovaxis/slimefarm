@@ -173,22 +173,61 @@ lua_type! {TerrainRef,
         terrain.meshes.radius * CHUNK_SIZE as f32
     }
 
-    fn draw(lua, this, (shader, uniforms, offset_uniform, params, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, f64, f64, f64)) {
+    fn draw(lua, this, (shader, uniforms, offset_uniform, params, mvp, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, MatrixStack, f64, f64, f64)) {
         let this = this.rc.borrow();
         let mut frame = this.state.frame.borrow_mut();
+        let mvp = mvp.stack.borrow().1;
+
+        // Get the corners of the frustum
+        let inv_mvp = mvp.inversed();
+        let f000 = inv_mvp.transform_point3([-1., -1., -1.].into());
+        let f100 = inv_mvp.transform_point3([1., -1., -1.].into());
+        let f010 = inv_mvp.transform_point3([-1., 1., -1.].into());
+        let f001 = inv_mvp.transform_point3([-1., -1., 1.].into());
+        let f101 = inv_mvp.transform_point3([1., -1., 1.].into());
+        let f011 = inv_mvp.transform_point3([-1., 1., 1.].into());
+        let f111 = inv_mvp.transform_point3([1., 1., 1.].into());
+
+        // Calculate the frustum planes
+        let calc_plane = |p: [Vec3; 3]| {
+            let n = (p[1] - p[0]).cross(p[2] - p[0]).normalized();
+            (p[0], n)
+        };
+        let planes = [
+            calc_plane([f000, f100, f010]), // near plane
+            calc_plane([f001, f000, f011]), // left plane
+            calc_plane([f101, f111, f100]), // right plane
+            calc_plane([f001, f101, f000]), // bottom plane
+            calc_plane([f011, f010, f111]), // top plane
+        ];
+
         //Rendering in this order has the nice property that closer chunks are rendered first,
         //making better use of the depth buffer.
         let mut drawn = 0;
         for &idx in this.meshes.render_order.iter() {
             if let Some(buf) = &this.meshes.get_by_idx(idx).mesh.as_ref().and_then(|mesh| mesh.buf.as_ref()) {
+                // Figure out chunk location
                 let pos = this.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
                 let offset = Vec3::new((pos.x as f64 - x) as f32, (pos.y as f64 - y) as f32, (pos.z as f64 - z) as f32);
+                let center = offset + Vec3::broadcast((CHUNK_SIZE / 2) as f32);
+
+                // Cull chunks that are outside the worldview
+                if center.mag_sq() > (CHUNK_SIZE * CHUNK_SIZE) as f32 {
+                    let out = planes.iter().enumerate().any(|(i, &(p, n))|
+                        n.dot(center - p) > 3f32.sqrt() / 2. * CHUNK_SIZE as f32
+                    );
+                    if out {
+                        // Cull chunk, it is too far away from the frustum
+                        continue;
+                    }
+                }
+
+                // Draw chunk
                 uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
                 drawn += 1;
             }
         }
-        println!("drew {} meshes", drawn);
     }
 
     fn chunk_gen_time(lua, this, ()) {

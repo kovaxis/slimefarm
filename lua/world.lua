@@ -144,7 +144,7 @@ function World:update()
     timer:mark("finish")
     
     timer:finish()
-    print(timer:to_str())
+    --print(timer:to_str())
 end
 
 function World:load_terrain()
@@ -343,7 +343,7 @@ function World:draw()
         self.shaders.terrain:set_vec3('diffuse', diffuse, diffuse, diffuse)
         self.shaders.terrain:set_vec3('specular', specular, specular, specular)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
-        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, cam_x, cam_y, cam_z)
+        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, cam_x, cam_y, cam_z)
     end
     
     timer:mark('draw_terrain')

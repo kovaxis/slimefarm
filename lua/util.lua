@@ -217,9 +217,9 @@ function util.Shader:draw(buf, draw_params)
     gfx.draw(buf, self.program, self.raw_uniforms, draw_params)
 end
 
-function util.Shader:draw_terrain(terr, offset_uniform, draw_params, x, y, z)
+function util.Shader:draw_terrain(terr, offset_uniform, draw_params, mvp, x, y, z)
     offset_uniform = self.uniforms[offset_uniform]
-    terr:draw(self.program, self.raw_uniforms, offset_uniform, draw_params, x, y, z)
+    terr:draw(self.program, self.raw_uniforms, offset_uniform, draw_params, mvp, x, y, z)
 end
 
 return util

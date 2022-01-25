@@ -42,7 +42,7 @@ pub mod prelude {
     };
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
 
-    pub type VertIdx = u16;
+    pub type VertIdx = u32;
 
     #[derive(Copy, Clone, Default, Debug)]
     pub struct Sortf32(pub f32);
