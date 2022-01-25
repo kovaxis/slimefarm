@@ -339,15 +339,19 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         ShaderRef{program: AssertSync(Rc::new(shader))}
                     }
 
-                    fn buffer_3d((pos, color, indices): (Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
+                    fn buffer_3d((pos, normal, color, indices): (Vec<f32>, Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
                         lua_assert!(pos.len() % 3 == 0, "positions not multiple of 3");
+                        lua_assert!(normal.len() % 3 == 0, "normals not multiple of 3");
                         lua_assert!(color.len() % 4 == 0, "colors not multiple of 4");
+                        lua_assert!(pos.len() == normal.len(), "not the same amount of positions as normals");
                         lua_assert!(pos.len() / 3 == color.len() / 4, "not the same amount of positions as colors");
-                        let vertices = pos.chunks_exact(3).zip(color.chunks_exact(4)).map(|(pos, color)| {
-                            let q = |f| (f*255.) as u8 as u32;
+                        let vertices = pos.chunks_exact(3).zip(normal.chunks_exact(3)).zip(color.chunks_exact(4)).map(|((pos, normal), color)| {
+                            let qn = |f| (f*128.) as i8;
+                            let qc = |f| (f*255.) as u8;
                             SimpleVertex {
                                 pos: [pos[0], pos[1], pos[2]],
-                                color: (q(color[0]) << 24) | (q(color[1]) << 16) | (q(color[2]) << 8) | q(color[3]),
+                                normal: [qn(normal[0]), qn(normal[1]), qn(normal[2]), 0],
+                                color: [qc(color[0]), qc(color[1]), qc(color[2]), qc(color[3])],
                             }
                         }).collect::<Vec<_>>();
                         BufferRef {

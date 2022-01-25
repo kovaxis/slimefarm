@@ -5,7 +5,7 @@ use common::terrain::{GridKeeper, GridSlot};
 
 pub struct ChunkSlot {
     pub generating: AtomicCell<bool>,
-    data: Option<ChunkBox>,
+    data: Option<ChunkArc>,
 }
 impl GridSlot for ChunkSlot {
     fn new() -> Self {
@@ -23,6 +23,10 @@ impl GridSlot for ChunkSlot {
 impl ChunkSlot {
     pub fn as_ref(&self) -> Option<ChunkRef> {
         self.data.as_ref().map(|chunk| chunk.as_ref())
+    }
+
+    pub fn as_arc_ref(&self) -> Option<ChunkArc> {
+        self.data.as_ref().cloned()
     }
 }
 
@@ -80,7 +84,7 @@ impl ChunkStorage {
         self.chunks.get(pos).map(|opt| opt.as_ref()).unwrap_or(None)
     }
 
-    pub fn _chunk_slot_at(&self, pos: ChunkPos) -> Option<&ChunkSlot> {
+    pub fn chunk_slot_at(&self, pos: ChunkPos) -> Option<&ChunkSlot> {
         self.chunks.get(pos)
     }
     pub fn chunk_slot_at_mut(&mut self, pos: ChunkPos) -> Option<&mut ChunkSlot> {
@@ -105,7 +109,7 @@ impl ops::DerefMut for ChunkStorage {
 }
 
 pub(crate) struct BookKeepHandle {
-    pub generated_send: Sender<(ChunkPos, ChunkBox)>,
+    pub generated_send: Sender<(ChunkPos, ChunkArc)>,
     close: Arc<AtomicCell<bool>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -143,7 +147,7 @@ impl Drop for BookKeepHandle {
 struct BookKeepState {
     close: Arc<AtomicCell<bool>>,
     chunks: Arc<RwLock<ChunkStorage>>,
-    generated: Receiver<(ChunkPos, ChunkBox)>,
+    generated: Receiver<(ChunkPos, ChunkArc)>,
 }
 
 fn run_bookkeep(state: BookKeepState) {

@@ -166,9 +166,10 @@ impl Drop for State {
 #[derive(Copy, Clone, Debug)]
 struct SimpleVertex {
     pos: [f32; 3],
-    color: u32,
+    normal: [i8; 4],
+    color: [u8; 4],
 }
-implement_vertex!(SimpleVertex, pos, color);
+implement_vertex!(SimpleVertex, pos normalize(false), normal normalize(true), color normalize(true));
 
 struct Buffer3d {
     vertex: VertexBuffer<SimpleVertex>,

@@ -83,23 +83,27 @@ struct MesherState {
 }
 
 fn run_mesher(state: MesherState, textures: BlockTextures) {
+    // The maximum amount of chunks to mesh in a single walk.
+    const MAX_MESH: i32 = 2;
+
     let mut mesher = Mesher::new(textures);
-    let mut chunks = state.chunks.read();
     let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
     loop {
         //Mission: find a meshable chunk
-        meshed.set_center(chunks.center());
+        let mut chunks_store = Some(state.chunks.read());
+        meshed.set_center(chunks_store.as_ref().unwrap().center());
         //Look for candidate chunks
         let mut order_idx = 0;
-        let mut did_mesh = false;
-        while !did_mesh && order_idx < chunks.priority.len() {
-            let idx = chunks.priority[order_idx];
+        let mut meshed_count = 0;
+        while meshed_count < MAX_MESH && order_idx < chunks_store.as_ref().unwrap().priority.len() {
+            let idx = chunks_store.as_ref().unwrap().priority[order_idx];
             order_idx += 1;
             (|| {
+                let chunks = chunks_store.as_ref().unwrap();
                 let mesh_start = Instant::now();
                 let chunk_slot = chunks.get_by_idx(idx);
-                let chunk = chunk_slot.as_ref()?;
+                let chunk = chunk_slot.as_arc_ref()?;
                 let pos = chunks.sub_idx_to_pos(idx);
                 let meshed_mark = meshed.get_mut(pos)?;
                 if *meshed_mark {
@@ -112,7 +116,7 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                         chunk
                     }};
                     (@$x:expr, $y:expr, $z:expr) => {{
-                        chunks.chunk_at(pos + [$x-1, $y-1, $z-1])?
+                        chunks.chunk_slot_at(pos + [$x-1, $y-1, $z-1])?.as_arc_ref()?
                     }};
                     ($($x:tt, $y:tt, $z:tt;)*) => {{
                         [$(
@@ -151,6 +155,9 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                     1, 2, 2;
                     2, 2, 2;
                 ];
+                //Free the chunk lock, since we have `Arc` references to all necessary chunks
+                drop(chunks);
+                chunks_store.take();
                 //Mesh the chunk
                 let mesh = mesher.make_mesh(pos, &neighbors);
                 {
@@ -184,9 +191,9 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                         if err.is_full() {
                             //Channel is full, make sure to unlock chunks
                             let stall_start = Instant::now();
-                            RwLockReadGuard::unlocked(&mut chunks, || {
-                                let _ = state.send_bufs.send(err.into_inner());
-                            });
+                            //RwLockReadGuard::unlocked(&mut chunks, || {
+                            let _ = state.send_bufs.send(err.into_inner());
+                            //});
                             let now = Instant::now();
                             if now - last_stall_warning > Duration::from_millis(1500) {
                                 last_stall_warning = now;
@@ -202,25 +209,28 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                 }
                 //Mark chunk as meshed
                 *meshed_mark = true;
-                //Exit loop
-                did_mesh = true;
+                //Acquire chunk lock again if there are still potential chunks to mesh
+                meshed_count += 1;
+                if meshed_count < MAX_MESH {
+                    chunks_store = Some(state.chunks.read());
+                }
                 Some(())
             })();
         }
+        chunks_store.take();
         if state.shared.close.load() {
             break;
         }
-        if did_mesh {
+        if meshed_count > 0 {
             //Make sure the bookkeeper thread gets a chance to write on the chunks
-            RwLockReadGuard::bump(&mut chunks);
+            //RwLockReadGuard::bump(&mut chunks);
         } else {
             //Pause for a while
-            drop(chunks);
             thread::park_timeout(Duration::from_millis(50));
             if state.shared.close.load() {
                 break;
             }
-            chunks = state.chunks.read();
+            //chunks = state.chunks.read();
         }
     }
 }
@@ -230,7 +240,7 @@ struct LayerParams {
     y: [i32; 3],
     mov: [i32; 3],
     flip: bool,
-    normal: u8,
+    normal: [i8; 3],
 }
 
 struct Mesher {
@@ -311,7 +321,7 @@ impl Mesher {
     }
 
     /// Expects a chunk-relative position.
-    fn color_at(&mut self, id: u8, pos: Int3) -> Vec3 {
+    fn color_at(&mut self, id: u8, pos: Int3) -> Vec4 {
         let noise_at = |pos: [i32; 3]| {
             self.noise_buf[(pos[0]
                 + pos[1] * (CHUNK_SIZE + 1)
@@ -328,15 +338,13 @@ impl Mesher {
             (x & m, c & m)
         };
         let tex = &self.block_textures[id as usize];
-        let mut color = Vec3::from(tex.base);
-        color += Vec3::from(tex.noise[0]) * noise_at(*pos);
+        let mut color = Vec4::from(tex.base);
+        color += Vec4::from(tex.noise[0]) * noise_at(*pos);
         for i in 1..BlockTexture::NOISE_LEVELS {
             let (x0, x1) = floorceil(pos.x, i);
             let (y0, y1) = floorceil(pos.y, i);
             let (z0, z1) = floorceil(pos.z, i);
-            let f = pos
-                .lowbits(i as i32)
-                .to_f32_floor() / (1 << i) as f32;
+            let f = pos.lowbits(i as i32).to_f32_floor() / (1 << i) as f32;
             let s = Lerp::lerp(
                 &Lerp::lerp(
                     &Lerp::lerp(&noise_at([x0, y0, z0]), noise_at([x1, y0, z0]), f.x),
@@ -350,7 +358,7 @@ impl Mesher {
                 ),
                 f.z,
             );
-            color += Vec3::from(tex.noise[i]) * s;
+            color += Vec4::from(tex.noise[i]) * s;
         }
         color
 
@@ -461,17 +469,13 @@ impl Mesher {
             } else {
                 conv_2d_3d(blockpos)
             };
+            lightness *= 255.;
             let color = self.color_at(id, color_pos);
-            lightness *= 256.;
-            let color_normal = [
-                (color[0] * lightness) as u8,
-                (color[1] * lightness) as u8,
-                (color[2] * lightness) as u8,
-                params.normal,
-            ];
+            let q = |f| (f * lightness) as u8;
+            let color = [q(color[0]), q(color[1]), q(color[2]), q(color[3])];
             //Apply transform
             let vert = Vec3::new(pos_3d[0] as f32, pos_3d[1] as f32, pos_3d[2] as f32);
-            cached = (id, self.mesh.add_vertex(vert, color_normal));
+            cached = (id, self.mesh.add_vertex(vert, params.normal, color));
             self.vert_cache[cache_idx] = cached;
         }
         cached.1
@@ -520,7 +524,7 @@ impl Mesher {
         }
     }
 
-    pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkRef; 3 * 3 * 3]) -> &Mesh {
+    pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkArc; 3 * 3 * 3]) -> &Mesh {
         let chunk_at = |pos: Int3| &chunks[(pos[0] + pos[1] * 3 + pos[2] * (3 * 3)) as usize];
         let block_at = |pos: Int3| {
             let chunk_pos = pos >> CHUNK_BITS;
@@ -584,7 +588,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [x - CHUNK_SIZE, 0, 0],
                     flip: false,
-                    normal: 0,
+                    normal: [i8::MAX, 0, 0],
                 });
             }
             self.flip_bufs();
@@ -595,7 +599,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [x - CHUNK_SIZE, 0, 0],
                     flip: true,
-                    normal: 1,
+                    normal: [i8::MIN, 0, 0],
                 });
             }
         }
@@ -616,7 +620,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [0, y - CHUNK_SIZE, 0],
                     flip: true,
-                    normal: 2,
+                    normal: [0, i8::MAX, 0],
                 });
             }
             self.flip_bufs();
@@ -627,7 +631,7 @@ impl Mesher {
                     y: [0, 0, -1],
                     mov: [0, y - CHUNK_SIZE, 0],
                     flip: false,
-                    normal: 3,
+                    normal: [0, i8::MIN, 0],
                 });
             }
         }
@@ -648,7 +652,7 @@ impl Mesher {
                     y: [0, -1, 0],
                     mov: [0, 0, z - CHUNK_SIZE],
                     flip: false,
-                    normal: 4,
+                    normal: [0, 0, i8::MAX],
                 });
             }
             self.flip_bufs();
@@ -659,7 +663,7 @@ impl Mesher {
                     y: [0, -1, 0],
                     mov: [0, 0, z - CHUNK_SIZE],
                     flip: true,
-                    normal: 5,
+                    normal: [0, 0, i8::MIN],
                 });
             }
         }

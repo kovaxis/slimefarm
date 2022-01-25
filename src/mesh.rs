@@ -15,10 +15,11 @@ impl<V> Default for Mesh<V> {
     }
 }
 
-fn vert(pos: Vec3, color: [u8; 4]) -> SimpleVertex {
+fn vert(pos: Vec3, normal: [i8; 3], color: [u8; 4]) -> SimpleVertex {
     SimpleVertex {
         pos: pos.into(),
-        color: u32::from_be_bytes(color),
+        normal: [normal[0], normal[1], normal[2], 0],
+        color: color,
     }
 }
 
@@ -38,14 +39,20 @@ impl<V> Mesh<V> {
 }
 impl Mesh<SimpleVertex> {
     /// Add a single vertex and return its index.
-    pub fn add_vertex(&mut self, v: Vec3, color: [u8; 4]) -> VertIdx {
+    pub fn add_vertex(&mut self, v: Vec3, normal: [i8; 3], color: [u8; 4]) -> VertIdx {
         let idx = self.vertices.len() as VertIdx;
-        self.vertices.push(vert(v, color));
+        self.vertices.push(vert(v, normal, color));
         idx
     }
 
     /// Upload mesh to GPU.
     pub fn make_buffer<F: glium::backend::Facade + ?Sized>(&self, display: &F) -> Buffer3d {
+        if self.vertices.len() > u16::MAX as usize {
+            eprintln!(
+                "over {} vertices in mesh! graphic glitches may occur",
+                u16::MAX
+            );
+        }
         Buffer3d {
             vertex: VertexBuffer::immutable(display, &self.vertices).unwrap(),
             index: IndexBuffer::immutable(display, PrimitiveType::TrianglesList, &self.indices)

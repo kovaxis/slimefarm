@@ -135,13 +135,15 @@ util.DebugTimer = class{}
 
 function util.DebugTimer:new()
     self.base = os.clock()
+    self.phases = {}
+    self.last_phases = {}
     self.rope = {}
 end
 
-function util.DebugTimer:start(now)
-    self.base = now or os.clock()
-    for i = #self.rope, 1, -1 do
-        self.rope[i] = nil
+function util.DebugTimer:finish()
+    self.phases, self.last_phases = self.last_phases, self.phases
+    for i = #self.phases, 1, -1 do
+        self.phases[i] = nil
     end
 end
 
@@ -149,18 +151,28 @@ function util.DebugTimer:mark(name, now)
     now = now or os.clock()
     local time = now - self.base
     self.base = now
-    local rope = self.rope
-    local len = #rope
-    rope[len + 1] = "| "
-    rope[len + 2] = name
-    rope[len + 3] = " "
-    rope[len + 4] = time * 1000
-    rope[len + 5] = "ms "
+    local phases = self.phases
+    local len = #phases
+    phases[len + 1] = name
+    phases[len + 2] = time
 end
 
 function util.DebugTimer:to_str()
+    local phases = self.last_phases
     local rope = self.rope
-    rope[#rope + 1] = "|"
+    for i = #rope, 1, -1 do
+        rope[i] = nil
+    end
+    local j = 1
+    for i = 1, #phases, 2 do
+        rope[j + 0] = "| "
+        rope[j + 1] = phases[i]
+        rope[j + 2] = " "
+        rope[j + 3] = math.ceil(phases[i + 1] * 100000) / 100
+        rope[j + 4] = "ms "
+        j = j + 5
+    end
+    rope[j] = "|"
     return table.concat(rope)
 end
 

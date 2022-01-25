@@ -1,20 +1,20 @@
 
-local scale = 0.4
-local spacing = 50
+local scale = 2 --0.4
+local spacing = 20
 
 local initial_incl = 10 * math.pi / 180
 local maxdepth = 4
-local seg = {scale * 10, scale * 15}
-local halfseg = scale * 80
-local maxtotal = scale * 100
+local seg = {scale * 6, scale * 8}
+local halfseg = scale * 12
+local maxtotal = scale * 40
 local branchoffchance = 1
-local areatake = {0.3, 0.4}
+local areatake = {0.35, 0.4}
 local turn = 2*math.pi * 2 / 5
 local turnjitter = .05
-local split = {1.0, 1.4}
+local split = {0.75, 0.9}
 local branchweight = {0.2, 0.5}
-local initial_area = {scale * 45, scale * 55}
-local areaperlen = scale * 0.14
+local initial_area = {scale * 18, scale * 22}
+local areaperlen = scale * 0.056
 local minbrancharea = 1
 local function makebranch(rng, total, depth, area, yaw, pitch)
     if area < minbrancharea then
@@ -58,42 +58,44 @@ local function makebranch(rng, total, depth, area, yaw, pitch)
     return b
 end
 
+local function texture(base, noise, noisescales, rough)
+    if #noise == 3 then
+        noise[4] = 0
+    end
+    local noiselvls = 6
+    while #noisescales < noiselvls do
+        table.insert(noisescales, 0)
+    end
+    local noises = {}
+    for i = 1, noiselvls do
+        noises[i] = {
+            noise[1] * noisescales[i],
+            noise[2] * noisescales[i],
+            noise[3] * noisescales[i],
+            noise[4] * noisescales[i],
+        }
+    end
+    return {
+        solid = true,
+        smooth = not rough,
+        base = base,
+        noise = noises,
+    }
+end
+
 function config()
     return {
         kind = {Plains = {
             xy_scale = 256,
             detail = 3,
             z_scale = 40,
-            grass_tex = {
-                solid = true,
-                smooth = true,
-                base = {0.43, 0.61, 0.10},
-                noise = {
-                    {0,0,0},
-                    {0,0,0},
-                    {0,0,0},
-                    {0,0,0},
-                    {0,0,0},
-                    {0.116, 0.131, 0.053},
-                },
-            },
+            grass_tex = texture({0.43, 0.61, 0.10, 0.05}, {0.116, 0.131, 0.053}, {0, 0, 0, 0, 0, 0.8}),
 
             tree = {
                 spacing = spacing,
-                extragen = 1,
-                wood_tex = {
-                    solid = true,
-                    smooth = false,
-                    base = {0.31, 0.19, 0.13},
-                    noise = {
-                        {0.136, 0.089, 0.065},
-                        {0.136 * 0.2, 0.089 * 0.2, 0.065 * 0.2},
-                        {0,0,0},
-                        {0,0,0},
-                        {0,0,0},
-                        {0,0,0},
-                    },
-                },
+                extragen = 30,
+                wood_tex = texture({0.31, 0.19, 0.13, 0.01}, {0.136, 0.089, 0.065}, {0.2, 0.4}, true),
+                leaf_tex = texture({0.03, 0.26, 0.13, 0.025}, {0.045, 0.121, 0.116}, {0.1, 0, 0, 0.2}, true),
                 make = function(rng)
                     return makebranch(rng, 0, 1, rng:normal(initial_area[1], initial_area[2]), rng:uniform(2*math.pi), rng:normal(-initial_incl, initial_incl))
                 end,

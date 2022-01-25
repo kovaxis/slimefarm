@@ -53,6 +53,14 @@ impl ops::Add<[i32; 2]> for Int2 {
         self
     }
 }
+impl ops::Add<Int2> for [i32; 2] {
+    type Output = Int2;
+    #[inline]
+    fn add(self, mut rhs: Int2) -> Int2 {
+        rhs += self;
+        rhs
+    }
+}
 impl ops::SubAssign for Int2 {
     #[inline]
     fn sub_assign(&mut self, rhs: Self) {
@@ -80,6 +88,13 @@ impl ops::Sub<[i32; 2]> for Int2 {
     fn sub(mut self, rhs: [i32; 2]) -> Self {
         self -= rhs;
         self
+    }
+}
+impl ops::Sub<Int2> for [i32; 2] {
+    type Output = Int2;
+    #[inline]
+    fn sub(self, rhs: Int2) -> Int2 {
+        Int2::new(self) - rhs
     }
 }
 impl ops::Neg for Int2 {
@@ -349,6 +364,14 @@ impl ops::Add<[i32; 3]> for Int3 {
         self
     }
 }
+impl ops::Add<Int3> for [i32; 3] {
+    type Output = Int3;
+    #[inline]
+    fn add(self, mut rhs: Int3) -> Int3 {
+        rhs += self;
+        rhs
+    }
+}
 impl ops::SubAssign for Int3 {
     #[inline]
     fn sub_assign(&mut self, rhs: Self) {
@@ -377,6 +400,13 @@ impl ops::Sub<[i32; 3]> for Int3 {
     fn sub(mut self, rhs: [i32; 3]) -> Self {
         self -= rhs;
         self
+    }
+}
+impl ops::Sub<Int3> for [i32; 3] {
+    type Output = Int3;
+    #[inline]
+    fn sub(self, rhs: Int3) -> Int3 {
+        Int3::new(self) - rhs
     }
 }
 impl ops::Neg for Int3 {

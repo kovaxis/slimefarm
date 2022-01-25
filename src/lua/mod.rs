@@ -178,14 +178,17 @@ lua_type! {TerrainRef,
         let mut frame = this.state.frame.borrow_mut();
         //Rendering in this order has the nice property that closer chunks are rendered first,
         //making better use of the depth buffer.
+        let mut drawn = 0;
         for &idx in this.meshes.render_order.iter() {
             if let Some(buf) = &this.meshes.get_by_idx(idx).mesh.as_ref().and_then(|mesh| mesh.buf.as_ref()) {
                 let pos = this.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
                 let offset = Vec3::new((pos.x as f64 - x) as f32, (pos.y as f64 - y) as f32, (pos.z as f64 - z) as f32);
                 uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
+                drawn += 1;
             }
         }
+        println!("drew {} meshes", drawn);
     }
 
     fn chunk_gen_time(lua, this, ()) {
@@ -277,7 +280,7 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
                     }
                     LuaValue::String(s) => s.as_bytes().hash(&mut hasher),
                     _ => {
-                        Err(LuaError::RuntimeError(format!("cannot hash type {}", val.type_name())))?;
+                        Err(LuaError::RuntimeError(format!("cannot hash type {}", "unknown"/*val.type_name()*/)))?;
                     }
                 }
             }

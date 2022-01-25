@@ -10,7 +10,7 @@ mod prelude {
         noise3d::{Noise3d, NoiseScaler3d},
         prelude::*,
         spread2d::Spread2d,
-        terrain::{BlockBuf, GridKeeper, GridKeeper2d},
+        terrain::{ActionBuf, BlockBuf, GridKeeper, GridKeeper2d},
         worldgen::BlockIdAlloc,
         worldgen::{ChunkFiller, GenStore},
     };
@@ -179,8 +179,10 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
 struct TreeCfg {
     /// Texture of the wood block.
     wood_tex: BlockTexture,
-    /// Spacing between trees.
-    /// Should be a power of two.
+    /// Texture of the leaf block.
+    leaf_tex: BlockTexture,
+    /// Average spacing between trees.
+    /// More specifically, there is an average of 1 tree per `spacing x spacing` square.
     spacing: i32,
     /// How many trees to generate from the nearby chunks.
     /// Usually 1 or 2 are enough, unless trees are very closely packed with huge foliages.
@@ -240,13 +242,14 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         cfg: Config,
         k: Plains,
         cols: GridKeeper2d<Option<(i16, i16, LoafBox<i16>)>>,
-        trees: GridKeeper2d<Option<(BlockPos, BlockBuf)>>,
+        trees: GridKeeper2d<Option<ActionBuf>>,
         noise2d: Noise2d,
         tree_spread: Spread2d,
         void: BlockData,
         air: BlockData,
         grass: BlockData,
         wood: BlockData,
+        leaf: BlockData,
     }
     #[derive(Deserialize)]
     struct Branch {
@@ -318,74 +321,14 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             Some(chunk)
         }
 
-        /*
         fn gen_branch(
             &self,
-            rng: &mut FastRng,
-            bbuf: &mut BlockBuf,
+            bbuf: &mut ActionBuf,
+            branch: Branch,
             pos: Vec3,
             up: Vec3,
             norm: Vec3,
-            area: f32,
-            depth: f32,
         ) {
-            let wood = BlockData { data: 2 };
-            let k = &self.k.tree;
-
-            if area < k.prune_area || depth > k.prune_depth {
-                return;
-            }
-
-            let offshoot_area = rng.gen_range(k.offshoot_area[0]..=k.offshoot_area[1]);
-            let len = rng.gen_range(k.trunk_len[0]..=k.trunk_len[1])
-                * (-depth / rng.gen_range(k.halflen[0]..=k.halflen[1])).exp2();
-            let top = pos + up * len;
-            let norm = norm.rotated_by(Rotor3::from_angle_plane(
-                rng.gen_range(k.rot_angle[0]..=k.rot_angle[1]),
-                Bivec3::from_normalized_axis(up),
-            ));
-
-            let newarea = area - rng.gen_range(k.area_per_len[0]..=k.area_per_len[1]) * len;
-            let newdepth = depth + len;
-            bbuf.fill_cylinder(pos, top, area.sqrt(), newarea.sqrt(), wood);
-
-            let perturb_plane = up.wedge(norm);
-
-            let subperturb = Rotor3::from_angle_plane(
-                rng.gen_range(k.main_perturb[0]..=k.main_perturb[1]),
-                perturb_plane,
-            );
-            let subup = up.rotated_by(subperturb);
-            let subnorm = norm.rotated_by(subperturb);
-            self.gen_branch(
-                rng,
-                bbuf,
-                top,
-                subup,
-                subnorm,
-                newarea * (1. - offshoot_area),
-                newdepth,
-            );
-
-            let offperturb = Rotor3::from_angle_plane(
-                rng.gen_range(k.offshoot_perturb[0]..=k.offshoot_perturb[1]),
-                perturb_plane,
-            );
-            let offup = up.rotated_by(offperturb);
-            let offnorm = norm.rotated_by(offperturb);
-            self.gen_branch(
-                rng,
-                bbuf,
-                top,
-                offup,
-                offnorm,
-                newarea * offshoot_area,
-                newdepth,
-            );
-        }
-        */
-
-        fn gen_branch(&self, bbuf: &mut BlockBuf, branch: Branch, pos: Vec3, up: Vec3, norm: Vec3) {
             let norm = norm.rotated_by(Rotor3::from_angle_plane(
                 branch.yaw,
                 Bivec3::from_normalized_axis(up),
@@ -396,7 +339,13 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             // Maybe renormalize?
 
             let top = pos + up * branch.len;
-            bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, self.wood);
+            common::terrain::ActionCylinder::paint(bbuf, pos, top, branch.r0, branch.r1, self.wood);
+            //bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, self.wood);
+
+            if branch.children.is_empty() {
+                common::terrain::ActionSphere::paint(bbuf, top, 4., self.leaf);
+                //bbuf.fill_sphere(top, 4., self.leaf);
+            }
 
             for b in branch.children {
                 self.gen_branch(bbuf, b, top, up, norm);
@@ -419,7 +368,8 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             let (_, _, hmap) = self.gen_hmap(chunkpos)?;
             let theight = hmap[subchunkpos.to_index([CHUNK_BITS; 2].into())];
             let tpos = thorizpos.with_z(theight as i32);
-            let mut bbuf = BlockBuf::new(self.void);
+            let mut bbuf = ActionBuf::new(tpos);
+            //let mut bbuf = BlockBuf::new(tpos, self.void);
             //let mut bbuf = BlockBuf::with_capacity([-32, -32, -16].into(), [64, 64, 128].into());
 
             // actually generate tree in the buffer
@@ -482,7 +432,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             }
             */
 
-            self.trees.get_mut(tcoord)?.get_or_insert((tpos, bbuf));
+            self.trees.get_mut(tcoord)?.get_or_insert(bbuf);
             Some(())
         }
     }
@@ -492,14 +442,16 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             let mut chunk = self.gen_terrain(pos)?;
 
             let extragen = self.k.tree.extragen;
-            let subdiv = (CHUNK_SIZE / self.k.tree.spacing).max(1);
-            let xy = (pos.xy() << CHUNK_BITS) / self.k.tree.spacing;
-            for y in -extragen..subdiv + extragen {
-                for x in -extragen..subdiv + extragen {
-                    let tcoord = xy + [x, y];
+            let extragen = Int2::splat(extragen);
+            let xy_min = ((pos.xy() << CHUNK_BITS) - extragen) / self.k.tree.spacing;
+            let xy_max = (((pos.xy() + [1, 1]) << CHUNK_BITS) + [CHUNK_SIZE - 1; 2] + extragen)
+                / self.k.tree.spacing;
+            for y in xy_min.y..=xy_max.y {
+                for x in xy_min.x..=xy_max.x {
+                    let tcoord = Int2::new([x, y]);
                     self.gen_tree(tcoord)?;
-                    let (tpos, treebuf) = self.trees.get(tcoord)?.as_ref()?;
-                    treebuf.transfer(*tpos, pos, &mut chunk);
+                    let treebuf = self.trees.get(tcoord)?.as_ref()?;
+                    treebuf.transfer(pos, &mut chunk);
                 }
             }
 
@@ -517,6 +469,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         air: lookup_block(store, "base.air"),
         grass: register_block(store, "base.grass", &k.grass_tex),
         wood: register_block(store, "base.wood", &k.tree.wood_tex),
+        leaf: register_block(store, "base.leaf", &k.tree.leaf_tex),
         lua: get_lua(store),
         cols: GridKeeper2d::with_radius(cfg.gen_radius / CHUNK_SIZE as f32, Int2::zero()),
         trees: GridKeeper2d::with_radius(cfg.gen_radius / k.tree.spacing as f32, Int2::zero()),

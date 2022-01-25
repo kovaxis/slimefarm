@@ -262,7 +262,7 @@ dependencies = [
  "rand 0.8.4",
  "rand_distr",
  "rand_xoshiro",
- "rlua 0.18.0",
+ "rlua",
  "serde",
  "serde_derive",
  "ultraviolet",
@@ -1705,29 +1705,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlua"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24d76c08e66e69d182a41ff735a0931ecf1879de3552c6989c65a8268ee95b19"
-dependencies = [
- "bitflags",
- "bstr",
- "cc",
- "libc",
- "num-traits 0.2.14",
-]
-
-[[package]]
-name = "rlua_serde"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e57c8c7bfcc5f18a46ddaf0c6a0d6a5c083ce9e6d185d4093bf98e640d256b"
-dependencies = [
- "rlua 0.17.1",
- "serde",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1848,8 +1825,7 @@ dependencies = [
  "parking_lot",
  "rand 0.8.4",
  "rand_xoshiro",
- "rlua 0.18.0",
- "rlua_serde",
+ "rlua",
  "serde",
  "serde_json",
  "ultraviolet",
@@ -2181,7 +2157,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "fxhash",
- "rlua 0.18.0",
+ "rlua",
  "serde",
  "serde_json",
 ]

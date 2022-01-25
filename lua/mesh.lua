@@ -5,17 +5,22 @@ local Mesh = class{}
 
 function Mesh:new()
     self.vertices = {}
+    self.normals = {}
     self.colors = {}
     self.indices = {}
 end
 
-function Mesh:add_vertex(x, y, z, r, g, b, a)
+function Mesh:add_vertex(x, y, z, nx, ny, nz, r, g, b, a)
     local v = self.vertices
+    local n = self.normals
+    local c = self.colors
     local len = #v
     v[len + 1] = x
     v[len + 2] = y
     v[len + 3] = z
-    local c = self.colors
+    n[len + 1] = nx
+    n[len + 2] = ny
+    n[len + 3] = nz
     len = #c
     c[len + 1] = r
     c[len + 2] = g
@@ -27,13 +32,16 @@ end
 function Mesh:add_quad(x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, r, g, b, a)
     r, g, b, a = r or 1, g or 1, b or 1, a or 1
     local i = self.indices
-    local base = #self.vertices
+    local base = #self.vertices / 3
     local len = #i
 
-    self:add_vertex(x0, y0, z0, r, g, b, a)
-    self:add_vertex(x1, y1, z1, r, g, b, a)
-    self:add_vertex(x2, y2, z2, r, g, b, a)
-    self:add_vertex(x3, y3, z3, r, g, b, a)
+    local nx, ny, nz = vec3.cross(x1 - x0, y1 - y0, z1 - z0,   x3 - x0, y3 - y0, z3 - z0)
+    nx, ny, nz = vec3.normalize(nx, ny, nz)
+
+    self:add_vertex(x0, y0, z0, nx, ny, nz, r, g, b, a)
+    self:add_vertex(x1, y1, z1, nx, ny, nz, r, g, b, a)
+    self:add_vertex(x2, y2, z2, nx, ny, nz, r, g, b, a)
+    self:add_vertex(x3, y3, z3, nx, ny, nz, r, g, b, a)
 
     i[len + 1] = base + 0
     i[len + 2] = base + 1
@@ -52,14 +60,22 @@ function Mesh:add_cube(x, y, z, w, d, h, r, g, b, a)
     b = b or 1
     a = a or 1
 
+    w, d, h = w / 2, d / 2, h / 2
+    local x0, y0, z0 = x - w, y - d, z - h
+    local x1, y1, z1 = x + w, y + d, z + h
+
+    self:add_quad(x0, y0, z0,  x1, y0, z0,  x1, y0, z1,  x0, y0, z1, r, g, b, a)
+    self:add_quad(x1, y0, z0,  x1, y1, z0,  x1, y1, z1,  x1, y0, z1, r, g, b, a)
+    self:add_quad(x1, y1, z0,  x0, y1, z0,  x0, y1, z1,  x1, y1, z1, r, g, b, a)
+    self:add_quad(x0, y1, z0,  x0, y0, z0,  x0, y0, z1,  x0, y1, z1, r, g, b, a)
+    self:add_quad(x0, y0, z0,  x0, y1, z0,  x1, y1, z0,  x1, y0, z0, r, g, b, a)
+    self:add_quad(x0, y0, z1,  x1, y0, z1,  x1, y1, z1,  x0, y1, z1, r, g, b, a)
+
+    --[[
     local v = self.vertices
     local i = self.indices
     local base = #v / 3
     local l = #i
-
-    w, d, h = w / 2, d / 2, h / 2
-    local x0, y0, z0 = x - w, y - d, z - h
-    local x1, y1, z1 = x + w, y + d, z + h
 
     self:add_vertex(x0, y0, z0, r, g, b, a)
     self:add_vertex(x1, y0, z0, r, g, b, a)
@@ -117,12 +133,13 @@ function Mesh:add_cube(x, y, z, w, d, h, r, g, b, a)
     i[l + 34] = base + 2
     i[l + 35] = base + 6
     i[l + 36] = base + 7
+    ]]
 
     return self
 end
 
 function Mesh:as_buffer()
-    return gfx.buffer_3d(self.vertices, self.colors, self.indices)
+    return gfx.buffer_3d(self.vertices, self.normals, self.colors, self.indices)
 end
 
 return Mesh

@@ -143,7 +143,7 @@ struct GenState {
     global: Arc<GlobalState>,
     _chunks: Arc<RwLock<ChunkStorage>>,
     reshape_recv: Receiver<(i32, ChunkPos)>,
-    generated_send: Sender<(ChunkPos, ChunkBox)>,
+    generated_send: Sender<(ChunkPos, ChunkArc)>,
 }
 
 #[derive(Default)]
@@ -333,6 +333,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
                 }
             };
             chunk.mark_solidity(&solid);
+            let chunk = ChunkArc::new(chunk);
             //Keep chunkgen timing statistics
             {
                 //Dont care about data races here, after all it's just stats

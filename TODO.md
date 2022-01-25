@@ -9,6 +9,8 @@ TODO:
 - SIMD for noise.
 - Optimize render priorities based on player velocity.
 - Poll for events in a separate process and timestamp them for smoother input.
+- Add an option to upload meshes in single thread, for stability.
+- Make `rlua` print error messages from Rust callbacks.
 
 Threads:
 

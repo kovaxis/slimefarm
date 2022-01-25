@@ -10,8 +10,8 @@ pub mod prelude {
         ivec::{Int2, Int3},
         slotmap::{SlotId, SlotMap},
         terrain::{
-            BlockData, BlockPos, BlockTexture, BlockTextures, ChunkBox, ChunkData, ChunkPos,
-            ChunkRef, LoafBox, SolidTable, CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
+            BlockData, BlockPos, BlockTexture, BlockTextures, ChunkArc, ChunkBox, ChunkData,
+            ChunkPos, ChunkRef, LoafBox, SolidTable, CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
         },
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};

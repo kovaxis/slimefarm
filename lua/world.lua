@@ -143,8 +143,8 @@ function World:update()
     gfx.finish()
     timer:mark("finish")
     
-    --print(timer:to_str())
-    timer:start()
+    timer:finish()
+    print(timer:to_str())
 end
 
 function World:load_terrain()
@@ -191,7 +191,7 @@ do
     lo, hi = 0, 0.20
     sky.diffuse  = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
 
-    lo, hi = 0, 0.01
+    lo, hi = 0, 1
     sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
 end
 
@@ -268,6 +268,8 @@ function World:draw()
     frame.mv_world:rotate_z(-cam_yaw)
     frame.mvp_world:mul_right(frame.mv_world)
 
+    timer:mark('draw_setup')
+
     --Draw skybox
     do
         local cycle = self.day_cycle
@@ -285,6 +287,8 @@ function World:draw()
         self.shaders.skybox:draw(sky.screen, frame.params_hud)
         frame.mv_world:pop()
     end
+
+    timer:mark('draw_sky')
 
     --Update fog distance
     do
@@ -317,6 +321,8 @@ function World:draw()
             self.fog_current = util.approach(self.fog_current, self.fog_target, 0.00001, 8, frame.dt)
         end
     end
+    
+    timer:mark('draw_fogsetup')
 
     --Draw terrain
     do
@@ -340,6 +346,8 @@ function World:draw()
         self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, cam_x, cam_y, cam_z)
     end
     
+    timer:mark('draw_terrain')
+    
     --Draw entities
     for _, ent in ipairs(self.entities) do
         local prevx, prevy, prevz = ent.prev_x - cam_x, ent.prev_y - cam_y, ent.prev_z - cam_z
@@ -350,6 +358,8 @@ function World:draw()
         ent:draw(self)
         frame.mvp_world:pop()
     end
+    
+    timer:mark('draw_entities')
 
     --Draw HUD
     frame.mvp_hud:push()
@@ -372,6 +382,8 @@ function World:draw()
     frame.mvp_hud:scale(self.mouse_icon.w, self.mouse_icon.h, 1)
     self.mouse_icon:draw(1, frame.mvp_hud, frame.params_hud)
     frame.mvp_hud:pop()
+
+    timer:mark('draw_hud')
 end
 
 function World:mousemove(dx, dy)

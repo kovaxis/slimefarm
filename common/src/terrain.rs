@@ -161,6 +161,7 @@ unsafe impl Sync for ChunkBox {}
 impl ops::Deref for ChunkBox {
     type Target = ChunkRef<'static>;
     fn deref(&self) -> &ChunkRef<'static> {
+        // SUPER-UNSAFE!
         unsafe { mem::transmute(self) }
     }
 }
@@ -363,6 +364,65 @@ impl Drop for ChunkBox {
     }
 }
 
+/// An atomically reference-counted `ChunkBox`, with less indirections than `Arc<ChunkBox>`.
+/// Also saves the atomic operations if the `ChunkBox` is homogeneous.
+pub struct ChunkArc {
+    chunk: mem::ManuallyDrop<ChunkBox>,
+    rc: Option<&'static AtomicCell<usize>>,
+}
+impl ChunkArc {
+    pub fn new(chunk: ChunkBox) -> Self {
+        let rc = if chunk.is_homogeneous() {
+            None
+        } else {
+            Some(Box::leak(Box::new(AtomicCell::new(1usize))) as &'static _)
+        };
+        Self {
+            chunk: mem::ManuallyDrop::new(chunk),
+            rc,
+        }
+    }
+
+    /// Get an immutable reference to the chunk arc.
+    #[inline]
+    pub fn as_ref(&self) -> ChunkRef {
+        self.chunk.as_ref()
+    }
+}
+impl ops::Deref for ChunkArc {
+    type Target = ChunkRef<'static>;
+    fn deref(&self) -> &ChunkRef<'static> {
+        // SUPER-UNSAFE! (maybe? not sure)
+        &*self.chunk
+    }
+}
+impl ops::Drop for ChunkArc {
+    fn drop(&mut self) {
+        if let Some(rc) = self.rc {
+            if rc.fetch_sub(1) == 1 {
+                // Last reference to the `ChunkBox`
+                unsafe {
+                    mem::ManuallyDrop::drop(&mut self.chunk);
+                    drop(Box::from_raw(rc as *const _ as *mut AtomicCell<usize>));
+                }
+            }
+        }
+    }
+}
+impl Clone for ChunkArc {
+    fn clone(&self) -> Self {
+        if let Some(rc) = self.rc {
+            rc.fetch_add(1);
+        }
+        unsafe {
+            Self {
+                chunk: ptr::read(&self.chunk),
+                rc: self.rc,
+            }
+        }
+    }
+}
+
 pub type ChunkPos = Int3;
 #[allow(non_snake_case)]
 pub fn ChunkPos(x: [i32; 3]) -> ChunkPos {
@@ -407,12 +467,12 @@ impl ChunkData {
 
     #[track_caller]
     #[inline]
-    pub fn sub_get_mut(&mut self, sub_pos: Int3) -> &mut BlockData {
+    pub fn sub_set(&mut self, sub_pos: Int3, block: BlockData) {
         match self
             .blocks
             .get_mut(sub_pos.to_index([CHUNK_BITS; 3].into()))
         {
-            Some(b) => b,
+            Some(b) => *b = block,
             None => panic!(
                 "block index [{}, {}, {}] outside chunk boundaries",
                 sub_pos[0], sub_pos[1], sub_pos[2]
@@ -738,25 +798,172 @@ where
     }
 }
 
+pub trait PaintAction {
+    /// Get the bounding box of blocks that this action may affect, in action-local coordinates.
+    /// Coordinates are inclusive-exclusive.
+    fn bbox(&self) -> (Int3, Int3);
+    /// Apply this action onto a chunk.
+    /// The coordinates given are the block coordinates of the chunk floor in action-local
+    /// coordinates.
+    /// The bounding box given is in action-local coordinates, and is within the chunk, otherwise
+    /// `apply` will not be called.
+    fn apply(&self, pos: BlockPos, bbox: (Int3, Int3), chunk: &mut ChunkBox);
+}
+
+pub struct ActionBuf {
+    origin: BlockPos,
+    actions: Vec<((Int3, Int3), Box<dyn PaintAction>)>,
+}
+impl ActionBuf {
+    pub fn new(origin: BlockPos) -> Self {
+        Self {
+            origin,
+            actions: vec![],
+        }
+    }
+
+    pub fn act(&mut self, action: Box<dyn PaintAction>) {
+        let bbox = action.bbox();
+        self.actions.push((bbox, action));
+    }
+
+    pub fn transfer(&self, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
+        let chunk_mn = (chunkpos << CHUNK_BITS) - self.origin;
+        let chunk_mx = chunk_mn + [CHUNK_SIZE; 3];
+        for &((mn, mx), ref action) in &self.actions {
+            if mx.x > chunk_mn.x
+                && mx.y > chunk_mn.y
+                && mx.z > chunk_mn.z
+                && mn.x < chunk_mx.x
+                && mn.y < chunk_mx.y
+                && mn.z < chunk_mx.z
+            {
+                let bbox = (mn.max(chunk_mn), mx.min(chunk_mx));
+                action.apply(chunk_mn, bbox, chunk);
+            }
+        }
+    }
+}
+
+pub struct ActionSphere {
+    u: Vec3,
+    r: f32,
+    block: BlockData,
+}
+impl ActionSphere {
+    pub fn new(u: Vec3, r: f32, block: BlockData) -> Self {
+        Self { u, r, block }
+    }
+
+    pub fn paint(buf: &mut ActionBuf, u: Vec3, r: f32, block: BlockData) {
+        buf.act(Box::new(Self::new(u, r, block)));
+    }
+}
+impl PaintAction for ActionSphere {
+    fn bbox(&self) -> (Int3, Int3) {
+        let mn = Int3::from_f32((self.u - Vec3::broadcast(self.r)).map(f32::floor));
+        let mx = Int3::from_f32(
+            (self.u + Vec3::broadcast(self.r))
+                .max_by_component(self.u + Vec3::broadcast(self.r))
+                .map(f32::floor),
+        ) + [1; 3];
+        (mn, mx)
+    }
+    fn apply(&self, pos: Int3, (mn, mx): (Int3, Int3), chunk: &mut ChunkBox) {
+        let chunk = chunk.blocks_mut();
+        let r2 = self.r * self.r;
+        for z in mn.z..mx.z {
+            for y in mn.y..mx.y {
+                // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
+                // end, and write all the row blocks in one go.
+                for x in mn.x..mx.x {
+                    let d = Vec3::new(x as f32, y as f32, z as f32) - self.u;
+                    if d.mag_sq() <= r2 {
+                        chunk.sub_set([x, y, z] - pos, self.block);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct ActionCylinder {
+    u0: Vec3,
+    u1: Vec3,
+    r0: f32,
+    r1: f32,
+    block: BlockData,
+}
+impl ActionCylinder {
+    pub fn new(u0: Vec3, u1: Vec3, r0: f32, r1: f32, block: BlockData) -> Self {
+        Self {
+            u0,
+            u1,
+            r0,
+            r1,
+            block,
+        }
+    }
+
+    pub fn paint(buf: &mut ActionBuf, u0: Vec3, u1: Vec3, r0: f32, r1: f32, block: BlockData) {
+        buf.act(Box::new(Self::new(u0, u1, r0, r1, block)));
+    }
+}
+impl PaintAction for ActionCylinder {
+    fn bbox(&self) -> (Int3, Int3) {
+        let mn = Int3::from_f32(
+            (self.u0 - Vec3::broadcast(self.r0))
+                .min_by_component(self.u1 - Vec3::broadcast(self.r1))
+                .map(f32::floor),
+        );
+        let mx = Int3::from_f32(
+            (self.u0 + Vec3::broadcast(self.r0))
+                .max_by_component(self.u1 + Vec3::broadcast(self.r1))
+                .map(f32::floor),
+        ) + [1; 3];
+        (mn, mx)
+    }
+    fn apply(&self, pos: Int3, (mn, mx): (Int3, Int3), chunk: &mut ChunkBox) {
+        let chunk = chunk.blocks_mut();
+        let n = self.u1 - self.u0;
+        let inv = n.mag_sq().recip();
+        for z in mn.z..mx.z {
+            for y in mn.y..mx.y {
+                for x in mn.x..mx.x {
+                    let p = Vec3::new(x as f32, y as f32, z as f32) - self.u0;
+                    let s = (n.dot(p) * inv).min(1.).max(0.);
+                    let r = self.r0 + (self.r1 - self.r0) * s;
+                    let d2 = (n * s - p).mag_sq();
+                    if d2 <= r * r {
+                        chunk.sub_set([x, y, z] - pos, self.block);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// a dynamic growable buffer, representing an infinite space filled with "filler block".
 /// any block within this space can be set or get, but setting blocks far away from the origin
 /// will overallocate memory.
 /// this buffer can be "transferred" over to a chunk, copying the corresponding blocks over from
 /// the virtual buffer to the actual chunk.
 pub struct BlockBuf {
-    /// the actual buffer data.
+    /// Where does the block buffer origin map to in the real world.
+    origin: Int3,
+    /// The actual buffer data.
     blocks: Vec<BlockData>,
-    /// "filler block", the block that by default covers the entire space.
+    /// "Filler block", the block that by default covers the entire space.
     fill: BlockData,
-    /// the lowest coordinate represented by the physical block buffer, in buffer-local coordinates.
+    /// The lowest coordinate represented by the physical block buffer, in buffer-local coordinates.
     /// usually negative.
     corner: Int3,
-    /// log2 of the size.
-    /// forces sizes to be a power of two.
+    /// Log2 of the size.
+    /// Forces sizes to be a power of two.
     size: Int3,
 }
 impl BlockBuf {
-    pub fn with_capacity(fill: BlockData, corner: Int3, size: Int3) -> Self {
+    pub fn with_capacity(origin: BlockPos, fill: BlockData, corner: Int3, size: Int3) -> Self {
         let size_log2 = [
             (mem::size_of_val(&size.x) * 8) as i32 - (size.x - 1).leading_zeros() as i32,
             (mem::size_of_val(&size.y) * 8) as i32 - (size.y - 1).leading_zeros() as i32,
@@ -764,6 +971,7 @@ impl BlockBuf {
         ]
         .into();
         Self {
+            origin,
             fill,
             corner,
             size: size_log2,
@@ -771,13 +979,13 @@ impl BlockBuf {
         }
     }
 
-    /// creates a new block buffer with its origin at [0, 0, 0].
-    pub fn new(fill: BlockData) -> Self {
-        Self::with_capacity(fill, [-2, -2, -2].into(), [4, 4, 4].into())
+    /// Creates a new block buffer with its origin at [0, 0, 0].
+    pub fn new(origin: BlockPos, fill: BlockData) -> Self {
+        Self::with_capacity(origin, fill, [-2, -2, -2].into(), [4, 4, 4].into())
     }
 
-    /// get the block data at the given position relative to the block buffer origin.
-    /// if the position is out of bounds, return the filler block.
+    /// Get the block data at the given position relative to the block buffer origin.
+    /// If the position is out of bounds, return the filler block.
     pub fn get(&self, pos: BlockPos) -> BlockData {
         let pos = pos - self.corner;
         if pos.is_within([1 << self.size[0], 1 << self.size[1], 1 << self.size[2]].into()) {
@@ -838,7 +1046,7 @@ impl BlockBuf {
         self.reserve(mx);
         let r2 = radius * radius;
         for z in mn.z..=mx.z {
-            for y in mn.y..=mx.z {
+            for y in mn.y..=mx.y {
                 // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
                 // end, and write all the row blocks in one go.
                 for x in mn.x..=mx.x {
@@ -886,8 +1094,8 @@ impl BlockBuf {
         }
     }
 
-    /// set the block data at the given position relative to the block buffer origin.
-    /// if the position is out of bounds, allocates new blocks filled with the filler block and
+    /// Set the block data at the given position relative to the block buffer origin.
+    /// If the position is out of bounds, allocates new blocks filled with the filler block and
     /// only then sets the given position.
     pub fn set(&mut self, pos: BlockPos, block: BlockData) {
         self.reserve(pos);
@@ -895,13 +1103,13 @@ impl BlockBuf {
         self.blocks[pos.to_index(self.size)] = block;
     }
 
-    /// copy the contents of the block buffer over to the given chunk.
-    /// locates the block buffer origin at the given origin position, and locates the chunk at the
+    /// Copy the contents of the block buffer over to the given chunk.
+    /// Locates the block buffer origin at the buffer origin position, and locates the chunk at the
     /// given chunk coordinates.
-    pub fn transfer(&self, origin: BlockPos, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
+    pub fn transfer(&self, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
         let chunkpos = chunkpos << CHUNK_BITS;
         // position of the buffer relative to the destination chunk
-        let pos = origin + self.corner - chunkpos;
+        let pos = self.origin + self.corner - chunkpos;
 
         let skipchunk = pos.max(Int3::splat(0));
         let uptochunk = (pos
@@ -959,15 +1167,16 @@ pub struct BlockTexture {
     #[serde(default = "default_true")]
     pub smooth: bool,
     /// Constant base block color.
+    /// Red, Green, Blue, Specularity.
     /// Other texture effects are added onto this base color.
     #[serde(default)]
-    pub base: [f32; 3],
+    pub base: [f32; 4],
     /// How much value noise to add of each scale.
     /// 0 -> per-block value noise
     /// 1 -> 2-block interpolated value noise
     /// K -> 2^K-block interpolated value noise
     #[serde(default)]
-    pub noise: [[f32; 3]; Self::NOISE_LEVELS],
+    pub noise: [[f32; 4]; Self::NOISE_LEVELS],
 }
 impl BlockTexture {
     pub const NOISE_LEVELS: usize = 6;

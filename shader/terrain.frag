@@ -5,7 +5,7 @@ uniform vec3 specular;
 uniform vec3 diffuse;
 uniform float fog;
 
-in vec3 v_color;
+in vec4 v_color;
 in vec3 v_light_dir;
 in float v_diffuse;
 in vec3 v_pos;
@@ -21,5 +21,5 @@ void main() {
     float inv_dist = 1 / dist;
     float f_diffuse = v_diffuse;
     float f_specular = max(pow(dot(v_pos * inv_dist, v_light_dir), 3), 0);
-    out_color = vec4((ambience + f_specular * specular + f_diffuse * diffuse) * v_color, alpha);
+    out_color = vec4((ambience + f_specular * v_color.a * specular + f_diffuse * diffuse) * v_color.xyz, alpha);
 }
