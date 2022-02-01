@@ -140,10 +140,6 @@ lua_type! {TerrainRef,
         this.rc.borrow_mut().set_view_radius(dist)
     }
 
-    fn set_batch_draw(lua, this, batch: bool) {
-        this.rc.borrow_mut().batch_draw = batch;
-    }
-
     fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
         let [fx, fy, fz] = crate::terrain::check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
@@ -239,51 +235,20 @@ lua_type! {TerrainRef,
         let mut drawn = 0;
         let mut bytes_v = 0;
         let mut bytes_i = 0;
-        if this.batch_draw {
-            this.batch_vert.clear();
-            this.batch_idx.clear();
+        for &idx in this.meshes.render_order.iter() {
+            let (offset, chunk) = get_chunk!(idx);
 
-            for &idx in this.meshes.render_order.iter() {
-                let (offset, chunk) = get_chunk!(idx);
-
-                let idx_base = this.batch_vert.len() as VertIdx;
-                for vert in chunk.mesh.vertices.iter() {
-                    let mut vert = vert.clone();
-                    vert.pos = (Vec3::from(vert.pos) + offset).into();
-                    this.batch_vert.push(vert);
-                }
-                for &idx in chunk.mesh.indices.iter() {
-                    this.batch_idx.push(idx_base + idx);
-                }
-
-                if !chunk.mesh.vertices.is_empty() {
-                    drawn += 1;
-                }
-            }
-
-            bytes_v += this.batch_vert.len() * mem::size_of::<SimpleVertex>();
-            bytes_i += this.batch_idx.len() * mem::size_of::<VertIdx>();
-            this.batch_buf.write(&this.state, &mut this.batch_vert, &mut this.batch_idx);
-
-            let (vert, idx) = this.batch_buf.bufs();
-            uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3([0.; 3]);
-            frame.draw(vert, idx, &shader.program, &uniforms, &params.params).unwrap();
-        }else{
-            for &idx in this.meshes.render_order.iter() {
-                let (offset, chunk) = get_chunk!(idx);
-
-                // Draw chunk
-                if let Some(buf) = &chunk.buf {
-                    uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
-                    frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
-                    drawn += 1;
-                    bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
-                    bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
-                }
+            // Draw chunk
+            if let Some(buf) = &chunk.buf {
+                uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
+                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
+                drawn += 1;
+                bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
+                bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
             }
         }
 
-        if true {
+        if false {
             println!("drew {} chunks in {}KB of vertices and {}KB of indices", drawn, bytes_v / 1024, bytes_i / 1024);
         }
     }

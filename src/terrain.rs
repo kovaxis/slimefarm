@@ -182,10 +182,6 @@ pub(crate) struct Terrain {
     pub state: Rc<State>,
     pub chunks: Arc<RwLock<ChunkStorage>>,
     pub meshes: MeshKeeper,
-    pub batch_draw: bool,
-    pub batch_vert: Vec<SimpleVertex>,
-    pub batch_idx: Vec<u32>,
-    pub batch_buf: DynBuffer3d,
 }
 impl Terrain {
     pub fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
@@ -201,10 +197,6 @@ impl Terrain {
             generator: generator,
             _bookkeeper: bookkeeper,
             chunks,
-            batch_draw: true,
-            batch_vert: default(),
-            batch_idx: default(),
-            batch_buf: DynBuffer3d::new(state),
         })
     }
 

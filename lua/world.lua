@@ -153,7 +153,6 @@ function World:load_terrain()
     file:close()
     self.terrain = system.terrain(worldgen)
     self.terrain:set_view_distance(32*12)
-    self.terrain:set_batch_draw(true)
 end
 
 local sky = {}
