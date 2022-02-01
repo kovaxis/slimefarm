@@ -307,12 +307,10 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
     'outer: loop {
         //Make sure provider structure has the right size
         for (size, center) in gen.reshape_recv.try_iter() {
-            eprintln!("recentering to {:?}", center);
             provider.reshape(size, center);
             unsafe {
                 store.trigger("base.recenter", &center);
             }
-            eprintln!("  finished recentering");
         }
         //Find a suitable chunk and generate it
         let mut priority_idx = 0;

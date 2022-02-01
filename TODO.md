@@ -11,6 +11,7 @@ TODO:
 - Add an option to upload meshes in single thread, for stability.
 - Fix `rlua 0.18` to print error messages from Rust callbacks.
 - Merge adjacent chunk meshes into supermeshes for an extra ~20 FPS.
+- Chunk recentering hysteresis.
 
 Threads:
 

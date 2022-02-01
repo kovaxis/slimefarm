@@ -140,6 +140,10 @@ lua_type! {TerrainRef,
         this.rc.borrow_mut().set_view_radius(dist)
     }
 
+    fn set_batch_draw(lua, this, batch: bool) {
+        this.rc.borrow_mut().batch_draw = batch;
+    }
+
     fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
         let [fx, fy, fz] = crate::terrain::check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
@@ -174,7 +178,8 @@ lua_type! {TerrainRef,
     }
 
     fn draw(lua, this, (shader, uniforms, offset_uniform, params, mvp, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, MatrixStack, f64, f64, f64)) {
-        let this = this.rc.borrow();
+        let mut this = this.rc.borrow_mut();
+        let this = &mut *this;
         let mut frame = this.state.frame.borrow_mut();
         let mvp = mvp.stack.borrow().1;
 
@@ -201,11 +206,14 @@ lua_type! {TerrainRef,
             calc_plane([f011, f010, f111]), // top plane
         ];
 
-        //Rendering in this order has the nice property that closer chunks are rendered first,
-        //making better use of the depth buffer.
-        let mut drawn = 0;
-        for &idx in this.meshes.render_order.iter() {
-            if let Some(buf) = &this.meshes.get_by_idx(idx).mesh.as_ref().and_then(|mesh| mesh.buf.as_ref()) {
+        macro_rules! get_chunk {
+            ($idx:expr) => {{
+                let idx = $idx;
+                let buf = match this.meshes.get_by_idx(idx).mesh.as_ref() {
+                    Some(buf) => buf,
+                    None => continue,
+                };
+
                 // Figure out chunk location
                 let pos = this.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
                 let offset = Vec3::new((pos.x as f64 - x) as f32, (pos.y as f64 - y) as f32, (pos.z as f64 - z) as f32);
@@ -213,7 +221,7 @@ lua_type! {TerrainRef,
 
                 // Cull chunks that are outside the worldview
                 if center.mag_sq() > (CHUNK_SIZE * CHUNK_SIZE) as f32 {
-                    let out = planes.iter().enumerate().any(|(i, &(p, n))|
+                    let out = planes.iter().any(|&(p, n)|
                         n.dot(center - p) > 3f32.sqrt() / 2. * CHUNK_SIZE as f32
                     );
                     if out {
@@ -222,11 +230,61 @@ lua_type! {TerrainRef,
                     }
                 }
 
-                // Draw chunk
-                uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
-                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
-                drawn += 1;
+                (offset, buf)
+            }};
+        }
+
+        //Rendering in this order has the nice property that closer chunks are rendered first,
+        //making better use of the depth buffer.
+        let mut drawn = 0;
+        let mut bytes_v = 0;
+        let mut bytes_i = 0;
+        if this.batch_draw {
+            this.batch_vert.clear();
+            this.batch_idx.clear();
+
+            for &idx in this.meshes.render_order.iter() {
+                let (offset, chunk) = get_chunk!(idx);
+
+                let idx_base = this.batch_vert.len() as VertIdx;
+                for vert in chunk.mesh.vertices.iter() {
+                    let mut vert = vert.clone();
+                    vert.pos = (Vec3::from(vert.pos) + offset).into();
+                    this.batch_vert.push(vert);
+                }
+                for &idx in chunk.mesh.indices.iter() {
+                    this.batch_idx.push(idx_base + idx);
+                }
+
+                if !chunk.mesh.vertices.is_empty() {
+                    drawn += 1;
+                }
             }
+
+            bytes_v += this.batch_vert.len() * mem::size_of::<SimpleVertex>();
+            bytes_i += this.batch_idx.len() * mem::size_of::<VertIdx>();
+            this.batch_buf.write(&this.state, &mut this.batch_vert, &mut this.batch_idx);
+
+            let (vert, idx) = this.batch_buf.bufs();
+            uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3([0.; 3]);
+            frame.draw(vert, idx, &shader.program, &uniforms, &params.params).unwrap();
+        }else{
+            for &idx in this.meshes.render_order.iter() {
+                let (offset, chunk) = get_chunk!(idx);
+
+                // Draw chunk
+                if let Some(buf) = &chunk.buf {
+                    uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
+                    frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
+                    drawn += 1;
+                    bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
+                    bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
+                }
+            }
+        }
+
+        if true {
+            println!("drew {} chunks in {}KB of vertices and {}KB of indices", drawn, bytes_v / 1024, bytes_i / 1024);
         }
     }
 

@@ -20,7 +20,8 @@ pub mod prelude {
         gen::GeneratorHandle,
         mesh::Mesh,
         terrain::{ChunkStorage, Terrain},
-        AnyBuffer, Buffer2d, Buffer3d, GlobalState, SimpleVertex, State, TexturedVertex,
+        AnyBuffer, Buffer2d, Buffer3d, DynBuffer3d, GlobalState, SimpleVertex, State,
+        TexturedVertex,
     };
     pub use common::prelude::*;
     pub use glium::{
@@ -174,6 +175,70 @@ implement_vertex!(SimpleVertex, pos normalize(false), normal normalize(true), co
 struct Buffer3d {
     vertex: VertexBuffer<SimpleVertex>,
     index: IndexBuffer<VertIdx>,
+}
+
+struct DynBuffer3d {
+    buf: Buffer3d,
+    vert_len: usize,
+    idx_len: usize,
+}
+impl DynBuffer3d {
+    fn new(state: &Rc<State>) -> Self {
+        Self {
+            buf: Buffer3d {
+                vertex: VertexBuffer::empty_dynamic(&state.display, 16).unwrap(),
+                index: IndexBuffer::empty_dynamic(&state.display, PrimitiveType::TrianglesList, 64)
+                    .unwrap(),
+            },
+            vert_len: 0,
+            idx_len: 0,
+        }
+    }
+
+    fn write(&mut self, state: &Rc<State>, vert: &mut Vec<SimpleVertex>, idx: &mut Vec<VertIdx>) {
+        // Write vertex data
+        if self.buf.vertex.len() < vert.len() {
+            println!("reallocating vertex buffer");
+            self.buf.vertex =
+                VertexBuffer::empty_dynamic(&state.display, vert.len().next_power_of_two())
+                    .unwrap();
+        }
+        self.vert_len = vert.len();
+        vert.reserve(self.buf.vertex.len() - vert.len());
+        unsafe {
+            vert.set_len(self.buf.vertex.len());
+        }
+        self.buf.vertex.write(&vert);
+
+        // Write index data
+        if self.buf.index.len() < idx.len() {
+            println!("reallocating index buffer");
+            self.buf.index = IndexBuffer::empty_dynamic(
+                &state.display,
+                PrimitiveType::TrianglesList,
+                idx.len().next_power_of_two(),
+            )
+            .unwrap();
+        }
+        self.idx_len = idx.len();
+        idx.reserve(self.buf.index.len() - idx.len());
+        unsafe {
+            idx.set_len(self.buf.index.len());
+        }
+        self.buf.index.write(&idx);
+    }
+
+    fn bufs(
+        &self,
+    ) -> (
+        glium::vertex::VertexBufferSlice<SimpleVertex>,
+        glium::index::IndexBufferSlice<VertIdx>,
+    ) {
+        (
+            self.buf.vertex.slice(0..self.vert_len).unwrap(),
+            self.buf.index.slice(0..self.idx_len).unwrap(),
+        )
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

@@ -171,7 +171,7 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                     state.shared.avg_mesh_time.store(new_time);
                 }
                 //Upload the chunk buffer to GPU
-                let buf_pkg = if mesh.indices.is_empty() {
+                let buf_pkg = if mesh.indices.is_empty() || true {
                     None
                 } else {
                     let upload_start = Instant::now();
