@@ -5,12 +5,14 @@ use crate::prelude::*;
 mod prelude {
     pub(crate) use crate::serde::LuaFuncRef;
     pub(crate) use common::{
+        actionbuf::ActionBuf,
+        blockbuf::BlockBuf,
         lua::LuaRng,
         noise2d::{Noise2d, NoiseScaler2d},
         noise3d::{Noise3d, NoiseScaler3d},
         prelude::*,
         spread2d::Spread2d,
-        terrain::{ActionBuf, BlockBuf, GridKeeper, GridKeeper2d},
+        terrain::{GridKeeper, GridKeeper2d},
         worldgen::BlockIdAlloc,
         worldgen::{ChunkFiller, GenStore},
     };
@@ -347,7 +349,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
 
             let top = pos + up * branch.len;
             if depth == 0 {
-                common::terrain::ActionCylinder::paint(
+                common::actionbuf::ActionCylinder::paint(
                     bbuf,
                     pos,
                     pos - up * self.k.tree.root_len,
@@ -356,11 +358,13 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     self.wood,
                 );
             }
-            common::terrain::ActionCylinder::paint(bbuf, pos, top, branch.r0, branch.r1, self.wood);
+            common::actionbuf::ActionCylinder::paint(
+                bbuf, pos, top, branch.r0, branch.r1, self.wood,
+            );
             //bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, self.wood);
 
             if branch.leaf != [0.; 2] {
-                common::terrain::ActionOval::paint(
+                common::actionbuf::ActionOval::paint(
                     bbuf,
                     top,
                     [branch.leaf[0], branch.leaf[0], branch.leaf[1]].into(),

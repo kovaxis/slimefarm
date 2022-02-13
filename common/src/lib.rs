@@ -82,6 +82,8 @@ pub mod prelude {
 
 #[macro_use]
 pub mod arena;
+pub mod actionbuf;
+pub mod blockbuf;
 pub mod ivec;
 pub mod lua;
 pub mod noise2d;
