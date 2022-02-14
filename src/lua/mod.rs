@@ -118,6 +118,21 @@ lua_type! {MatrixStack,
         let (x, y, z) = top.transform_point3(Vec3::new(x, y, z)).into();
         (x, y, z)
     }
+
+    fn set_col(lua, this, (i, x, y, z, w): (usize, f32, f32, f32, f32)) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        lua_assert!(i < 4, "invalid row index");
+        top[i] = Vec4::new(x, y, z, w);
+    }
+    fn set_row(lua, this, (i, x, y, z, w): (usize, f32, f32, f32, f32)) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        lua_assert!(i < 4, "invalid row index");
+        let mat = top.as_mut_slice();
+        mat[4 * i + 0] = x;
+        mat[4 * i + 1] = y;
+        mat[4 * i + 2] = z;
+        mat[4 * i + 3] = w;
+    }
 }
 
 #[derive(Clone)]
@@ -173,84 +188,57 @@ lua_type! {TerrainRef,
         terrain.meshes.radius * CHUNK_SIZE as f32
     }
 
-    fn draw(lua, this, (shader, uniforms, offset_uniform, params, mvp, x, y, z): (ShaderRef, UniformStorage, u32, LuaDrawParams, MatrixStack, f64, f64, f64)) {
-        let mut this = this.rc.borrow_mut();
-        let this = &mut *this;
-        let mut frame = this.state.frame.borrow_mut();
-        let mvp = mvp.stack.borrow().1;
-
-        // Get the corners of the frustum
-        let inv_mvp = mvp.inversed();
-        let f000 = inv_mvp.transform_point3([-1., -1., -1.].into());
-        let f100 = inv_mvp.transform_point3([1., -1., -1.].into());
-        let f010 = inv_mvp.transform_point3([-1., 1., -1.].into());
-        let f001 = inv_mvp.transform_point3([-1., -1., 1.].into());
-        let f101 = inv_mvp.transform_point3([1., -1., 1.].into());
-        let f011 = inv_mvp.transform_point3([-1., 1., 1.].into());
-        let f111 = inv_mvp.transform_point3([1., 1., 1.].into());
-
-        // Calculate the frustum planes
-        let calc_plane = |p: [Vec3; 3]| {
-            let n = (p[1] - p[0]).cross(p[2] - p[0]).normalized();
-            (p[0], n)
-        };
-        let planes = [
-            calc_plane([f000, f100, f010]), // near plane
-            calc_plane([f001, f000, f011]), // left plane
-            calc_plane([f101, f111, f100]), // right plane
-            calc_plane([f001, f101, f000]), // bottom plane
-            calc_plane([f011, f010, f111]), // top plane
-        ];
-
-        macro_rules! get_chunk {
-            ($idx:expr) => {{
-                let idx = $idx;
-                let buf = match this.meshes.get_by_idx(idx).mesh.as_ref() {
-                    Some(buf) => buf,
-                    None => continue,
-                };
-
-                // Figure out chunk location
-                let pos = this.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
-                let offset = Vec3::new((pos.x as f64 - x) as f32, (pos.y as f64 - y) as f32, (pos.z as f64 - z) as f32);
-                let center = offset + Vec3::broadcast((CHUNK_SIZE / 2) as f32);
-
-                // Cull chunks that are outside the worldview
-                if center.mag_sq() > (CHUNK_SIZE * CHUNK_SIZE) as f32 {
-                    let out = planes.iter().any(|&(p, n)|
-                        n.dot(center - p) > 3f32.sqrt() / 2. * CHUNK_SIZE as f32
-                    );
-                    if out {
-                        // Cull chunk, it is too far away from the frustum
-                        continue;
-                    }
-                }
-
-                (offset, buf)
-            }};
-        }
-
-        //Rendering in this order has the nice property that closer chunks are rendered first,
-        //making better use of the depth buffer.
-        let mut drawn = 0;
-        let mut bytes_v = 0;
-        let mut bytes_i = 0;
-        for &idx in this.meshes.render_order.iter() {
-            let (offset, chunk) = get_chunk!(idx);
-
-            // Draw chunk
-            if let Some(buf) = &chunk.buf {
-                uniforms.vars.borrow_mut().get_mut(offset_uniform as usize).ok_or("offset uniform out of range").to_lua_err()?.1 = UniformVal::Vec3(offset.into());
-                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params).unwrap();
-                drawn += 1;
-                bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
-                bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
+    fn calc_clip_planes(lua, this, (mvp, locate, out): (MatrixStack, LuaAnyUserData, LuaTable)) {
+        let mvp = &mvp.stack.borrow().1;
+        let locate = locate.borrow::<LocateBuf>()?;
+        let p = Terrain::calc_clip_planes(mvp, &locate.framequad());
+        for i in 0..5 {
+            for j in 0..4 {
+                out.raw_set(i*4+j+1, p[i][j])?;
             }
         }
+    }
 
-        if false {
-            println!("drew {} chunks in {}KB of vertices and {}KB of indices", drawn, bytes_v / 1024, bytes_i / 1024);
-        }
+    fn draw(lua, this, (
+        shader,
+        uniforms,
+        offset_uniform,
+        params,
+        mvp,
+        locate_raw,
+        subdraw_callback
+    ): (
+        ShaderRef,
+        UniformStorage,
+        u32,
+        LuaDrawParams,
+        MatrixStack,
+        LuaAnyUserData,
+        LuaFunction
+    )) {
+        let this = this.rc.borrow();
+        let mvp = mvp.stack.borrow().1;
+        let locate = locate_raw.borrow::<LocateBuf>()?;
+        let subdraw = |origin: &[f64; 3], framequad: &[Vec3; 4], depth: u8| -> Result<()> {
+            locate.origin.set(*origin);
+            for i in 0..4 {
+                locate.framequad[i].set(framequad[i]);
+            }
+            locate.depth.set(depth);
+            subdraw_callback.call(locate_raw.clone())?;
+            Ok(())
+        };
+        this.draw(
+            &shader.program,
+            uniforms,
+            offset_uniform,
+            locate.origin(),
+            &params.params,
+            mvp,
+            locate.framequad(),
+            locate.depth(),
+            &subdraw,
+        ).to_lua_err()?;
     }
 
     fn chunk_gen_time(lua, this, ()) {
@@ -261,6 +249,67 @@ lua_type! {TerrainRef,
     }
     fn chunk_mesh_upload_time(lua, this, ()) {
         this.rc.borrow().mesher.avg_upload_time.load()
+    }
+}
+
+struct LocateBuf {
+    /// Where should the graphics-world-coordinates origin be, in absolute world coordinates.
+    origin: Cell<[f64; 3]>,
+    /// A quad that contains all that is being currently rendered to the screen, in normalized
+    /// device coordinates (NDC).
+    framequad: [Cell<Vec3>; 4],
+    /// How deep in the portal chain are we.
+    /// 0 = real world
+    /// 1 = seen through a single portal
+    /// 2 = seen through a portal within a portal
+    /// ...
+    depth: Cell<u8>,
+}
+lua_type! {LocateBuf,
+    fn set_origin(lua, this, (x, y, z): (f64, f64, f64)) {
+        this.origin.set([x, y, z]);
+    }
+
+    fn set_framequad(lua, this, (i, x, y, z): (usize, f32, f32, f32)) {
+        match this.framequad.get(i) {
+            Some(v) => v.set(Vec3::new(x, y, z)),
+            None => lua_bail!("invalid framequad vertex index {}", i),
+        }
+    }
+
+    fn set_depth(lua, this, d: u8) {
+        this.depth.set(d);
+    }
+
+    fn origin(lua, this, ()) {
+        let o = this.origin();
+        (o[0], o[1], o[2])
+    }
+
+    fn framequad(lua, this, i: usize) {
+        lua_assert!(i < 4, "invalid framequad vertex index");
+        let v = this.framequad[i].get();
+        (v.x, v.y, v.z)
+    }
+
+    fn depth(lua, this, ()) {
+        this.depth()
+    }
+}
+impl LocateBuf {
+    fn origin(&self) -> [f64; 3] {
+        self.origin.get()
+    }
+    fn framequad(&self) -> [Vec3; 4] {
+        [
+            self.framequad[0].get(),
+            self.framequad[1].get(),
+            self.framequad[2].get(),
+            self.framequad[3].get(),
+        ]
+    }
+    fn depth(&self) -> u8 {
+        self.depth.get()
     }
 }
 

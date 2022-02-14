@@ -1,4 +1,7 @@
-use crate::{lua::MatrixStack, prelude::*};
+use crate::{
+    lua::{LocateBuf, MatrixStack},
+    prelude::*,
+};
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
 
 #[derive(Clone)]
@@ -226,8 +229,8 @@ lua_type! {LuaDrawParams,
     mut fn set_depth(lua, this, (test, write): (LuaString, bool)) {
         use glium::draw_parameters::DepthTest::*;
         let test = match test.as_bytes() {
-            b"ignore" => Ignore,
-            b"overwrite" => Overwrite,
+            b"always_fail" => Ignore,
+            b"always_pass" => Overwrite,
             b"if_equal" => IfEqual,
             b"if_not_equal" => IfNotEqual,
             b"if_more" => IfMore,
@@ -322,6 +325,51 @@ lua_type! {LuaDrawParams,
         };
         this.params.backface_culling = cull;
     }
+
+    mut fn set_stencil(lua, this, (test, refval, pass, fail, depthfail): (LuaString, i32, Option<LuaString>, Option<LuaString>, Option<LuaString>)) {
+        use glium::draw_parameters::{StencilTest::*, StencilOperation::*};
+        let test = match test.as_bytes() {
+            b"always_pass" => AlwaysPass,
+            b"always_fail" => AlwaysFail,
+            b"if_less" => IfLess { mask: !0 },
+            b"if_less_or_equal" => IfLessOrEqual { mask: !0 },
+            b"if_more" => IfMore { mask: !0 },
+            b"if_more_or_equal" => IfMoreOrEqual { mask: !0 },
+            b"if_equal" => IfEqual { mask: !0 },
+            b"if_not_equal" => IfEqual { mask: !0 },
+            _ => lua_bail!("unknown stencil test"),
+        };
+        let get_op = |op: Option<LuaString>, name| Ok(match op {
+            Some(s) => match s.as_bytes() {
+                b"keep" => Keep,
+                b"zero" => Zero,
+                b"replace" => Replace,
+                b"increment" => Increment,
+                b"increment_wrap" => IncrementWrap,
+                b"decrement" => Decrement,
+                b"decrement_wrap" => DecrementWrap,
+                b"invert" => Invert,
+                _ => lua_bail!("unknown stencil {} operation", name),
+            },
+            None => Keep,
+        });
+        let pass = get_op(pass, "pass")?;
+        let fail = get_op(fail, "fail")?;
+        let depthfail = get_op(depthfail, "depth fail")?;
+        this.params.stencil.test_counter_clockwise = test;
+        this.params.stencil.reference_value_counter_clockwise = refval;
+        this.params.stencil.depth_pass_operation_counter_clockwise = pass;
+        this.params.stencil.fail_operation_counter_clockwise = fail;
+        this.params.stencil.pass_depth_fail_operation_counter_clockwise = depthfail;
+    }
+
+    mut fn set_stencil_ref(lua, this, refval: i32) {
+        this.params.stencil.reference_value_counter_clockwise = refval;
+    }
+
+    mut fn set_clip_planes(lua, this, planes: u32) {
+        this.params.clip_planes_bitmask = planes;
+    }
 }
 
 pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
@@ -377,6 +425,14 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         }
                     }
 
+                    fn locate_buf(()) {
+                        LocateBuf {
+                            origin: [0.; 3].into(),
+                            framequad: [Vec3::zero().into(), Vec3::zero().into(), Vec3::zero().into(), Vec3::zero().into()],
+                            depth: 0.into(),
+                        }
+                    }
+
                     fn texture(path: String) {
                         use glium::texture::RawImage2d;
 
@@ -413,16 +469,18 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         state.frame.borrow().get_dimensions()
                     }
 
-                    fn clear((r, g, b, a, depth): (Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)) {
-                        state.frame.borrow_mut().clear_color_and_depth(
-                            (
-                                r.unwrap_or(0.),
-                                g.unwrap_or(0.),
-                                b.unwrap_or(0.),
-                                a.unwrap_or(0.)
-                            ),
-                            depth.unwrap_or(1.)
-                        );
+                    fn clear((r, g, b, a, depth, stencil): (Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<i32>)) {
+                        let mut frame = state.frame.borrow_mut();
+                        match (r, g, b, a, depth, stencil) {
+                            (Some(r), Some(g), Some(b), a, None, None) => frame.clear_color(r, g, b, a.unwrap_or(0.)),
+                            (Some(r), Some(g), Some(b), a, Some(d), None) => frame.clear_color_and_depth((r, g, b, a.unwrap_or(0.)), d),
+                            (Some(r), Some(g), Some(b), a, None, Some(s)) => frame.clear_color_and_stencil((r, g, b, a.unwrap_or(0.)), s),
+                            (Some(r), Some(g), Some(b), a, Some(d), Some(s)) => frame.clear_all((r, g, b, a.unwrap_or(0.)), d, s),
+                            (None, None, None, None, Some(d), None) => frame.clear_depth(d),
+                            (None, None, None, None, None, Some(s)) => frame.clear_stencil(s),
+                            (None, None, None, None, Some(d), Some(s)) => frame.clear_depth_and_stencil(d, s),
+                            _ => return Err(LuaError::RuntimeError("invalid arguments".into())),
+                        }
                     }
 
                     fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {

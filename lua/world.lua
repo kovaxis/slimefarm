@@ -18,7 +18,7 @@ function World:new()
         terrain = util.Shader{
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
-            uniforms = {'mvp', 'mv', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
+            uniforms = {'mvp', 'mv', 'nclip', 'clip', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
         basic = util.Shader{
             vertex = 'basic.vert',
@@ -41,19 +41,36 @@ function World:new()
         physical_h = 1,
         w = 1,
         h = 1,
+        params_sky = gfx.draw_params(),
         params_world = gfx.draw_params(),
         params_hud = gfx.draw_params(),
         mvp_world = system.matrix(),
         mv_world = system.matrix(),
         mvp_hud = system.matrix(),
+        hfov = 1,
+        vfov = 1,
+        cam_x = 0,
+        cam_y = 0,
+        cam_z = 0,
+        cam_yaw = 0,
+        cam_pitch = 0,
         s = 0,
         dt = 0,
+        locate_buf = gfx.locate_buf(),
+        portal_budget = 0,
     }
+    self.frame.params_sky:set_depth('always_pass', true)
+    self.frame.params_sky:set_stencil('if_equal', 0)
     self.frame.params_world:set_cull('cw')
     self.frame.params_world:set_depth('if_less', true)
+    self.frame.params_world:set_stencil('if_equal', 0)
+    self.frame.params_world:set_clip_planes(31)
     self.frame.params_world:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
-    self.frame.params_hud:set_depth('overwrite', false);
+    self.frame.params_hud:set_depth('always_pass', false);
     self.frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
+    self.subdraw_bound = function()
+        self:subdraw()
+    end
 
     self.cam_prev_x = 0
     self.cam_prev_y = 0
@@ -159,7 +176,7 @@ local sky = {}
 do
     local dawn, day, eve, night
     local lo, hi
-    sky.screen = Mesh{}:add_quad(-1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1):as_buffer()
+    sky.screen = Mesh{}:add_quad(-1, -1, 1,   1, -1, 1,   1, 1, 1,   -1, 1, 1):as_buffer()
 
     dawn = {.14, .42, .77}
     day = {.08, .52, .90}
@@ -195,10 +212,114 @@ do
     sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
 end
 
+-- Draw terrain within a frame or portal (the camera being a frame)
+local clip_buf = {}
+function World:subdraw()
+    local frame = self.frame
+    local lbuf = frame.locate_buf
+    local cam_x, cam_y, cam_z = lbuf:origin()
+    local depth = lbuf:depth()
+    if depth >= 4 then
+        return
+    end
+    if frame.portal_budget <= 0 then
+        return
+    end
+    frame.portal_budget = frame.portal_budget - 1
+
+    --Draw skybox
+    do
+        local cycle = self.day_cycle
+        frame.mv_world:push()
+        frame.mv_world:identity()
+        frame.mv_world:rotate_z(frame.cam_yaw)
+        frame.mv_world:rotate_x(frame.cam_pitch)
+        frame.mv_world:scale(math.tan(frame.hfov / 2), math.tan(frame.vfov / 2), 1)
+        frame.params_sky:set_stencil_ref(depth)
+        self.shaders.skybox:set_matrix('view', frame.mv_world)
+        self.shaders.skybox:set_vec3('base', sky.base:at(cycle))
+        self.shaders.skybox:set_vec3('highest', sky.highest:at(cycle))
+        self.shaders.skybox:set_vec3('lowest', sky.lowest:at(cycle))
+        self.shaders.skybox:set_vec3('sunrise', sky.sunrise:at(cycle))
+        self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
+        self.shaders.skybox:draw(sky.screen, frame.params_sky)
+        frame.mv_world:pop()
+    end
+
+    --Draw terrain
+    do
+        local cycle = self.day_cycle
+        local ambience = sky.ambience:at(cycle)
+        local diffuse  = sky.diffuse:at(cycle)
+        local specular = sky.specular:at(cycle)
+        local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), 0, -math.sin((cycle - 0.25) * 2 * math.pi)
+        --ambience = 0
+        --diffuse = 0.2
+        --specular = 0.03
+        --dx, dy, dz = 2^-0.5, 0, -2^-0.5
+        do
+            local c, m = clip_buf, frame.mvp_world
+            self.terrain:calc_clip_planes(m, lbuf, c)
+            self.shaders.terrain:set_vec4('nclip', c[1], c[2], c[3], c[4])
+            m:push()
+            m:set_col(0, c[5], c[6], c[7], c[8])
+            m:set_col(1, c[9], c[10], c[11], c[12])
+            m:set_col(2, c[13], c[14], c[15], c[16])
+            m:set_col(3, c[17], c[18], c[19], c[20])
+            self.shaders.terrain:set_matrix('clip', m)
+            m:pop()
+        end
+        dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
+        frame.params_world:set_stencil_ref(depth)
+        self.shaders.terrain:set_float('fog', self.fog_current)
+        self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
+        self.shaders.terrain:set_matrix('mv', frame.mv_world)
+        self.shaders.terrain:set_vec3('ambience', ambience, ambience, ambience)
+        self.shaders.terrain:set_vec3('diffuse', diffuse, diffuse, diffuse)
+        self.shaders.terrain:set_vec3('specular', specular, specular, specular)
+        self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
+        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, lbuf, self.subdraw_bound)
+    end
+    
+    --Draw entities
+    frame.params_world:set_stencil_ref(depth)
+    for _, ent in ipairs(self.entities) do
+        local prevx, prevy, prevz = ent.prev_x - cam_x, ent.prev_y - cam_y, ent.prev_z - cam_z
+        local x, y, z = ent.x - cam_x, ent.y - cam_y, ent.z - cam_z
+        x, y, z = prevx + (x - prevx) * frame.s, prevy + (y - prevy) * frame.s, prevz + (z - prevz) * frame.s
+        frame.mvp_world:push()
+        frame.mvp_world:translate(x, y, z)
+        ent:draw(self)
+        frame.mvp_world:pop()
+    end
+
+    if false and depth ~= 0 then
+        local buf = Mesh{}
+        local x0, y0, z0 = lbuf:framequad(0)
+        local x1, y1, z1 = lbuf:framequad(1)
+        local x2, y2, z2 = lbuf:framequad(2)
+        local x3, y3, z3 = lbuf:framequad(3)
+        buf:add_quad(
+            x0, y0, z0,
+            x1, y1, z1,
+            x2, y2, z2,
+            x3, y3, z3,
+            0, 0, 0, 1
+        )
+        frame.mvp_hud:push()
+        frame.mvp_hud:identity()
+        self.shaders.basic:set_matrix('mvp', frame.mvp_hud)
+        frame.mvp_hud:pop()
+        frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
+        self.shaders.basic:set_vec4('tint', 1, 1, 1, 0.4)
+        self.shaders.basic:draw(buf:as_buffer(), frame.params_hud)
+    end
+end
+
 function World:draw()
     local frame = self.frame
     local now = os.clock()
-    gfx.clear(0, 0, 0, 0, 1)
+    gfx.clear(0, 0, 0, 0, 1, 0)
 
     --Count FPS
     while now >= self.fps_next_reset do
@@ -225,6 +346,8 @@ function World:draw()
     self.last_frame = now
 
     --Find out real camera location
+    -- TODO: Include camera offset into the `mvp` instead of the offset, so as to make fog be
+    -- centered around the player instead of around the camera.
     local cam_x, cam_y, cam_z
     local cam_yaw, cam_pitch
     do
@@ -240,9 +363,24 @@ function World:draw()
         local dy = math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dz = math.sin(self.cam_pitch) * rollback
         cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+        frame.cam_x = cam_x
+        frame.cam_y = cam_y
+        frame.cam_z = cam_z
+        frame.cam_yaw = cam_yaw
+        frame.cam_pitch = cam_pitch
         self.cam_effective_x = cam_x
         self.cam_effective_y = cam_y
         self.cam_effective_z = cam_z
+
+        -- Update initial drawing conditions
+        local lbuf = frame.locate_buf
+        lbuf:set_origin(cam_x, cam_y, cam_z)
+        lbuf:set_framequad(0, -1, -1, -1)
+        lbuf:set_framequad(1,  1, -1, -1)
+        lbuf:set_framequad(2,  1,  1, -1)
+        lbuf:set_framequad(3, -1,  1, -1)
+        lbuf:set_depth(0)
+
         --[[
         cam_yaw = math.atan(og_cam_x - cam_x, cam_z - og_cam_z)
         local len = ((og_cam_x - cam_x)^2 + (og_cam_z - cam_z)^2)^0.5
@@ -259,36 +397,18 @@ function World:draw()
     end
 
     --Setup model-view-projection matrix for world drawing
-    local vfov = 1.1
-    local hfov = vfov * frame.physical_w / frame.physical_h
-    frame.mvp_world:reset()
-    frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.1, 1000)
-    frame.mv_world:reset()
-    frame.mv_world:rotate_x(-cam_pitch)
-    frame.mv_world:rotate_z(-cam_yaw)
-    frame.mvp_world:mul_right(frame.mv_world)
-
-    timer:mark('draw_setup')
-
-    --Draw skybox
     do
-        local cycle = self.day_cycle
-        frame.mv_world:push()
-        frame.mv_world:identity()
-        frame.mv_world:rotate_z(cam_yaw)
-        frame.mv_world:rotate_x(cam_pitch)
-        frame.mv_world:scale(math.tan(hfov / 2), math.tan(vfov / 2), 1)
-        self.shaders.skybox:set_matrix('view', frame.mv_world)
-        self.shaders.skybox:set_vec3('base', sky.base:at(cycle))
-        self.shaders.skybox:set_vec3('highest', sky.highest:at(cycle))
-        self.shaders.skybox:set_vec3('lowest', sky.lowest:at(cycle))
-        self.shaders.skybox:set_vec3('sunrise', sky.sunrise:at(cycle))
-        self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
-        self.shaders.skybox:draw(sky.screen, frame.params_hud)
-        frame.mv_world:pop()
+        local vfov = 1.1
+        local hfov = vfov * frame.physical_w / frame.physical_h
+        frame.hfov = hfov
+        frame.vfov = vfov
+        frame.mvp_world:reset()
+        frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.2, 800)
+        frame.mv_world:reset()
+        frame.mv_world:rotate_x(-cam_pitch)
+        frame.mv_world:rotate_z(-cam_yaw)
+        frame.mvp_world:mul_right(frame.mv_world)
     end
-
-    timer:mark('draw_sky')
 
     --Update fog distance
     do
@@ -321,45 +441,10 @@ function World:draw()
             self.fog_current = util.approach(self.fog_current, self.fog_target, 0.00001, 8, frame.dt)
         end
     end
-    
-    timer:mark('draw_fogsetup')
 
     --Draw terrain
-    do
-        local cycle = self.day_cycle
-        local ambience = sky.ambience:at(cycle)
-        local diffuse  = sky.diffuse:at(cycle)
-        local specular = sky.specular:at(cycle)
-        local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), 0, -math.sin((cycle - 0.25) * 2 * math.pi)
-        --ambience = 0
-        --diffuse = 0.2
-        --specular = 0.03
-        --dx, dy, dz = 2^-0.5, 0, -2^-0.5
-        dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
-        self.shaders.terrain:set_float('fog', self.fog_current)
-        self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
-        self.shaders.terrain:set_matrix('mv', frame.mv_world)
-        self.shaders.terrain:set_vec3('ambience', ambience, ambience, ambience)
-        self.shaders.terrain:set_vec3('diffuse', diffuse, diffuse, diffuse)
-        self.shaders.terrain:set_vec3('specular', specular, specular, specular)
-        self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
-        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, cam_x, cam_y, cam_z)
-    end
-    
-    timer:mark('draw_terrain')
-    
-    --Draw entities
-    for _, ent in ipairs(self.entities) do
-        local prevx, prevy, prevz = ent.prev_x - cam_x, ent.prev_y - cam_y, ent.prev_z - cam_z
-        local x, y, z = ent.x - cam_x, ent.y - cam_y, ent.z - cam_z
-        x, y, z = prevx + (x - prevx) * frame.s, prevy + (y - prevy) * frame.s, prevz + (z - prevz) * frame.s
-        frame.mvp_world:push()
-        frame.mvp_world:translate(x, y, z)
-        ent:draw(self)
-        frame.mvp_world:pop()
-    end
-    
-    timer:mark('draw_entities')
+    frame.portal_budget = 16
+    self:subdraw()
 
     --Draw HUD
     frame.mvp_hud:push()
@@ -382,8 +467,6 @@ function World:draw()
     frame.mvp_hud:scale(self.mouse_icon.w, self.mouse_icon.h, 1)
     self.mouse_icon:draw(1, frame.mvp_hud, frame.params_hud)
     frame.mvp_hud:pop()
-
-    timer:mark('draw_hud')
 end
 
 function World:mousemove(dx, dy)

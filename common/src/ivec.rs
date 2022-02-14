@@ -265,7 +265,7 @@ impl Int2 {
     }
 
     #[inline]
-    pub fn to_f32_floor(self) -> Vec2 {
+    pub fn to_f32(self) -> Vec2 {
         Vec2::new(self.x as f32, self.y as f32)
     }
 
@@ -275,7 +275,7 @@ impl Int2 {
     }
 
     #[inline]
-    pub fn to_f64_floor(self) -> [f64; 2] {
+    pub fn to_f64(self) -> [f64; 2] {
         [self.x as f64, self.y as f64]
     }
 
@@ -598,7 +598,7 @@ impl Int3 {
     }
 
     #[inline]
-    pub fn to_f32_floor(self) -> Vec3 {
+    pub fn to_f32(self) -> Vec3 {
         Vec3::new(self.x as f32, self.y as f32, self.z as f32)
     }
 
@@ -612,7 +612,7 @@ impl Int3 {
     }
 
     #[inline]
-    pub fn to_f64_floor(self) -> [f64; 3] {
+    pub fn to_f64(self) -> [f64; 3] {
         [self.x as f64, self.y as f64, self.z as f64]
     }
 

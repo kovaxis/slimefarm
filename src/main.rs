@@ -204,11 +204,12 @@ impl DynBuffer3d {
                     .unwrap();
         }
         self.vert_len = vert.len();
-        vert.reserve(self.buf.vertex.len() - vert.len());
+        vert.reserve(self.buf.vertex.len() - self.vert_len);
         unsafe {
             vert.set_len(self.buf.vertex.len());
         }
         self.buf.vertex.write(&vert);
+        vert.truncate(self.vert_len);
 
         // Write index data
         if self.buf.index.len() < idx.len() {
@@ -221,11 +222,12 @@ impl DynBuffer3d {
             .unwrap();
         }
         self.idx_len = idx.len();
-        idx.reserve(self.buf.index.len() - idx.len());
+        idx.reserve(self.buf.index.len() - self.idx_len);
         unsafe {
             idx.set_len(self.buf.index.len());
         }
         self.buf.index.write(&idx);
+        idx.truncate(self.idx_len);
     }
 
     fn bufs(

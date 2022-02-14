@@ -24,6 +24,13 @@ fn vert(pos: Vec3, normal: [i8; 3], color: [u8; 4]) -> SimpleVertex {
 }
 
 impl<V> Mesh<V> {
+    pub fn with_capacity(verts: usize, faces: usize) -> Self {
+        Self {
+            vertices: Vec::with_capacity(verts),
+            indices: Vec::with_capacity(faces * 3),
+        }
+    }
+
     /// Remove all vertices and faces.
     pub fn clear(&mut self) {
         self.vertices.clear();

@@ -12,6 +12,9 @@ pub const CHUNK_SIZE: i32 = 1 << CHUNK_BITS;
 /// Masks a block coordinate into a chunk-relative block coordinate.
 pub const CHUNK_MASK: i32 = CHUNK_SIZE - 1;
 
+/// Maximum amount of portals that can touch a chunk.
+pub const MAX_CHUNK_PORTALS: usize = 256;
+
 /// A 2D slice (or loaf) of an arbitrary type.
 pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>;
 
@@ -199,7 +202,8 @@ impl ChunkBox {
     /// Inherently unsafe, but may work in most cases and speeds things up.
     #[inline]
     pub unsafe fn new_uninit() -> Self {
-        let blockmem = ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init());
+        let mut blockmem = ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init());
+        blockmem.as_mut().portal_count = 0;
         ChunkBox::new_raw_nonhomogeneous(blockmem, 0)
     }
 
@@ -260,7 +264,7 @@ impl ChunkBox {
         if let Some(block) = self.homogeneous_block() {
             unsafe {
                 *self = ChunkBox::new_uninit();
-                ptr::write_bytes(self.blocks_mut_unchecked(), block.data, 1);
+                ptr::write_bytes(&mut self.blocks_mut_unchecked().blocks, block.data, 1);
             }
         }
         unsafe { self.blocks_mut_unchecked() }
@@ -368,18 +372,14 @@ impl Drop for ChunkBox {
 /// Also saves the atomic operations if the `ChunkBox` is homogeneous.
 pub struct ChunkArc {
     chunk: mem::ManuallyDrop<ChunkBox>,
-    rc: Option<&'static AtomicCell<usize>>,
 }
 impl ChunkArc {
     pub fn new(chunk: ChunkBox) -> Self {
-        let rc = if chunk.is_homogeneous() {
-            None
-        } else {
-            Some(Box::leak(Box::new(AtomicCell::new(1usize))) as &'static _)
-        };
+        if let Some(data) = chunk.blocks() {
+            data.ref_count.store(1);
+        }
         Self {
             chunk: mem::ManuallyDrop::new(chunk),
-            rc,
         }
     }
 
@@ -398,12 +398,11 @@ impl ops::Deref for ChunkArc {
 }
 impl ops::Drop for ChunkArc {
     fn drop(&mut self) {
-        if let Some(rc) = self.rc {
-            if rc.fetch_sub(1) == 1 {
+        if let Some(data) = self.chunk.blocks() {
+            if data.ref_count.fetch_sub(1) == 1 {
                 // Last reference to the `ChunkBox`
                 unsafe {
                     mem::ManuallyDrop::drop(&mut self.chunk);
-                    drop(Box::from_raw(rc as *const _ as *mut AtomicCell<usize>));
                 }
             }
         }
@@ -411,13 +410,12 @@ impl ops::Drop for ChunkArc {
 }
 impl Clone for ChunkArc {
     fn clone(&self) -> Self {
-        if let Some(rc) = self.rc {
-            rc.fetch_add(1);
+        if let Some(data) = self.chunk.blocks() {
+            data.ref_count.fetch_add(1);
         }
         unsafe {
             Self {
                 chunk: ptr::read(&self.chunk),
-                rc: self.rc,
             }
         }
     }
@@ -435,6 +433,13 @@ pub fn BlockPos(x: [i32; 3]) -> BlockPos {
     Int3::new(x)
 }
 
+/// Represents a single block id.
+///
+/// Currently a single byte, and the same byte always represents the same block anywhere in the
+/// world.
+/// In the future, however, the byte might represent a different block depending on context (ie.
+/// position or dimension).
+/// Additionally, at some point block ids might become 2 bytes.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BlockData {
     pub data: u8,
@@ -445,12 +450,54 @@ impl BlockData {
     }
 }
 
-/// Holds the block data for a chunk.
+/// Represents a single portal within a chunk.
+///
+/// If a portal spans multiple chunks, it must be present in every chunk it touches.
+#[derive(Copy, Clone, Debug)]
+pub struct PortalData {
+    /// The position of the portal min-corner relative to the chunk.
+    pub pos: [i16; 3],
+    /// The dimensions of the portal relative to the chunk.
+    /// One of these dimensions must be zero.
+    pub size: [i16; 3],
+    /// Where does the portal teleport to, in coordinates relative to the portal.
+    /// There should be an equal-size and reverse-jump portal at the destination.
+    pub jump: [i32; 3],
+}
+impl PortalData {
+    pub fn get_axis(&self) -> usize {
+        if self.size[0] == 0 {
+            0
+        } else if self.size[1] == 0 {
+            1
+        } else {
+            2
+        }
+    }
+}
+
+/// Holds the block and entity data for a chunk.
 /// Has an alignment of 8 in order for `ChunkBox` to store tags in the last 3 bits of the pointer.
-#[derive(Clone)]
 #[repr(align(8))]
 pub struct ChunkData {
+    /// All of the blocks in this chunk.
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
+    /// All of the portals in this chunk.
+    pub portals: [PortalData; MAX_CHUNK_PORTALS],
+    /// The amount of portals in the portal buffer.
+    pub portal_count: u32,
+    /// A hidden reference count field for use in chunk reference counting.
+    ref_count: AtomicCell<u32>,
+}
+impl Clone for ChunkData {
+    fn clone(&self) -> Self {
+        Self {
+            blocks: self.blocks,
+            portals: self.portals,
+            portal_count: self.portal_count,
+            ref_count: AtomicCell::new(self.ref_count.load()),
+        }
+    }
 }
 impl ChunkData {
     #[track_caller]
@@ -484,6 +531,29 @@ impl ChunkData {
     #[inline]
     pub fn set_idx(&mut self, idx: usize, block: BlockData) {
         self.blocks[idx] = block;
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn portals(&self) -> &[PortalData] {
+        &self.portals[..self.portal_count as usize]
+    }
+
+    #[inline]
+    pub fn portals_mut(&mut self) -> &mut [PortalData] {
+        &mut self.portals[..self.portal_count as usize]
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn push_portal(&mut self, portal: PortalData) {
+        assert!(
+            (self.portal_count as usize) < self.portals.len(),
+            "portal buffer overflow (attempt to add more than {} portals to a chunk)",
+            self.portals.len(),
+        );
+        self.portals[self.portal_count as usize] = portal;
+        self.portal_count += 1;
     }
 }
 

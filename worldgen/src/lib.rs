@@ -5,14 +5,14 @@ use crate::prelude::*;
 mod prelude {
     pub(crate) use crate::serde::LuaFuncRef;
     pub(crate) use common::{
-        actionbuf::ActionBuf,
+        actionbuf::{actions, ActionBuf},
         blockbuf::BlockBuf,
         lua::LuaRng,
         noise2d::{Noise2d, NoiseScaler2d},
         noise3d::{Noise3d, NoiseScaler3d},
         prelude::*,
         spread2d::Spread2d,
-        terrain::{GridKeeper, GridKeeper2d},
+        terrain::{GridKeeper, GridKeeper2d, PortalData},
         worldgen::BlockIdAlloc,
         worldgen::{ChunkFiller, GenStore},
     };
@@ -147,11 +147,7 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
         );
         // */
         //*
-        noise_scaler.fill(
-            &noise_gen,
-            (pos << CHUNK_BITS).to_f64_floor(),
-            CHUNK_SIZE as f64,
-        );
+        noise_scaler.fill(&noise_gen, (pos << CHUNK_BITS).to_f64(), CHUNK_SIZE as f64);
         // */
         //Transform bulk noise into block ids
         let mut idx = 0;
@@ -349,7 +345,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
 
             let top = pos + up * branch.len;
             if depth == 0 {
-                common::actionbuf::ActionCylinder::paint(
+                actions::Cylinder::paint(
                     bbuf,
                     pos,
                     pos - up * self.k.tree.root_len,
@@ -358,13 +354,11 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     self.wood,
                 );
             }
-            common::actionbuf::ActionCylinder::paint(
-                bbuf, pos, top, branch.r0, branch.r1, self.wood,
-            );
+            actions::Cylinder::paint(bbuf, pos, top, branch.r0, branch.r1, self.wood);
             //bbuf.fill_cylinder(pos, top, branch.r0, branch.r1, self.wood);
 
             if branch.leaf != [0.; 2] {
-                common::actionbuf::ActionOval::paint(
+                actions::Oval::paint(
                     bbuf,
                     top,
                     [branch.leaf[0], branch.leaf[0], branch.leaf[1]].into(),
@@ -419,45 +413,59 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 eprintln!("error building tree: {}", e);
             }
 
-            /*
-            let k = &self.k.tree;
-            let initial_area = rng.gen_range(k.initial_area[0]..=k.initial_area[1]);
-            let up = Vec3::unit_x().rotated_by(
-                Rotor3::from_rotation_xy(rng.gen_range(0. ..f32::PI * 2.))
-                    * Rotor3::from_rotation_xz(
-                        f32::PI / 2. + rng.gen_range(k.initial_incl[0]..=k.initial_incl[1]),
-                    ),
-            );
-            let horiz = Vec3::unit_x()
-                .rotated_by(Rotor3::from_rotation_xy(rng.gen_range(0. ..2. * f32::PI)));
-            self.gen_branch(
-                &mut rng,
-                &mut bbuf,
-                Vec3::new(tfracpos.x, tfracpos.y, 0.),
-                up,
-                horiz,
-                initial_area,
-                0.,
-            );
-            */
+            self.trees.get_mut(tcoord)?.get_or_insert(bbuf);
+            Some(())
+        }
 
-            /*
-            let tr = rng.gen_range(k.tree_width[0]..k.tree_width[1]) / 2.;
-            let th: f32 = rng.gen_range(k.tree_height[0]..k.tree_height[1]);
-            let tbh = k.tree_height[2];
-            for z in -k.tree_undergen..th.ceil() as i32 {
-                let r = tr * ((th - z as f32) / (th - tbh)).powf(k.tree_taperpow);
-                let ri = r.ceil() as i32;
-                let r2 = r * r;
-                for y in -ri..=ri {
-                    for x in -ri..=ri {
-                        if (x * x + y * y) as f32 <= r2 {
-                            bbuf.set(BlockPos([x, y, z]), wood);
-                        }
-                    }
-                }
+        fn gen_portal(&mut self, tcoord: Int2) -> Option<()> {
+            let k = &self.k.tree;
+            if self.trees.get(tcoord)?.is_some() {
+                return Some(());
             }
-            */
+
+            // Generate a portal
+            let thorizpos = self.tree_spread.gen(tcoord) * k.spacing as f32;
+            let thorizpos = tcoord * k.spacing + Int2::from_f32(thorizpos);
+            let chunkpos = thorizpos >> CHUNK_BITS;
+            let subchunkpos = thorizpos.lowbits(CHUNK_BITS);
+            let (_, _, hmap) = self.gen_hmap(chunkpos)?;
+            let theight = hmap[subchunkpos.to_index([CHUNK_BITS; 2].into())];
+            let tpos = thorizpos.with_z(theight as i32);
+            let mut bbuf = ActionBuf::new(tpos);
+
+            // Actually generate portal
+            if tcoord == [0, 0].into() {
+                actions::Cube::paint(
+                    &mut bbuf,
+                    Vec3::new(-4., -4., 0.),
+                    Vec3::new(8., 8., 8.),
+                    self.wood,
+                );
+                actions::Cube::paint(
+                    &mut bbuf,
+                    Vec3::new(-3., 3., 1.),
+                    Vec3::new(6., 1., 6.),
+                    self.air,
+                );
+                actions::Cube::paint(
+                    &mut bbuf,
+                    Vec3::new(-17., -17., -61.),
+                    Vec3::new(34., 34., 34.),
+                    self.wood,
+                );
+                actions::Cube::paint(
+                    &mut bbuf,
+                    Vec3::new(-16., -16., -60.),
+                    Vec3::new(32., 32., 32.),
+                    self.air,
+                );
+                actions::Portal::paint(
+                    &mut bbuf,
+                    [-3, 3, 1].into(),
+                    [6, 0, 6].into(),
+                    [-3, 16, -60].into(),
+                );
+            }
 
             self.trees.get_mut(tcoord)?.get_or_insert(bbuf);
             Some(())
@@ -476,11 +484,28 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             for y in xy_min.y..=xy_max.y {
                 for x in xy_min.x..=xy_max.x {
                     let tcoord = Int2::new([x, y]);
-                    self.gen_tree(tcoord)?;
+                    //self.gen_tree(tcoord)?;
+                    self.gen_portal(tcoord)?;
                     let treebuf = self.trees.get(tcoord)?.as_ref()?;
                     treebuf.transfer(pos, &mut chunk);
                 }
             }
+
+            /*if pos.xy() == Int2::zero() {
+                let (zmin, zmax, hmap) = self.gen_hmap(pos.xy())?;
+                let abs_z = *zmax as i32 + 2;
+                if pos.z == abs_z >> CHUNK_BITS {
+                    let chunk = chunk.blocks_mut();
+
+                    let z = abs_z & ((1 << CHUNK_BITS) - 1);
+                    chunk.push_portal(PortalData {
+                        pos: [0, 0, z as i16],
+                        size: [0, 8, 8],
+                        jump: [10, 10, 0],
+                    });
+                    println!("placed portal at z = {}", abs_z);
+                }
+            }*/
 
             Some(chunk)
         }

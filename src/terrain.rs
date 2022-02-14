@@ -181,6 +181,7 @@ pub(crate) struct Terrain {
     pub generator: GeneratorHandle,
     pub state: Rc<State>,
     pub chunks: Arc<RwLock<ChunkStorage>>,
+    pub tmp_bufs: Vec<RefCell<DynBuffer3d>>,
     pub meshes: MeshKeeper,
 }
 impl Terrain {
@@ -194,6 +195,12 @@ impl Terrain {
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
             mesher: MesherHandle::new(state, chunks.clone(), tex),
+            tmp_bufs: {
+                let max = 32;
+                (0..max)
+                    .map(|_| RefCell::new(DynBuffer3d::new(state)))
+                    .collect()
+            },
             generator: generator,
             _bookkeeper: bookkeeper,
             chunks,
@@ -231,6 +238,7 @@ impl Terrain {
                         })
                     },
                 },
+                portals: buf_pkg.portals,
             };
             if let Some(slot) = self.meshes.get_mut(buf_pkg.pos) {
                 slot.mesh = Some(mesh);
@@ -240,6 +248,278 @@ impl Terrain {
 
     pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
         self.chunks.read().block_at(pos)
+    }
+
+    /// Calculate the clipping planes of a framequad given by `fq`.
+    /// The framequad must be properly behind the near clipping plane.
+    /// The framequad is given in NDC, while the clipping planes are given in world coordinates.
+    pub fn calc_clip_planes(mvp: &Mat4, fq: &[Vec3; 4]) -> [Vec4; 5] {
+        let inv_mvp = mvp.inversed();
+        let f000 = inv_mvp.transform_point3(fq[0]);
+        let f100 = inv_mvp.transform_point3(fq[1]);
+        let f110 = inv_mvp.transform_point3(fq[2]);
+        let f010 = inv_mvp.transform_point3(fq[3]);
+        let mut f101 = fq[1];
+        f101.z = 1.;
+        let f101 = inv_mvp.transform_point3(f101);
+        let mut f011 = fq[3];
+        f011.z = 1.;
+        let f011 = inv_mvp.transform_point3(f011);
+
+        let calc_plane = |p: [Vec3; 3]| {
+            let n = (p[1] - p[0]).cross(p[2] - p[0]).normalized();
+            Vec4::new(n.x, n.y, n.z, -p[0].dot(n))
+        };
+        [
+            calc_plane([f000, f010, f100]), // near plane
+            calc_plane([f000, f011, f010]), // left plane
+            calc_plane([f100, f110, f101]), // right plane
+            calc_plane([f000, f100, f101]), // bottom plane
+            calc_plane([f010, f011, f110]), // top plane
+        ]
+    }
+
+    pub fn draw(
+        &self,
+        shader: &Program,
+        uniforms: crate::lua::gfx::UniformStorage,
+        offset_uniform: u32,
+        origin: [f64; 3],
+        params: &DrawParameters,
+        mvp: Mat4,
+        framequad: [Vec3; 4],
+        stencil: u8,
+        subdraw: &dyn Fn(&[f64; 3], &[Vec3; 4], u8) -> Result<()>,
+    ) -> Result<()> {
+        let frame = &self.state.frame;
+
+        // Calculate the frustum planes
+        let clip_planes = Self::calc_clip_planes(&mvp, &framequad);
+
+        // Get the position relative to the player and the chunk mesh of a chunk by its index
+        // within the `GridKeeper`.
+        // Also, apply some culling: If the chunk is outside the camera frustum or the chunk has no
+        // mesh then just `continue` away.
+        macro_rules! get_chunk {
+            ($idx:expr) => {{
+                let idx = $idx;
+                let buf = match self.meshes.get_by_idx(idx).mesh.as_ref() {
+                    Some(buf) => buf,
+                    None => continue,
+                };
+
+                // Figure out chunk location
+                let pos = (self.meshes.sub_idx_to_pos(idx) << CHUNK_BITS);
+                let offset = Vec3::new(
+                    (pos.x as f64 - origin[0]) as f32,
+                    (pos.y as f64 - origin[1]) as f32,
+                    (pos.z as f64 - origin[2]) as f32,
+                );
+                let center = offset + Vec3::broadcast(CHUNK_SIZE as f32 / 2.);
+
+                // Cull chunks that are outside the worldview
+                if clip_planes.iter().any(|&p| {
+                    p.dot(center.into_homogeneous_point()) < -3f32.sqrt() / 2. * CHUNK_SIZE as f32
+                }) {
+                    // Cull chunk, it is too far away from the frustum
+                    continue;
+                }
+
+                (offset, buf)
+            }};
+        }
+
+        // Draw all visible chunks
+        {
+            let mut frame = frame.borrow_mut();
+            let mut drawn = 0;
+            let mut bytes_v = 0;
+            let mut bytes_i = 0;
+            for &idx in self.meshes.render_order.iter() {
+                let (offset, chunk) = get_chunk!(idx);
+
+                if let Some(buf) = &chunk.buf {
+                    uniforms
+                        .vars
+                        .borrow_mut()
+                        .get_mut(offset_uniform as usize)
+                        .ok_or(anyhow!("offset uniform out of range"))?
+                        .1 = crate::lua::gfx::UniformVal::Vec3(offset.into());
+                    frame.draw(&buf.vertex, &buf.index, &shader, &uniforms, params)?;
+                    drawn += 1;
+                    bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
+                    bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
+                }
+            }
+            if false {
+                println!(
+                    "drew {} chunks in {}KB of vertices and {}KB of indices",
+                    drawn,
+                    bytes_v / 1024,
+                    bytes_i / 1024
+                );
+            }
+        }
+
+        // Draw portals
+        for &idx in self.meshes.render_order.iter() {
+            let chunk = match self.meshes.get_by_idx(idx).mesh.as_ref() {
+                Some(chunk) => chunk,
+                None => continue,
+            };
+            if !chunk.portals.is_empty() {
+                let chunk_pos = self.meshes.sub_idx_to_pos(idx) << CHUNK_BITS;
+                let chunk_offset = Vec3::new(
+                    (chunk_pos.x as f64 - origin[0]) as f32,
+                    (chunk_pos.y as f64 - origin[1]) as f32,
+                    (chunk_pos.z as f64 - origin[2]) as f32,
+                );
+                'portal: for portal in chunk.portals.iter() {
+                    // Make sure portal is visible
+                    let subfq_world = [
+                        chunk_offset + portal.bounds[0],
+                        chunk_offset + portal.bounds[1],
+                        chunk_offset + portal.bounds[2],
+                        chunk_offset + portal.bounds[3],
+                    ];
+                    for clip_plane in &clip_planes {
+                        if subfq_world
+                            .iter()
+                            .all(|p| p.into_homogeneous_point().dot(*clip_plane) <= 0.)
+                        {
+                            // Portal is outside the parent frame view frustum
+                            continue 'portal;
+                        }
+                    }
+                    let subfq_clip = [
+                        mvp * subfq_world[0].into_homogeneous_point(),
+                        mvp * subfq_world[1].into_homogeneous_point(),
+                        mvp * subfq_world[2].into_homogeneous_point(),
+                        mvp * subfq_world[3].into_homogeneous_point(),
+                    ];
+                    let subfq = if subfq_clip.iter().all(|p| -p.w < p.z && p.z < p.w) {
+                        [
+                            subfq_clip[0].truncated() * subfq_clip[0].w.recip(),
+                            subfq_clip[1].truncated() * subfq_clip[1].w.recip(),
+                            subfq_clip[2].truncated() * subfq_clip[2].w.recip(),
+                            subfq_clip[3].truncated() * subfq_clip[3].w.recip(),
+                        ]
+                    } else {
+                        // Give up and simply use the entire screen as the clipping framequad
+                        // OPTIMIZE: Use a more accurate quad
+                        [
+                            Vec3::new(-1., -1., -1.),
+                            Vec3::new(1., -1., -1.),
+                            Vec3::new(1., 1., -1.),
+                            Vec3::new(-1., 1., -1.),
+                        ]
+                    };
+                    let xy = |v4: Vec3| Vec2::new(v4.x, v4.y);
+                    if (xy(subfq[1]) - xy(subfq[0]))
+                        .wedge(xy(subfq[3]) - xy(subfq[0]))
+                        .xy
+                        <= 0.
+                    {
+                        // Portal is backwards
+                        continue 'portal;
+                    }
+                    // Get the portal shape into a buffer
+                    let mut mesh = portal.mesh.take();
+                    let mut portal_buf = self.tmp_bufs[stencil as usize].borrow_mut();
+                    portal_buf.write(&self.state, &mut mesh.vertices, &mut mesh.indices);
+                    portal.mesh.replace(mesh);
+                    // Step 1: Figure out which parts of the portal are visible by drawing the
+                    // portal shape (with depth testing) into the stencil buffer.
+                    // TODO: Modify the draw parameters instead of creating a new one from scratch,
+                    // using then the clip planes.
+                    // OPTIMIZE: Use sample queries and conditional rendering to speed up occluded
+                    // portals.
+                    uniforms
+                        .vars
+                        .borrow_mut()
+                        .get_mut(offset_uniform as usize)
+                        .ok_or(anyhow!("offset uniform out of range"))?
+                        .1 = crate::lua::gfx::UniformVal::Vec3(chunk_offset.into());
+                    let (vert_buf, idx_buf) = portal_buf.bufs();
+                    frame.borrow_mut().draw(
+                        vert_buf,
+                        idx_buf,
+                        shader,
+                        &uniforms,
+                        &DrawParameters {
+                            depth: glium::draw_parameters::Depth {
+                                test: glium::draw_parameters::DepthTest::IfLess,
+                                // It's not necessary to write to the depth buffer, since the next
+                                // step will immediately reset the depth buffer to the maximum
+                                // value.
+                                write: false,
+                                ..default()
+                            },
+                            stencil: glium::draw_parameters::Stencil {
+                                test_counter_clockwise:
+                                    glium::draw_parameters::StencilTest::IfEqual { mask: !0 },
+                                reference_value_counter_clockwise: stencil as i32,
+                                depth_pass_operation_counter_clockwise:
+                                    glium::draw_parameters::StencilOperation::IncrementWrap,
+                                ..default()
+                            },
+                            color_mask: (false, false, false, false),
+                            polygon_offset: glium::draw_parameters::PolygonOffset {
+                                factor: -1.,
+                                units: -2.,
+                                fill: true,
+                                ..default()
+                            },
+                            ..default()
+                        },
+                    )?;
+                    // Step 2: Draw what's on the other end of the portal.
+                    // This entails drawing the skybox again, resetting the depth buffer.
+                    let suborigin = [
+                        origin[0] + portal.jump[0],
+                        origin[1] + portal.jump[1],
+                        origin[2] + portal.jump[2],
+                    ];
+                    subdraw(&suborigin, &subfq, stencil + 1)?;
+                    // Step 3: Artificially replace the depth value for the portal shape.
+                    // This allows the portal to occlude objects that are behind it and be occluded
+                    // by objects in front.
+                    // Also reset the stencil buffer to its original value.
+                    uniforms
+                        .vars
+                        .borrow_mut()
+                        .get_mut(offset_uniform as usize)
+                        .ok_or(anyhow!("offset uniform out of range"))?
+                        .1 = crate::lua::gfx::UniformVal::Vec3(chunk_offset.into());
+                    let (vert_buf, idx_buf) = portal_buf.bufs();
+                    frame.borrow_mut().draw(
+                        vert_buf,
+                        idx_buf,
+                        shader,
+                        &uniforms,
+                        &DrawParameters {
+                            depth: glium::draw_parameters::Depth {
+                                test: glium::draw_parameters::DepthTest::Overwrite,
+                                write: true,
+                                ..default()
+                            },
+                            stencil: glium::draw_parameters::Stencil {
+                                test_counter_clockwise:
+                                    glium::draw_parameters::StencilTest::IfEqual { mask: !0 },
+                                reference_value_counter_clockwise: (stencil + 1) as i32,
+                                depth_pass_operation_counter_clockwise:
+                                    glium::draw_parameters::StencilOperation::DecrementWrap,
+                                ..default()
+                            },
+                            color_mask: (false, false, false, false),
+                            ..default()
+                        },
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -290,6 +570,13 @@ pub(crate) struct ChunkMeshSlot {
 pub(crate) struct ChunkMesh {
     pub mesh: Mesh,
     pub buf: Option<Buffer3d>,
+    pub portals: Vec<PortalMesh>,
+}
+
+pub(crate) struct PortalMesh {
+    pub mesh: Cell<Mesh>,
+    pub bounds: [Vec3; 4],
+    pub jump: [f64; 3],
 }
 
 pub(crate) fn check_collisions(

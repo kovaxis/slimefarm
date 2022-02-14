@@ -1,6 +1,7 @@
 
 TODO:
 
+- Skylight occlusion.
 - Object-centered lighting.
 - Set a chunkload and a view radius, unloading chunks and meshes beyond it.
 - Prevent discontinuities in squash animations by making it stateful.
@@ -12,6 +13,7 @@ TODO:
 - Fix `rlua 0.18` to print error messages from Rust callbacks.
 - Merge adjacent chunk meshes into supermeshes for an extra ~20 FPS.
 - Chunk recentering hysteresis.
+- Decorations using GPU instancing.
 
 Threads:
 

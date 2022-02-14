@@ -1,10 +1,11 @@
-use crate::prelude::*;
+use crate::{prelude::*, terrain::PortalMesh};
 use common::terrain::GridKeeper;
 
 pub(crate) struct BufPackage {
     pub pos: ChunkPos,
     pub mesh: Mesh,
     pub buf: Option<(RawVertexPackage<SimpleVertex>, RawIndexPackage<VertIdx>)>,
+    pub portals: Vec<PortalMesh>,
 }
 
 const AVERAGE_WEIGHT: f32 = 0.02;
@@ -161,6 +162,8 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                 chunks_store.take();
                 //Mesh the chunk
                 let mesh = mesher.make_mesh(pos, &neighbors);
+                //Figure out portals
+                let portals = mesher.mesh_portals(&neighbors[13]);
                 {
                     //Keep meshing statistics
                     //Dont care about data races here, after all it's just stats
@@ -190,6 +193,7 @@ fn run_mesher(state: MesherState, textures: BlockTextures) {
                     pos,
                     mesh,
                     buf: buf_pkg,
+                    portals,
                 };
                 match state.send_bufs.try_send(buf_pkg) {
                     Ok(()) => {}
@@ -350,7 +354,7 @@ impl Mesher {
             let (x0, x1) = floorceil(pos.x, i);
             let (y0, y1) = floorceil(pos.y, i);
             let (z0, z1) = floorceil(pos.z, i);
-            let f = pos.lowbits(i as i32).to_f32_floor() / (1 << i) as f32;
+            let f = pos.lowbits(i as i32).to_f32() / (1 << i) as f32;
             let s = Lerp::lerp(
                 &Lerp::lerp(
                     &Lerp::lerp(&noise_at([x0, y0, z0]), noise_at([x1, y0, z0]), f.x),
@@ -673,5 +677,88 @@ impl Mesher {
         }
 
         mem::take(&mut self.mesh)
+    }
+
+    fn mesh_portals(&mut self, chunk: &ChunkArc) -> Vec<PortalMesh> {
+        let mut portals = Vec::new();
+        if let Some(chunk) = chunk.blocks() {
+            for portal in chunk.portals() {
+                // TODO: Merge multiple portals into a single mesh if they share the same jump.
+                let pos = Int3::new([
+                    portal.pos[0] as i32,
+                    portal.pos[1] as i32,
+                    portal.pos[2] as i32,
+                ]);
+                let size = Int3::new([
+                    portal.size[0] as i32,
+                    portal.size[1] as i32,
+                    portal.size[2] as i32,
+                ]);
+                let center = pos + size / 2;
+                if 0 <= center.x
+                    && center.x < CHUNK_SIZE
+                    && 0 <= center.y
+                    && center.y < CHUNK_SIZE
+                    && 0 <= center.z
+                    && center.z < CHUNK_SIZE
+                {
+                    // The center of this portal is within this chunk, so add it to the chunk meshes
+                    // Figure out the front side of the portal
+                    let det = pos.max(Int3::zero());
+                    let axis0 = portal.get_axis();
+                    //let mut x0 = Vec3::zero();
+                    let (axis1, axis2) = if chunk.sub_get(det).is_solid(&self.solid) {
+                        // Positive side of this portal is solid
+                        // Portal faces negative side
+                        //x0[axis0] = -1.;
+                        ((axis0 + 2) % 3, (axis0 + 1) % 3)
+                    } else {
+                        // Positive side of this portal is nonsolid
+                        // Portal faces positive side
+                        //x0[axis0] = 1.;
+                        ((axis0 + 1) % 3, (axis0 + 2) % 3)
+                    };
+
+                    // Figure out all 4 portal corners
+                    let v00 = pos;
+                    let mut v10 = v00;
+                    v10[axis1] += size[axis1];
+                    let mut v01 = v00;
+                    v01[axis2] += size[axis2];
+                    let mut v11 = v10;
+                    v11[axis2] += size[axis2];
+
+                    // Make portal mesh
+                    let mut mesh = Mesh::with_capacity(4, 2);
+                    mesh.add_vertex(v00.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex(v10.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex(v11.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex(v01.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_face(0, 1, 2);
+                    mesh.add_face(0, 2, 3);
+
+                    // Group it all up
+                    /*let mut x1 = Vec3::zero();
+                    x1[axis1] = 1.;
+                    let mut x2 = Vec3::zero();
+                    x2[axis2] = 1.;
+                    let off = 0.5;
+                    x0 *= off;
+                    x1 *= off;
+                    x2 *= off;*/
+                    portals.push(PortalMesh {
+                        mesh: mesh.into(),
+                        bounds: [
+                            v00.to_f32(), // - x0 + x1 + x2,
+                            v10.to_f32(), // - x0 - x1 + x2,
+                            v11.to_f32(), // - x0 - x1 - x2,
+                            v01.to_f32(), // - x0 + x1 - x2,
+                        ],
+                        jump: Int3::new(portal.jump).to_f64(),
+                    });
+                }
+            }
+        }
+        portals
     }
 }

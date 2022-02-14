@@ -11,7 +11,8 @@ pub mod prelude {
         slotmap::{SlotId, SlotMap},
         terrain::{
             BlockData, BlockPos, BlockTexture, BlockTextures, ChunkArc, ChunkBox, ChunkData,
-            ChunkPos, ChunkRef, LoafBox, SolidTable, CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
+            ChunkPos, ChunkRef, LoafBox, PortalData, SolidTable, CHUNK_BITS, CHUNK_MASK,
+            CHUNK_SIZE,
         },
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};

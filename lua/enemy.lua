@@ -37,7 +37,7 @@ local air_maneuver = 0.02
 local air_maneuver_max = 0.3
 
 local function wasd_delta(self, world)
-    local play = nil
+    --[[local play = nil
     for i, ent in ipairs(world.entities) do
         if ent.is_player then
             play = ent
@@ -51,7 +51,7 @@ local function wasd_delta(self, world)
             local inv = jump_hvel / math.sqrt(magsq)
             return dx * inv, dy * inv
         end
-    end
+    end]]
     return 0, 0
 end
 
