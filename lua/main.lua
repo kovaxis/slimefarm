@@ -10,13 +10,13 @@ table.insert(world.entities, Player{
     y = 0,
     z = 100,
 })
-for x = -10, 10 do
+--[[for x = -10, 10 do
     table.insert(world.entities, Enemy{
         x = x * 10,
         y = 20,
         z = 100,
     })
-end
+end]]
 
 local has_focus = true
 while true do

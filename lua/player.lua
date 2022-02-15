@@ -191,6 +191,10 @@ function Player:tick(world)
     do
         local focus_height = 3.2
         local focus_dist = 8
+        world.cam_prev_x, world.cam_prev_y, world.cam_prev_z = world.cam_x, world.cam_y, world.cam_z
+        local cam_wall_dist = 0.4
+        world.cam_x, world.cam_y, world.cam_z = world.terrain:collide(self.x, self.y, self.z, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+
         world.cam_prev_x = self.prev_x
         world.cam_prev_y = self.prev_y
         world.cam_prev_z = self.prev_z + focus_height

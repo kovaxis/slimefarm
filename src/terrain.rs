@@ -95,6 +95,11 @@ impl ChunkStorage {
         self.chunk_at(pos >> CHUNK_BITS)
             .map(|chunk| chunk.sub_get(pos.lowbits(CHUNK_BITS)))
     }
+
+    pub fn portal_at(&self, pos: BlockPos, axis: usize) -> Option<&PortalData> {
+        self.chunk_at(pos >> CHUNK_BITS)
+            .and_then(|chunk| chunk.sub_portal_at(pos.lowbits(CHUNK_BITS), axis))
+    }
 }
 impl ops::Deref for ChunkStorage {
     type Target = GridKeeper<ChunkSlot>;
@@ -174,15 +179,22 @@ fn run_bookkeep(state: BookKeepState) {
     }
 }
 
+struct PortalPlane {
+    axis: usize,
+    coord: i32,
+    jump: Int3,
+}
+
 pub(crate) struct Terrain {
     pub _bookkeeper: BookKeepHandle,
-    pub solid: SolidTable,
+    pub style: StyleTable,
     pub mesher: MesherHandle,
     pub generator: GeneratorHandle,
     pub state: Rc<State>,
     pub chunks: Arc<RwLock<ChunkStorage>>,
-    pub tmp_bufs: Vec<RefCell<DynBuffer3d>>,
     pub meshes: MeshKeeper,
+    tmp_bufs: Vec<RefCell<DynBuffer3d>>,
+    tmp_colbuf: RefCell<Vec<PortalPlane>>,
 }
 impl Terrain {
     pub fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
@@ -191,7 +203,7 @@ impl Terrain {
         let generator = GeneratorHandle::new(gen_cfg, &state.global, chunks.clone(), &bookkeeper)?;
         let tex = generator.take_block_textures()?;
         Ok(Terrain {
-            solid: SolidTable::new(&tex),
+            style: StyleTable::new(&tex),
             state: state.clone(),
             meshes: MeshKeeper::new(0., ChunkPos([0, 0, 0])),
             mesher: MesherHandle::new(state, chunks.clone(), tex),
@@ -201,6 +213,7 @@ impl Terrain {
                     .map(|_| RefCell::new(DynBuffer3d::new(state)))
                     .collect()
             },
+            tmp_colbuf: default(),
             generator: generator,
             _bookkeeper: bookkeeper,
             chunks,
@@ -521,6 +534,433 @@ impl Terrain {
 
         Ok(())
     }
+
+    const SAFE_GAP: f64 = 1. / 128.;
+
+    /// Move an integer block coordinate by the given offset, crossing through portals but going
+    /// through solid blocks.
+    /// First moves on the X axis, then on the Y axis and then the Z axis.
+    /// The order could affect which portals are crossed!
+    pub(crate) fn offset_coords(&self, from: BlockPos, delta: Int3) -> BlockPos {
+        let mut cur = from;
+        for i in 0..3 {
+            cur = self.blockcast_ghost(cur, i, delta[i]);
+        }
+        cur
+    }
+
+    /// Move an integer block coordinate by the given amount of blocks in the given axis, crossing
+    /// through portals but going through blocks.
+    pub(crate) fn blockcast_ghost(&self, from: BlockPos, axis: usize, delta: i32) -> BlockPos {
+        let binary = (delta > 0) as i32;
+        let dir = if delta > 0 { 1 } else { -1 };
+        let mut cur = from;
+        for _ in 0..delta * dir {
+            cur[axis] += dir;
+            if self
+                .block_at(cur)
+                .map(|b| b.is_portal(&self.style))
+                .unwrap_or(false)
+            {
+                let mut ppos = cur;
+                ppos[axis] += 1 - binary;
+                if let Some(portal) = self.chunks.read().portal_at(ppos, axis) {
+                    cur += portal.jump;
+                }
+            }
+        }
+        cur
+    }
+
+    /// Move an integer block coordinate by the given amount of blocks in the given axis, crossing
+    /// through portals and stopping at the first solid block (returning the last clear block).
+    pub(crate) fn blockcast(&self, from: BlockPos, axis: usize, delta: i32) -> BlockPos {
+        let binary = (delta > 0) as i32;
+        let dir = if delta > 0 { 1 } else { -1 };
+        let mut cur = from;
+        for _ in 0..delta * dir {
+            cur[axis] += dir;
+            match self
+                .block_at(cur)
+                .map(|b| self.style.lookup(b))
+                .unwrap_or(BlockStyle::Solid)
+            {
+                BlockStyle::Clear => {}
+                BlockStyle::Solid => {
+                    cur[axis] -= dir;
+                    return cur;
+                }
+                BlockStyle::Portal => {
+                    let mut ppos = cur;
+                    ppos[axis] += 1 - binary;
+                    if let Some(portal) = self.chunks.read().portal_at(ppos, axis) {
+                        cur += portal.jump;
+                    }
+                }
+                BlockStyle::Custom => unimplemented!(),
+            }
+        }
+        cur
+    }
+
+    /// Place a virtual point particle at `from` and move it `delta` units in the `axis` axis.
+    /// If there are any blocks in the way, the particle stops its movement.
+    /// If there are any portals in the way, the particle crosses them.
+    pub(crate) fn raycast_aligned(&self, from: [f64; 3], axis: usize, delta: f64) -> [f64; 3] {
+        let dir = if delta > 0. { 1. } else { -1. };
+        let binary = (delta > 0.) as i32;
+        let mut cur = from;
+        let mut limit = cur[axis] + delta;
+        let mut next_block = [cur[0].floor(), cur[1].floor(), cur[2].floor()];
+        next_block[axis] = (cur[axis] * dir).ceil() * dir;
+        while next_block[axis] * dir < limit * dir {
+            let col_int = Int3::from_f64(next_block);
+            let mut block = col_int;
+            block[axis] += binary - 1;
+            match self
+                .block_at(block)
+                .map(|b| self.style.lookup(b))
+                .unwrap_or(BlockStyle::Solid)
+            {
+                BlockStyle::Clear => next_block[axis] += dir,
+                BlockStyle::Solid => {
+                    let mut out = cur;
+                    out[axis] = next_block[axis] - Self::SAFE_GAP * dir;
+                    return out;
+                }
+                BlockStyle::Portal => {
+                    if let Some(portal) = self.chunks.read().portal_at(col_int, axis) {
+                        for i in 0..3 {
+                            cur[i] += portal.jump[i] as f64;
+                            next_block[i] += portal.jump[i] as f64;
+                        }
+                        limit += portal.jump[axis] as f64;
+                    } else {
+                        // Should never happen with proper portals!
+                        next_block[axis] += dir;
+                    }
+                }
+
+                BlockStyle::Custom => unimplemented!(),
+            }
+        }
+        let mut out = cur;
+        out[axis] = limit;
+        out
+    }
+
+    /// Place a virtual cuboid at `from`, of dimensions `size * 2` (`size` being the "radius"), and
+    /// move it by `delta`, checking for collisions against blocks and portals.
+    /// If `eager` is true, the process stops as soon as a block is hit.
+    /// If `eager` is false, when a block is hit the delta component in the direction of the hit
+    /// block is killed, advancing no more in that direction.
+    pub(crate) fn boxcast(
+        &self,
+        from: [f64; 3],
+        mut delta: [f64; 3],
+        size: [f64; 3],
+        eager: bool,
+    ) -> [f64; 3] {
+        // TODO: Check that everything works alright with portals when objects have integer
+        // positions.
+
+        if delta == [0.; 3] {
+            return from;
+        }
+
+        let binary = [
+            (delta[0] > 0.) as i32,
+            (delta[1] > 0.) as i32,
+            (delta[2] > 0.) as i32,
+        ];
+        let dir = [
+            if delta[0] > 0. { 1. } else { -1. },
+            if delta[1] > 0. { 1. } else { -1. },
+            if delta[2] > 0. { 1. } else { -1. },
+        ];
+        let idir = [
+            if delta[0] > 0. { 1 } else { -1 },
+            if delta[1] > 0. { 1 } else { -1 },
+            if delta[2] > 0. { 1 } else { -1 },
+        ];
+        let mut frontier = [
+            from[0] + size[0] * dir[0],
+            from[1] + size[1] * dir[1],
+            from[2] + size[2] * dir[2],
+        ];
+        let mut next_block = [
+            (frontier[0] * dir[0]).ceil() * dir[0],
+            (frontier[1] * dir[1]).ceil() * dir[1],
+            (frontier[2] * dir[2]).ceil() * dir[2],
+        ];
+        let mut limit = [
+            from[0] + size[0] * dir[0] + delta[0],
+            from[1] + size[1] * dir[1] + delta[1],
+            from[2] + size[2] * dir[2] + delta[2],
+        ];
+
+        // Keep track of the planes of the portals that have been crossed
+        // This way, we can work in virtual coordinates and only transfer to real absolute
+        // coordinates when looking up a block, portal or at the very end when translating the
+        // final virtual coordinates back to absolute world coordinates
+        let mut portalplanes = self.tmp_colbuf.borrow_mut();
+        portalplanes.clear();
+        let get_warp = |planes: &[PortalPlane], pos: Int3| {
+            let mut jump = Int3::zero();
+            for plane in planes.iter() {
+                if pos[plane.axis] * idir[plane.axis] < plane.coord * idir[plane.axis] {
+                    break;
+                }
+                jump = plane.jump;
+            }
+            jump
+        };
+        let add_portal = |planes: &mut Vec<PortalPlane>, blockpos: Int3, axis: usize| {
+            let mut pos = blockpos;
+            pos[axis] += 1 - binary[axis];
+            let real_pos = pos + get_warp(&planes, pos);
+            if let Some(portal) = self.chunks.read().portal_at(real_pos, axis) {
+                let last_jump = planes
+                    .last()
+                    .map(|plane| plane.jump)
+                    .unwrap_or(Int3::zero());
+                planes.push(PortalPlane {
+                    axis,
+                    coord: blockpos[axis],
+                    jump: last_jump + portal.jump,
+                });
+            }
+        };
+
+        // Prebuild any portal planes that are currently intersecting the box
+        {
+            let src = Int3::from_f64(from);
+            let dst = Int3::from_f64(frontier);
+            for axis in 0..3 {
+                let delta = dst[axis] - src[axis];
+                let mut cur = src;
+                for _ in 0..delta * idir[axis] {
+                    cur[axis] += idir[axis];
+                    let real_pos = cur + get_warp(&portalplanes, cur);
+                    if self
+                        .block_at(real_pos)
+                        .map(|b| b.is_portal(&self.style))
+                        .unwrap_or(false)
+                    {
+                        add_portal(&mut portalplanes, cur, axis);
+                    }
+                }
+            }
+        }
+
+        while next_block
+            .iter()
+            .zip(&limit)
+            .zip(&dir)
+            .any(|((&next_block, &limit), &dir)| next_block * dir < limit * dir)
+        {
+            //Find closest axis
+            let mut closest_axis = 0;
+            let mut closest_dist = f64::INFINITY;
+            for axis in 0..3 {
+                if delta[axis] == 0. {
+                    continue;
+                }
+                let dist = (next_block[axis] - frontier[axis]) / delta[axis];
+                if dist < closest_dist {
+                    closest_axis = axis;
+                    closest_dist = dist;
+                }
+            }
+
+            //Advance on this axis
+            let mut min_block = BlockPos([0; 3]);
+            let mut max_block = BlockPos([0; 3]);
+            for axis in 0..3 {
+                if axis == closest_axis {
+                    min_block[axis] = next_block[axis] as i32 + (binary[axis] - 1);
+                    max_block[axis] = next_block[axis] as i32 + binary[axis];
+                    frontier[axis] = next_block[axis];
+                    next_block[axis] += dir[axis];
+                } else {
+                    frontier[axis] += closest_dist * delta[axis];
+                    min_block[axis] =
+                        (frontier[axis] - (2 * binary[axis]) as f64 * size[axis]).floor() as i32;
+                    max_block[axis] =
+                        (frontier[axis] + (2 - 2 * binary[axis]) as f64 * size[axis]).ceil() as i32;
+                }
+            }
+
+            //Check whether there is a collision
+            let mut style = BlockStyle::Custom as u8;
+            for z in min_block.z..max_block.z {
+                for y in min_block.y..max_block.y {
+                    for x in min_block.x..max_block.x {
+                        let mut pos = Int3::new([x, y, z]);
+                        let warp = get_warp(&portalplanes, pos);
+                        pos += warp;
+                        let s = self
+                            .block_at(pos)
+                            .map(|b| self.style.lookup(b))
+                            .unwrap_or(BlockStyle::Solid);
+                        style = style.min(s as u8);
+                    }
+                }
+            }
+            let style = BlockStyle::from_raw(style);
+
+            match style {
+                BlockStyle::Clear => {}
+                BlockStyle::Solid => {
+                    //If there is collision, start ignoring this axis
+                    if eager {
+                        //Unless we're raycasting
+                        //In this case, abort immediately
+                        limit = frontier;
+                        break;
+                    }
+                    limit[closest_axis] =
+                        frontier[closest_axis] - Self::SAFE_GAP * dir[closest_axis];
+                    delta[closest_axis] = 0.;
+                    if delta == [0., 0., 0.] {
+                        break;
+                    }
+                }
+                BlockStyle::Portal => {
+                    add_portal(&mut portalplanes, min_block, closest_axis);
+                }
+                BlockStyle::Custom => unimplemented!(),
+            }
+        }
+
+        let pos = [
+            limit[0] - size[0] * dir[0],
+            limit[1] - size[1] * dir[1],
+            limit[2] - size[2] * dir[2],
+        ];
+        let warp = get_warp(&portalplanes, Int3::from_f64(pos)).to_f64();
+        [pos[0] + warp[0], pos[1] + warp[1], pos[2] + warp[2]]
+    }
+
+    /*
+    pub(crate) fn check_collisions(
+        from: [f64; 3],
+        mut delta: [f64; 3],
+        size: [f64; 3],
+        mut is_solid: impl FnMut(BlockPos, i32) -> bool,
+        raycast: bool,
+    ) -> [f64; 3] {
+        if delta == [0.; 3] {
+            return from;
+        }
+
+        let safe_gap = 1. / 128.;
+        /*let safe_ratio = 63. / 64.;
+        let size = [
+            size[0] * safe_ratio,
+            size[1] * safe_ratio,
+            size[2] * safe_ratio,
+        ];*/
+        let binary = [
+            (delta[0] > 0.) as i32,
+            (delta[1] > 0.) as i32,
+            (delta[2] > 0.) as i32,
+        ];
+        let dir = [
+            if delta[0] > 0. { 1. } else { -1. },
+            if delta[1] > 0. { 1. } else { -1. },
+            if delta[2] > 0. { 1. } else { -1. },
+        ];
+        let mut frontier = [
+            from[0] + size[0] * dir[0],
+            from[1] + size[1] * dir[1],
+            from[2] + size[2] * dir[2],
+        ];
+        let mut next_block = [
+            (frontier[0] * dir[0]).ceil() * dir[0],
+            (frontier[1] * dir[1]).ceil() * dir[1],
+            (frontier[2] * dir[2]).ceil() * dir[2],
+        ];
+        let mut limit = [
+            from[0] + size[0] * dir[0] + delta[0],
+            from[1] + size[1] * dir[1] + delta[1],
+            from[2] + size[2] * dir[2] + delta[2],
+        ];
+
+        while next_block
+            .iter()
+            .zip(&limit)
+            .zip(&dir)
+            .any(|((&next_block, &limit), &dir)| next_block * dir < limit * dir)
+        {
+            //Find closest axis
+            let mut closest_axis = 0;
+            let mut closest_dist = f64::INFINITY;
+            for axis in 0..3 {
+                if delta[axis] == 0. {
+                    continue;
+                }
+                let dist = (next_block[axis] - frontier[axis]) / delta[axis];
+                if dist < closest_dist {
+                    closest_axis = axis;
+                    closest_dist = dist;
+                }
+            }
+
+            //Advance on this axis
+            let mut min_block = BlockPos([0; 3]);
+            let mut max_block = BlockPos([0; 3]);
+            for axis in 0..3 {
+                if axis == closest_axis {
+                    min_block[axis] = next_block[axis] as i32 + (binary[axis] - 1);
+                    max_block[axis] = next_block[axis] as i32 + binary[axis];
+                    frontier[axis] = next_block[axis];
+                    next_block[axis] += dir[axis];
+                } else {
+                    frontier[axis] += closest_dist * delta[axis];
+                    min_block[axis] =
+                        (frontier[axis] - (2 * binary[axis]) as f64 * size[axis]).floor() as i32;
+                    max_block[axis] =
+                        (frontier[axis] + (2 - 2 * binary[axis]) as f64 * size[axis]).ceil() as i32;
+                }
+            }
+
+            //Check whether there is a collision
+            let mut collides = false;
+            'outer: for z in min_block[2]..max_block[2] {
+                for y in min_block[1]..max_block[1] {
+                    for x in min_block[0]..max_block[0] {
+                        if is_solid(BlockPos([x, y, z]), closest_axis as i32) {
+                            collides = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            //If there is collision, start ignoring this axis
+            if collides {
+                if raycast {
+                    //Unless we're raycasting
+                    //In this case, abort immediately
+                    limit = frontier;
+                    break;
+                }
+                limit[closest_axis] = frontier[closest_axis] - safe_gap * dir[closest_axis];
+                delta[closest_axis] = 0.;
+                if delta == [0., 0., 0.] {
+                    break;
+                }
+            }
+        }
+
+        [
+            limit[0] - size[0] * dir[0],
+            limit[1] - size[1] * dir[1],
+            limit[2] - size[2] * dir[2],
+        ]
+    }
+    */
 }
 
 /// Keeps track of chunk meshes in an efficient grid structure.
@@ -577,122 +1017,4 @@ pub(crate) struct PortalMesh {
     pub mesh: Cell<Mesh>,
     pub bounds: [Vec3; 4],
     pub jump: [f64; 3],
-}
-
-pub(crate) fn check_collisions(
-    from: [f64; 3],
-    mut delta: [f64; 3],
-    size: [f64; 3],
-    mut is_solid: impl FnMut(BlockPos, i32) -> bool,
-    raycast: bool,
-) -> [f64; 3] {
-    if delta == [0.; 3] {
-        return from;
-    }
-
-    let safe_gap = 1. / 128.;
-    /*let safe_ratio = 63. / 64.;
-    let size = [
-        size[0] * safe_ratio,
-        size[1] * safe_ratio,
-        size[2] * safe_ratio,
-    ];*/
-    let binary = [
-        (delta[0] > 0.) as i32,
-        (delta[1] > 0.) as i32,
-        (delta[2] > 0.) as i32,
-    ];
-    let dir = [
-        if delta[0] > 0. { 1. } else { -1. },
-        if delta[1] > 0. { 1. } else { -1. },
-        if delta[2] > 0. { 1. } else { -1. },
-    ];
-    let mut frontier = [
-        from[0] + size[0] * dir[0],
-        from[1] + size[1] * dir[1],
-        from[2] + size[2] * dir[2],
-    ];
-    let mut next_block = [
-        (frontier[0] * dir[0]).ceil() * dir[0],
-        (frontier[1] * dir[1]).ceil() * dir[1],
-        (frontier[2] * dir[2]).ceil() * dir[2],
-    ];
-    let mut limit = [
-        from[0] + size[0] * dir[0] + delta[0],
-        from[1] + size[1] * dir[1] + delta[1],
-        from[2] + size[2] * dir[2] + delta[2],
-    ];
-
-    while next_block
-        .iter()
-        .zip(&limit)
-        .zip(&dir)
-        .any(|((&next_block, &limit), &dir)| next_block * dir < limit * dir)
-    {
-        //Find closest axis
-        let mut closest_axis = 0;
-        let mut closest_dist = f64::INFINITY;
-        for axis in 0..3 {
-            if delta[axis] == 0. {
-                continue;
-            }
-            let dist = (next_block[axis] - frontier[axis]) / delta[axis];
-            if dist < closest_dist {
-                closest_axis = axis;
-                closest_dist = dist;
-            }
-        }
-
-        //Advance on this axis
-        let mut min_block = BlockPos([0; 3]);
-        let mut max_block = BlockPos([0; 3]);
-        for axis in 0..3 {
-            if axis == closest_axis {
-                min_block[axis] = next_block[axis] as i32 + (binary[axis] - 1);
-                max_block[axis] = next_block[axis] as i32 + binary[axis];
-                frontier[axis] = next_block[axis];
-                next_block[axis] += dir[axis];
-            } else {
-                frontier[axis] += closest_dist * delta[axis];
-                min_block[axis] =
-                    (frontier[axis] - (2 * binary[axis]) as f64 * size[axis]).floor() as i32;
-                max_block[axis] =
-                    (frontier[axis] + (2 - 2 * binary[axis]) as f64 * size[axis]).ceil() as i32;
-            }
-        }
-
-        //Check whether there is a collision
-        let mut collides = false;
-        'outer: for z in min_block[2]..max_block[2] {
-            for y in min_block[1]..max_block[1] {
-                for x in min_block[0]..max_block[0] {
-                    if is_solid(BlockPos([x, y, z]), closest_axis as i32) {
-                        collides = true;
-                        break 'outer;
-                    }
-                }
-            }
-        }
-
-        //If there is collision, start ignoring this axis
-        if collides {
-            if raycast {
-                //Unless we're raycasting
-                //In this case, abort immediately
-                limit = frontier;
-                break;
-            }
-            limit[closest_axis] = frontier[closest_axis] - safe_gap * dir[closest_axis];
-            delta[closest_axis] = 0.;
-            if delta == [0., 0., 0.] {
-                break;
-            }
-        }
-    }
-
-    [
-        limit[0] - size[0] * dir[0],
-        limit[1] - size[1] * dir[1],
-        limit[2] - size[2] * dir[2],
-    ]
 }

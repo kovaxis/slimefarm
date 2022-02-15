@@ -102,6 +102,7 @@ struct Config {
     kind: GenKind,
     air_tex: BlockTexture,
     void_tex: BlockTexture,
+    portal_tex: BlockTexture,
 }
 
 #[derive(Deserialize)]
@@ -113,7 +114,7 @@ enum GenKind {
 
 fn void(store: &'static dyn GenStore, _cfg: Config) {
     let air = lookup_block(store, "base.air");
-    wrap_gen(store, move |_pos| Some(ChunkBox::new_nonsolid(air)))
+    wrap_gen(store, move |_pos| Some(ChunkBox::new_homogeneous(air)))
 }
 
 #[derive(Deserialize, Clone)]
@@ -249,6 +250,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         noise2d: Noise2d,
         tree_spread: Spread2d,
         void: BlockData,
+        portal: BlockData,
         air: BlockData,
         grass: BlockData,
         wood: BlockData,
@@ -296,10 +298,10 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             let (col_min, col_max, col) = self.cols.get(pos.xy())?.as_ref()?;
             if pos[2] * CHUNK_SIZE >= *col_max as i32 {
                 //Chunk is high enough to be all-air
-                return Some(ChunkBox::new_nonsolid(self.air));
+                return Some(ChunkBox::new_homogeneous(self.air));
             } else if (pos[2] + 1) * CHUNK_SIZE <= *col_min as i32 {
                 //Chunk is low enough to be all-ground
-                return Some(ChunkBox::new_solid(self.grass));
+                return Some(ChunkBox::new_homogeneous(self.grass));
             }
             let mut chunk = ChunkBox::new_quick();
             let blocks = chunk.blocks_mut();
@@ -435,18 +437,33 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
 
             // Actually generate portal
             if tcoord == [0, 0].into() {
+                // Build outer cube
                 actions::Cube::paint(
                     &mut bbuf,
                     Vec3::new(-4., -4., 0.),
-                    Vec3::new(8., 8., 8.),
+                    Vec3::new(8., 8., 16.),
                     self.wood,
                 );
                 actions::Cube::paint(
                     &mut bbuf,
                     Vec3::new(-3., 3., 1.),
-                    Vec3::new(6., 1., 6.),
+                    Vec3::new(6., 1., 14.),
                     self.air,
                 );
+                actions::Cube::paint(
+                    &mut bbuf,
+                    Vec3::new(-3., 2., 1.),
+                    Vec3::new(6., 1., 14.),
+                    self.portal,
+                );
+                actions::Portal::paint(
+                    &mut bbuf,
+                    [-3, 3, 1].into(),
+                    [6, 0, 14].into(),
+                    [-3, 16, -60].into(),
+                );
+
+                // Build inner cube
                 actions::Cube::paint(
                     &mut bbuf,
                     Vec3::new(-17., -17., -61.),
@@ -459,11 +476,17 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     Vec3::new(32., 32., 32.),
                     self.air,
                 );
+                actions::Cube::paint(
+                    &mut bbuf,
+                    Vec3::new(-3., 16., -60.),
+                    Vec3::new(6., 1., 14.),
+                    self.portal,
+                );
                 actions::Portal::paint(
                     &mut bbuf,
-                    [-3, 3, 1].into(),
-                    [6, 0, 6].into(),
                     [-3, 16, -60].into(),
+                    [6, 0, 14].into(),
+                    [-3, 3, 1].into(),
                 );
             }
 
@@ -518,6 +541,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
     }
     let gen = PlainsGen {
         void: lookup_block(store, "base.void"),
+        portal: lookup_block(store, "base.portal"),
         air: lookup_block(store, "base.air"),
         grass: register_block(store, "base.grass", &k.grass_tex),
         wood: register_block(store, "base.wood", &k.tree.wood_tex),
@@ -569,6 +593,7 @@ pub fn new_generator<'a>(store: &'static dyn GenStore) -> Result<()> {
     })?;
     register_block(store, "base.air", &cfg.air_tex);
     register_block(store, "base.void", &cfg.void_tex);
+    register_block(store, "base.portal", &cfg.portal_tex);
     /*let mut cfg: Config =
     serde_json::from_slice(cfg).context("failed to parse worldgen config string")?;*/
     let kind = mem::replace(&mut cfg.kind, GenKind::Void);

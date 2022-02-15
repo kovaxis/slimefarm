@@ -83,7 +83,8 @@ local function texture(base, noise, noisescales, rough)
         }
     end
     return {
-        solid = true,
+        opaque = true,
+        style = 'Solid',
         smooth = not rough,
         base = base,
         noise = noises,
@@ -112,10 +113,16 @@ function config()
         }},
 
         air_tex = {
-            solid = false,
+            opaque = false,
+            style = 'Clear',
         },
         void_tex = {
-            solid = false,
+            opaque = false,
+            style = 'Clear',
+        },
+        portal_tex = {
+            opaque = true,
+            style = 'Portal',
         },
 
         gen_radius = 512,

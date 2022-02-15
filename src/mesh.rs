@@ -32,7 +32,7 @@ impl<V> Mesh<V> {
     }
 
     /// Remove all vertices and faces.
-    pub fn clear(&mut self) {
+    pub fn _clear(&mut self) {
         self.vertices.clear();
         self.indices.clear();
     }

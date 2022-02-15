@@ -298,7 +298,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
     worldgen::new_generator(store)?;
 
     let tex = unsafe { store.lookup::<BlockTextures>("base.blocktextures").clone() };
-    let solid = SolidTable::new(&tex);
+    let style = StyleTable::new(&tex);
     tex_send
         .send(tex)
         .map_err(|_| Error::msg("failed to send block textures"))?;
@@ -332,7 +332,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
                     continue;
                 }
             };
-            chunk.mark_solidity(&solid);
+            chunk.consolidate(&style);
             let chunk = ChunkArc::new(chunk);
             //Keep chunkgen timing statistics
             {

@@ -157,17 +157,13 @@ lua_type! {TerrainRef,
 
     fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
-        let [fx, fy, fz] = crate::terrain::check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
-            terrain.block_at(block_pos).map(|data| data.is_solid(&terrain.solid)).unwrap_or(true)
-        }, false);
+        let [fx, fy, fz] = terrain.boxcast([x, y, z], [dx, dy, dz], [sx, sy, sz], false);
         (fx, fy, fz)
     }
 
     fn raycast(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
         let terrain = this.rc.borrow();
-        let [fx, fy, fz] = crate::terrain::check_collisions([x, y, z], [dx, dy, dz], [sx, sy, sz], |block_pos, _axis| {
-            terrain.block_at(block_pos).map(|data| data.is_solid(&terrain.solid)).unwrap_or(true)
-        }, true);
+        let [fx, fy, fz] = terrain.boxcast([x, y, z], [dx, dy, dz], [sx, sy, sz], true);
         (fx, fy, fz)
     }
 

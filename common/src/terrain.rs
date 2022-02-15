@@ -34,8 +34,8 @@ impl fmt::Debug for ChunkRef<'_> {
         if self.is_solid() {
             write!(f, "solid")?;
         }
-        if self.is_nonsolid() {
-            write!(f, "nonsolid")?;
+        if self.is_clear() {
+            write!(f, "clear")?;
         }
         if let Some(block) = self.homogeneous_block() {
             write!(f, ">::Homogeneous({:?})", block)
@@ -47,40 +47,40 @@ impl fmt::Debug for ChunkRef<'_> {
 impl<'a> ChunkRef<'a> {
     const MASK: usize = 0b111;
     const FLAG_HOMOGENEOUS: usize = 0b001;
-    const FLAG_NONSOLID: usize = 0b010;
+    const FLAG_CLEAR: usize = 0b010;
     const FLAG_SOLID: usize = 0b100;
 
     #[inline]
-    fn raw(&self) -> usize {
+    fn raw(self) -> usize {
         self.ptr.as_ptr() as usize
     }
 
     #[inline]
-    pub fn is_homogeneous(&self) -> bool {
+    pub fn is_homogeneous(self) -> bool {
         self.raw() & Self::FLAG_HOMOGENEOUS != 0
     }
 
     #[inline]
-    pub fn is_nonsolid(&self) -> bool {
-        self.raw() & Self::FLAG_NONSOLID != 0
+    pub fn is_clear(self) -> bool {
+        self.raw() & Self::FLAG_CLEAR != 0
     }
 
     #[inline]
-    pub fn is_solid(&self) -> bool {
+    pub fn is_solid(self) -> bool {
         self.raw() & Self::FLAG_SOLID != 0
     }
 
     /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
     /// anyway.
     #[inline]
-    pub fn homogeneous_block_unchecked(&self) -> BlockData {
+    pub fn homogeneous_block_unchecked(self) -> BlockData {
         BlockData {
             data: (self.raw() >> 8) as u8,
         }
     }
 
     #[inline]
-    pub fn homogeneous_block(&self) -> Option<BlockData> {
+    pub fn homogeneous_block(self) -> Option<BlockData> {
         if self.is_homogeneous() {
             Some(self.homogeneous_block_unchecked())
         } else {
@@ -89,12 +89,12 @@ impl<'a> ChunkRef<'a> {
     }
 
     #[inline]
-    pub unsafe fn blocks_unchecked(&self) -> &ChunkData {
+    pub unsafe fn blocks_unchecked(self) -> &'a ChunkData {
         &*((self.raw() & !Self::MASK) as *const ChunkData)
     }
 
     #[inline]
-    pub fn blocks(&self) -> Option<&ChunkData> {
+    pub fn blocks(self) -> Option<&'a ChunkData> {
         if self.is_homogeneous() {
             None
         } else {
@@ -103,11 +103,20 @@ impl<'a> ChunkRef<'a> {
     }
 
     #[inline]
-    pub fn sub_get(&self, pos: Int3) -> BlockData {
+    pub fn sub_get(self, pos: Int3) -> BlockData {
         if let Some(blocks) = self.blocks() {
             blocks.sub_get(pos)
         } else {
             self.homogeneous_block_unchecked()
+        }
+    }
+
+    #[inline]
+    pub fn sub_portal_at(self, pos: Int3, axis: usize) -> Option<&'a PortalData> {
+        if let Some(blocks) = self.blocks() {
+            blocks.sub_portal_at(pos, axis)
+        } else {
+            None
         }
     }
 
@@ -122,7 +131,7 @@ impl<'a> ChunkRef<'a> {
         }
     }
 
-    pub fn clone_chunk(&self) -> ChunkBox {
+    pub fn clone_chunk(self) -> ChunkBox {
         if self.is_homogeneous() {
             ChunkBox { ptr: self.ptr }
         } else {
@@ -147,14 +156,14 @@ impl<'a> ChunkRef<'a> {
 /// Since `ChunkData` has an alignment of 8, the `blocks` pointer has 3 bits to store tags.
 /// If bit 0 is set, the chunk has no associated memory, and the entire chunk is made up of a
 /// single block type, which is stored in bits 8..16.
-/// If bit 1 is set, the chunk is made entirely out of non-solid blocks (although they might be
-/// different). This flag is completely independent from bit 0.
-/// If bit 2 is set, the chunk is made entirely out of solid blocks (although they might be
-/// different types of solid blocks). This flag is completely independent from bit 0, although it
+/// If bit 1 is set, the chunk is made entirely out of clear blocks (although they
+/// might be different). This flag is completely independent from bit 0.
+/// If bit 2 is set, the chunk is made entirely out of solid blocks (although they might
+/// be different types of solid blocks). This flag is completely independent from bit 0, although it
 /// is mutually exclusive with bit 1.
 ///
 /// Note that flags 1 and 2 are not hints. If they are set, the chunk **must** be made out of
-/// entirely solid or nonsolid blocks, otherwise it is a logic error.
+/// entirely solid or clear blocks, otherwise it is a logic error.
 #[repr(transparent)]
 pub struct ChunkBox {
     ptr: NonNull<ChunkData>,
@@ -174,8 +183,8 @@ impl fmt::Debug for ChunkBox {
         if self.is_solid() {
             write!(f, "solid")?;
         }
-        if self.is_nonsolid() {
-            write!(f, "nonsolid")?;
+        if self.is_clear() {
+            write!(f, "clear")?;
         }
         if let Some(block) = self.homogeneous_block() {
             write!(f, ">::Homogeneous({:?})", block)
@@ -211,28 +220,6 @@ impl ChunkBox {
     #[inline]
     pub fn new_homogeneous(block: BlockData) -> Self {
         unsafe { Self::new_raw(((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS) }
-    }
-
-    /// Create a new chunk filled with the given solid block, without allocating any memory.
-    /// The chunk is marked as being entirely solid, which speeds up many algorithms considerably.
-    #[inline]
-    pub fn new_solid(block: BlockData) -> Self {
-        unsafe {
-            Self::new_raw(
-                ((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS | ChunkRef::FLAG_SOLID,
-            )
-        }
-    }
-
-    /// Create a new chunk filled with the given nonsolid block, without allocating any memory.
-    /// The chunk is marked as being entirely nonsolid, which speeds up many algorithms considerably.
-    #[inline]
-    pub fn new_nonsolid(block: BlockData) -> Self {
-        unsafe {
-            Self::new_raw(
-                ((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS | ChunkRef::FLAG_NONSOLID,
-            )
-        }
     }
 
     /// Create a new chunk box with unspecified but allocated contents.
@@ -297,21 +284,8 @@ impl ChunkBox {
     }
 
     /// Remove any memory associated with this box, and make all blocks homogeneous.
-    /// It is recommended to use `make_solid` instead.
     pub fn make_homogeneous(&mut self, block: BlockData) {
         self.take_blocks(Self::new_homogeneous(block));
-    }
-
-    /// Remove any memory associated with this box, and simply make all blocks solid.
-    #[inline]
-    pub fn make_solid(&mut self, block: BlockData) {
-        self.take_blocks(Self::new_solid(block));
-    }
-
-    /// Remove any memory associated with this box, and simply make all blocks empty.
-    #[inline]
-    pub fn make_nonsolid(&mut self, block: BlockData) {
-        self.take_blocks(Self::new_nonsolid(block));
     }
 
     /// Mark the chunk as solid.
@@ -323,25 +297,32 @@ impl ChunkBox {
         }
     }
 
-    /// Mark the chunk as nonsolid.
-    /// It is a logic error if the chunk is not actually solid!
+    /// Mark the chunk as clear.
+    /// It is a logic error if the chunk is not actually clear!
     #[inline]
-    pub fn mark_nonsolid(&mut self) {
+    pub fn mark_clear(&mut self) {
         unsafe {
-            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_NONSOLID));
+            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_CLEAR));
         }
     }
 
     /// If the chunk is homogeneous, mark the appropiate solidity (solid/nonsolid) tags.
     #[inline]
-    pub fn mark_solidity(&mut self, solid: &SolidTable) {
+    pub fn mark_solidity(&mut self, style: &StyleTable) {
         if let Some(block) = self.homogeneous_block() {
-            if block.is_solid(solid) {
+            if block.is_solid(style) {
                 self.mark_solid();
-            } else {
-                self.mark_nonsolid();
+            } else if block.is_clear(style) {
+                self.mark_clear();
             }
         }
+    }
+
+    /// After generating a chunk, apply final checkups to optimize everything.
+    pub fn consolidate(&mut self, style: &StyleTable) {
+        // Mark the solidity of the chunk
+        self.mark_solidity(style);
+        // TODO: Sort portals to optimize lookups
     }
 
     /// Check if all of the blocks are of the same type, and drop the data altogether and mark with
@@ -445,8 +426,17 @@ pub struct BlockData {
     pub data: u8,
 }
 impl BlockData {
-    pub fn is_solid(self, table: &SolidTable) -> bool {
+    #[inline]
+    pub fn is_clear(self, table: &StyleTable) -> bool {
+        table.is_clear(self)
+    }
+    #[inline]
+    pub fn is_solid(self, table: &StyleTable) -> bool {
         table.is_solid(self)
+    }
+    #[inline]
+    pub fn is_portal(self, table: &StyleTable) -> bool {
+        table.is_portal(self)
     }
 }
 
@@ -554,6 +544,36 @@ impl ChunkData {
         );
         self.portals[self.portal_count as usize] = portal;
         self.portal_count += 1;
+    }
+
+    /// Look through the portals in this chunk and find one at the given coordinates and
+    /// orientation.
+    #[inline]
+    pub fn sub_portal_at(&self, at: Int3, axis: usize) -> Option<&PortalData> {
+        for portal in self.portals() {
+            let mn = Int3::new([
+                portal.pos[0] as i32,
+                portal.pos[1] as i32,
+                portal.pos[2] as i32,
+            ]);
+            let mut mx = mn
+                + Int3::new([
+                    portal.size[0] as i32,
+                    portal.size[1] as i32,
+                    portal.size[2] as i32,
+                ]);
+            mx[axis] += 1;
+            if mn.x <= at.x
+                && at.x < mx.x
+                && mn.y <= at.y
+                && at.y < mx.y
+                && mn.z <= at.z
+                && at.z < mx.z
+            {
+                return Some(portal);
+            }
+        }
+        None
     }
 }
 
@@ -870,9 +890,9 @@ where
 
 #[derive(Default, Clone, Deserialize)]
 pub struct BlockTexture {
-    /// Whether the block is see-through and collidable or not.
-    #[serde(default = "default_true")]
-    pub solid: bool,
+    /// What are the physical and visual properties of the block.
+    #[serde(default)]
+    pub style: BlockStyle,
     /// Whether to set color at the vertices or per-block.
     /// If smooth, color is per-vertex, and therefore blocks represent a color gradient.
     #[serde(default = "default_true")]
@@ -891,6 +911,44 @@ pub struct BlockTexture {
 }
 impl BlockTexture {
     pub const NOISE_LEVELS: usize = 6;
+}
+
+#[derive(Copy, Clone, Deserialize, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BlockStyle {
+    Solid,
+    Clear,
+    Portal,
+    Custom,
+}
+impl Default for BlockStyle {
+    fn default() -> Self {
+        Self::Solid
+    }
+}
+impl BlockStyle {
+    #[inline]
+    pub fn from_raw(raw: u8) -> Self {
+        unsafe { mem::transmute::<u8, Self>(raw & 0b11) }
+    }
+
+    #[inline]
+    pub fn as_raw(self) -> u8 {
+        self as u8
+    }
+
+    #[inline]
+    pub fn is_clear(self) -> bool {
+        self == Self::Clear
+    }
+    #[inline]
+    pub fn is_solid(self) -> bool {
+        self == Self::Solid
+    }
+    #[inline]
+    pub fn is_portal(self) -> bool {
+        self == Self::Portal
+    }
 }
 
 pub struct BlockTextures {
@@ -930,25 +988,44 @@ impl Clone for BlockTextures {
     }
 }
 
-pub struct SolidTable {
-    words: [usize; 256 / Self::BITS],
+pub struct StyleTable {
+    words: [usize; Self::TOTAL_WORDS],
 }
-impl SolidTable {
+impl StyleTable {
     const BITS: usize = mem::size_of::<usize>() * 8;
+    const BITS_PER_BLOCK: usize = 2;
+    const BLOCKS_PER_WORD: usize = Self::BITS / Self::BITS_PER_BLOCK;
+    const TOTAL_WORDS: usize = 256 / Self::BLOCKS_PER_WORD;
 
     pub fn new(tex: &BlockTextures) -> Self {
-        let mut words = [0; 256 / Self::BITS];
+        let mut words = [0; Self::TOTAL_WORDS];
         for i in 0..256 {
             let texcell = &tex.blocks[i as usize];
             let tx = texcell.take();
-            words[i / Self::BITS] |= (tx.solid as usize) << (i % Self::BITS);
+            words[i / Self::BLOCKS_PER_WORD] |=
+                (tx.style as u8 as usize) << (i % Self::BLOCKS_PER_WORD * Self::BITS_PER_BLOCK);
             texcell.set(tx);
         }
         Self { words }
     }
 
     #[inline]
+    pub fn lookup(&self, id: BlockData) -> BlockStyle {
+        let raw = self.words[id.data as usize / Self::BLOCKS_PER_WORD]
+            >> (id.data as usize % Self::BLOCKS_PER_WORD * Self::BITS_PER_BLOCK);
+        BlockStyle::from_raw(raw as u8)
+    }
+
+    #[inline]
+    pub fn is_clear(&self, id: BlockData) -> bool {
+        self.lookup(id).is_clear()
+    }
+    #[inline]
     pub fn is_solid(&self, id: BlockData) -> bool {
-        (self.words[id.data as usize / Self::BITS] >> (id.data as usize % Self::BITS)) & 1 != 0
+        self.lookup(id).is_solid()
+    }
+    #[inline]
+    pub fn is_portal(&self, id: BlockData) -> bool {
+        self.lookup(id).is_portal()
     }
 }

@@ -266,8 +266,8 @@ struct Mesher {
     block_buf: Box<[BlockData]>,
     /// Store a buffer of noise to give blocks texture.
     noise_buf: Box<[f32]>,
-    /// Store which blocks are solid.
-    solid: SolidTable,
+    /// Store the nature of all blocks.
+    style: StyleTable,
     /// Store the instructions to generate the color for every block type.
     block_textures: [BlockTexture; 256],
     /// The offset of the front block buffer within `block_buf`.
@@ -295,7 +295,7 @@ impl Mesher {
             vert_cache: vec![(0, 0); Self::VERT_ROW * 2].into_boxed_slice(),
             block_buf: vec![BlockData { data: 0 }; Self::BLOCK_COUNT * 2].into_boxed_slice(),
             noise_buf: vec![0.; Self::NOISE_COUNT].into_boxed_slice(),
-            solid: SolidTable::new(&textures),
+            style: StyleTable::new(&textures),
             block_textures: {
                 let mut blocks: Uninit<[BlockTexture; 256]> = Uninit::uninit();
                 for (src, dst) in textures.blocks.iter().zip(0..256) {
@@ -458,8 +458,8 @@ impl Mesher {
             let mut lightness = 1.;
             {
                 let mut process = |idx| {
-                    lightness += LIGHT_TABLE[(self.front(idx).is_solid(&self.solid) as usize) << 1
-                        | self.back(idx).is_solid(&self.solid) as usize];
+                    lightness += LIGHT_TABLE[(self.front(idx).is_solid(&self.style) as usize) << 1
+                        | self.back(idx).is_solid(&self.style) as usize];
                 };
                 process(idx);
                 process(idx - Self::ADV_X);
@@ -500,7 +500,7 @@ impl Mesher {
         let mut front = Self::VERT_ROW;
         for y in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                if self.back(idx).is_solid(&self.solid) && !self.front(idx).is_solid(&self.solid) {
+                if self.back(idx).is_solid(&self.style) && !self.front(idx).is_solid(&self.style) {
                     //Place a face here
                     let pos = Int2::new([x, y]);
                     let id = self.back(idx).data;
@@ -543,7 +543,7 @@ impl Mesher {
         };
 
         // Special case empty chunks
-        if chunk_at([1, 1, 1].into()).is_nonsolid() {
+        if chunk_at([1, 1, 1].into()).is_clear() {
             //Empty chunks have no geometry
             return mem::take(&mut self.mesh);
         }
@@ -707,13 +707,13 @@ impl Mesher {
                     let det = pos.max(Int3::zero());
                     let axis0 = portal.get_axis();
                     //let mut x0 = Vec3::zero();
-                    let (axis1, axis2) = if chunk.sub_get(det).is_solid(&self.solid) {
-                        // Positive side of this portal is solid
+                    let (axis1, axis2) = if chunk.sub_get(det).is_portal(&self.style) {
+                        // Positive side of this portal is `portal`
                         // Portal faces negative side
                         //x0[axis0] = -1.;
                         ((axis0 + 2) % 3, (axis0 + 1) % 3)
                     } else {
-                        // Positive side of this portal is nonsolid
+                        // Positive side of this portal is not `portal`
                         // Portal faces positive side
                         //x0[axis0] = 1.;
                         ((axis0 + 1) % 3, (axis0 + 2) % 3)
