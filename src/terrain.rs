@@ -265,31 +265,51 @@ impl Terrain {
 
     /// Calculate the clipping planes of a framequad given by `fq`.
     /// The framequad must be properly behind the near clipping plane.
-    /// The framequad is given in NDC, while the clipping planes are given in world coordinates.
+    /// This function receives and outputs world coordinates.
+    /// If the framequad has strange coordinates that intersect the near plane, the 4 side clipping
+    /// planes may be disabled.
     pub fn calc_clip_planes(mvp: &Mat4, fq: &[Vec3; 4]) -> [Vec4; 5] {
         let inv_mvp = mvp.inversed();
-        let f000 = inv_mvp.transform_point3(fq[0]);
-        let f100 = inv_mvp.transform_point3(fq[1]);
-        let f110 = inv_mvp.transform_point3(fq[2]);
-        let f010 = inv_mvp.transform_point3(fq[3]);
-        let mut f101 = fq[1];
-        f101.z = 1.;
-        let f101 = inv_mvp.transform_point3(f101);
-        let mut f011 = fq[3];
-        f011.z = 1.;
-        let f011 = inv_mvp.transform_point3(f011);
+        let f000 = fq[0];
+        let f100 = fq[1];
+        let f110 = fq[2];
+        let f010 = fq[3];
+
+        let f100_clip = *mvp * f100.into_homogeneous_point();
+        let mut f101_ndc = f100_clip.normalized_homogeneous_point().truncated();
+        f101_ndc.z = 1.;
+        let f101 = inv_mvp.transform_point3(f101_ndc);
+
+        let f010_clip = *mvp * f010.into_homogeneous_point();
+        let mut f011_ndc = f010_clip.normalized_homogeneous_point().truncated();
+        f011_ndc.z = 1.;
+        let f011 = inv_mvp.transform_point3(f011_ndc);
 
         let calc_plane = |p: [Vec3; 3]| {
             let n = (p[1] - p[0]).cross(p[2] - p[0]).normalized();
             Vec4::new(n.x, n.y, n.z, -p[0].dot(n))
         };
-        [
-            calc_plane([f000, f010, f100]), // near plane
-            calc_plane([f000, f011, f010]), // left plane
-            calc_plane([f100, f110, f101]), // right plane
-            calc_plane([f000, f100, f101]), // bottom plane
-            calc_plane([f010, f011, f110]), // top plane
-        ]
+
+        if f100_clip.w > 0. && f010_clip.w > 0. {
+            [
+                calc_plane([f000, f010, f100]), // near plane
+                calc_plane([f000, f011, f010]), // left plane
+                calc_plane([f100, f110, f101]), // right plane
+                calc_plane([f000, f100, f101]), // bottom plane
+                calc_plane([f010, f011, f110]), // top plane
+            ]
+        } else {
+            // Some coordinates fall outside the proper range
+            // Give up on the 4 side clipping planes
+            let disabled = Vec4::new(0., 0., 0., 1.);
+            [
+                calc_plane([f000, f010, f100]), // near plane
+                disabled,
+                disabled,
+                disabled,
+                disabled,
+            ]
+        }
     }
 
     pub fn draw(
@@ -398,7 +418,7 @@ impl Terrain {
                     for clip_plane in &clip_planes {
                         if subfq_world
                             .iter()
-                            .all(|p| p.into_homogeneous_point().dot(*clip_plane) <= 0.)
+                            .all(|p| p.into_homogeneous_point().dot(*clip_plane) <= 0.01)
                         {
                             // Portal is outside the parent frame view frustum
                             continue 'portal;
@@ -410,31 +430,24 @@ impl Terrain {
                         mvp * subfq_world[2].into_homogeneous_point(),
                         mvp * subfq_world[3].into_homogeneous_point(),
                     ];
-                    let subfq = if subfq_clip.iter().all(|p| -p.w < p.z && p.z < p.w) {
-                        [
-                            subfq_clip[0].truncated() * subfq_clip[0].w.recip(),
-                            subfq_clip[1].truncated() * subfq_clip[1].w.recip(),
-                            subfq_clip[2].truncated() * subfq_clip[2].w.recip(),
-                            subfq_clip[3].truncated() * subfq_clip[3].w.recip(),
-                        ]
-                    } else {
-                        // Give up and simply use the entire screen as the clipping framequad
-                        // OPTIMIZE: Use a more accurate quad
-                        [
-                            Vec3::new(-1., -1., -1.),
-                            Vec3::new(1., -1., -1.),
-                            Vec3::new(1., 1., -1.),
-                            Vec3::new(-1., 1., -1.),
-                        ]
-                    };
-                    let xy = |v4: Vec3| Vec2::new(v4.x, v4.y);
-                    if (xy(subfq[1]) - xy(subfq[0]))
-                        .wedge(xy(subfq[3]) - xy(subfq[0]))
-                        .xy
-                        <= 0.
-                    {
-                        // Portal is backwards
-                        continue 'portal;
+                    //let proper = subfq_clip.iter().all(|p| -p.w < p.z && p.z < p.w);
+                    let proper = subfq_clip.iter().all(|p| p.w > 0.);
+                    if proper {
+                        let xy = |v4: Vec4| Vec2::new(v4.x, v4.y) * v4.w.recip();
+                        let subfq_2d = [
+                            xy(subfq_clip[0]),
+                            xy(subfq_clip[1]),
+                            xy(subfq_clip[2]),
+                            xy(subfq_clip[3]),
+                        ];
+                        if (subfq_2d[1] - subfq_2d[0])
+                            .wedge(subfq_2d[3] - subfq_2d[0])
+                            .xy
+                            <= 0.
+                        {
+                            // Portal is backwards
+                            continue 'portal;
+                        }
                     }
                     // Get the portal shape into a buffer
                     let mut mesh = portal.mesh.take();
@@ -462,6 +475,11 @@ impl Terrain {
                         &DrawParameters {
                             depth: glium::draw_parameters::Depth {
                                 test: glium::draw_parameters::DepthTest::IfLess,
+                                clamp: if proper {
+                                    glium::draw_parameters::DepthClamp::NoClamp
+                                } else {
+                                    glium::draw_parameters::DepthClamp::Clamp
+                                },
                                 // It's not necessary to write to the depth buffer, since the next
                                 // step will immediately reset the depth buffer to the maximum
                                 // value.
@@ -493,7 +511,7 @@ impl Terrain {
                         origin[1] + portal.jump[1],
                         origin[2] + portal.jump[2],
                     ];
-                    subdraw(&suborigin, &subfq, stencil + 1)?;
+                    subdraw(&suborigin, &subfq_world, stencil + 1)?;
                     // Step 3: Artificially replace the depth value for the portal shape.
                     // This allows the portal to occlude objects that are behind it and be occluded
                     // by objects in front.
@@ -513,6 +531,11 @@ impl Terrain {
                         &DrawParameters {
                             depth: glium::draw_parameters::Depth {
                                 test: glium::draw_parameters::DepthTest::Overwrite,
+                                clamp: if proper {
+                                    glium::draw_parameters::DepthClamp::NoClamp
+                                } else {
+                                    glium::draw_parameters::DepthClamp::Clamp
+                                },
                                 write: true,
                                 ..default()
                             },
@@ -841,126 +864,6 @@ impl Terrain {
         let warp = get_warp(&portalplanes, Int3::from_f64(pos)).to_f64();
         [pos[0] + warp[0], pos[1] + warp[1], pos[2] + warp[2]]
     }
-
-    /*
-    pub(crate) fn check_collisions(
-        from: [f64; 3],
-        mut delta: [f64; 3],
-        size: [f64; 3],
-        mut is_solid: impl FnMut(BlockPos, i32) -> bool,
-        raycast: bool,
-    ) -> [f64; 3] {
-        if delta == [0.; 3] {
-            return from;
-        }
-
-        let safe_gap = 1. / 128.;
-        /*let safe_ratio = 63. / 64.;
-        let size = [
-            size[0] * safe_ratio,
-            size[1] * safe_ratio,
-            size[2] * safe_ratio,
-        ];*/
-        let binary = [
-            (delta[0] > 0.) as i32,
-            (delta[1] > 0.) as i32,
-            (delta[2] > 0.) as i32,
-        ];
-        let dir = [
-            if delta[0] > 0. { 1. } else { -1. },
-            if delta[1] > 0. { 1. } else { -1. },
-            if delta[2] > 0. { 1. } else { -1. },
-        ];
-        let mut frontier = [
-            from[0] + size[0] * dir[0],
-            from[1] + size[1] * dir[1],
-            from[2] + size[2] * dir[2],
-        ];
-        let mut next_block = [
-            (frontier[0] * dir[0]).ceil() * dir[0],
-            (frontier[1] * dir[1]).ceil() * dir[1],
-            (frontier[2] * dir[2]).ceil() * dir[2],
-        ];
-        let mut limit = [
-            from[0] + size[0] * dir[0] + delta[0],
-            from[1] + size[1] * dir[1] + delta[1],
-            from[2] + size[2] * dir[2] + delta[2],
-        ];
-
-        while next_block
-            .iter()
-            .zip(&limit)
-            .zip(&dir)
-            .any(|((&next_block, &limit), &dir)| next_block * dir < limit * dir)
-        {
-            //Find closest axis
-            let mut closest_axis = 0;
-            let mut closest_dist = f64::INFINITY;
-            for axis in 0..3 {
-                if delta[axis] == 0. {
-                    continue;
-                }
-                let dist = (next_block[axis] - frontier[axis]) / delta[axis];
-                if dist < closest_dist {
-                    closest_axis = axis;
-                    closest_dist = dist;
-                }
-            }
-
-            //Advance on this axis
-            let mut min_block = BlockPos([0; 3]);
-            let mut max_block = BlockPos([0; 3]);
-            for axis in 0..3 {
-                if axis == closest_axis {
-                    min_block[axis] = next_block[axis] as i32 + (binary[axis] - 1);
-                    max_block[axis] = next_block[axis] as i32 + binary[axis];
-                    frontier[axis] = next_block[axis];
-                    next_block[axis] += dir[axis];
-                } else {
-                    frontier[axis] += closest_dist * delta[axis];
-                    min_block[axis] =
-                        (frontier[axis] - (2 * binary[axis]) as f64 * size[axis]).floor() as i32;
-                    max_block[axis] =
-                        (frontier[axis] + (2 - 2 * binary[axis]) as f64 * size[axis]).ceil() as i32;
-                }
-            }
-
-            //Check whether there is a collision
-            let mut collides = false;
-            'outer: for z in min_block[2]..max_block[2] {
-                for y in min_block[1]..max_block[1] {
-                    for x in min_block[0]..max_block[0] {
-                        if is_solid(BlockPos([x, y, z]), closest_axis as i32) {
-                            collides = true;
-                            break 'outer;
-                        }
-                    }
-                }
-            }
-
-            //If there is collision, start ignoring this axis
-            if collides {
-                if raycast {
-                    //Unless we're raycasting
-                    //In this case, abort immediately
-                    limit = frontier;
-                    break;
-                }
-                limit[closest_axis] = frontier[closest_axis] - safe_gap * dir[closest_axis];
-                delta[closest_axis] = 0.;
-                if delta == [0., 0., 0.] {
-                    break;
-                }
-            }
-        }
-
-        [
-            limit[0] - size[0] * dir[0],
-            limit[1] - size[1] * dir[1],
-            limit[2] - size[2] * dir[2],
-        ]
-    }
-    */
 }
 
 /// Keeps track of chunk meshes in an efficient grid structure.

@@ -169,7 +169,8 @@ function World:load_terrain()
     local worldgen = file:read('a')
     file:close()
     self.terrain = system.terrain(worldgen)
-    self.terrain:set_view_distance(32*12)
+    --self.terrain:set_view_distance(32*12)
+    self.terrain:set_view_distance(32*6)
 end
 
 local sky = {}
@@ -226,6 +227,11 @@ function World:subdraw()
         return
     end
     frame.portal_budget = frame.portal_budget - 1
+    
+    local x0, y0, z0 = lbuf:framequad(0)
+    local x1, y1, z1 = lbuf:framequad(1)
+    local x2, y2, z2 = lbuf:framequad(2)
+    local x3, y3, z3 = lbuf:framequad(3)
 
     --Draw skybox
     do
@@ -295,10 +301,6 @@ function World:subdraw()
 
     if false and depth ~= 0 then
         local buf = Mesh{}
-        local x0, y0, z0 = lbuf:framequad(0)
-        local x1, y1, z1 = lbuf:framequad(1)
-        local x2, y2, z2 = lbuf:framequad(2)
-        local x3, y3, z3 = lbuf:framequad(3)
         buf:add_quad(
             x0, y0, z0,
             x1, y1, z1,
@@ -306,12 +308,9 @@ function World:subdraw()
             x3, y3, z3,
             0, 0, 0, 1
         )
-        frame.mvp_hud:push()
-        frame.mvp_hud:identity()
-        self.shaders.basic:set_matrix('mvp', frame.mvp_hud)
-        frame.mvp_hud:pop()
+        self.shaders.basic:set_matrix('mvp', frame.mvp_world)
         frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
-        self.shaders.basic:set_vec4('tint', 1, 1, 1, 0.4)
+        self.shaders.basic:set_vec4('tint', 1, 1, 1, 0.5)
         self.shaders.basic:draw(buf:as_buffer(), frame.params_hud)
     end
 end
@@ -372,15 +371,6 @@ function World:draw()
         self.cam_effective_y = cam_y
         self.cam_effective_z = cam_z
 
-        -- Update initial drawing conditions
-        local lbuf = frame.locate_buf
-        lbuf:set_origin(cam_x, cam_y, cam_z)
-        lbuf:set_framequad(0, -1, -1, -1)
-        lbuf:set_framequad(1,  1, -1, -1)
-        lbuf:set_framequad(2,  1,  1, -1)
-        lbuf:set_framequad(3, -1,  1, -1)
-        lbuf:set_depth(0)
-
         --[[
         cam_yaw = math.atan(og_cam_x - cam_x, cam_z - og_cam_z)
         local len = ((og_cam_x - cam_x)^2 + (og_cam_z - cam_z)^2)^0.5
@@ -408,6 +398,19 @@ function World:draw()
         frame.mv_world:rotate_x(-cam_pitch)
         frame.mv_world:rotate_z(-cam_yaw)
         frame.mvp_world:mul_right(frame.mv_world)
+        
+
+        -- Update initial drawing conditions
+        local lbuf = frame.locate_buf
+        frame.mvp_world:push()
+        frame.mvp_world:invert()
+        lbuf:set_origin(cam_x, cam_y, cam_z)
+        lbuf:set_framequad(0, frame.mvp_world:transform_point(-1, -1, -1))
+        lbuf:set_framequad(1, frame.mvp_world:transform_point( 1, -1, -1))
+        lbuf:set_framequad(2, frame.mvp_world:transform_point( 1,  1, -1))
+        lbuf:set_framequad(3, frame.mvp_world:transform_point(-1,  1, -1))
+        lbuf:set_depth(0)
+        frame.mvp_world:pop()
     end
 
     --Update fog distance
