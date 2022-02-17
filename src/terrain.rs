@@ -258,6 +258,8 @@ pub(crate) struct Terrain {
     tmp_bufs: Vec<RefCell<DynBuffer3d>>,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
     tmp_seenbuf: RefCell<HashMap<ChunkPos, f32>>,
+    tmp_seenbuf_simple: RefCell<HashSet<Int4>>,
+    tmp_posbuf: RefCell<Vec<Int4>>,
     tmp_sortbuf: RefCell<Vec<(f32, Int4)>>,
 }
 impl Terrain {
@@ -278,6 +280,8 @@ impl Terrain {
             },
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
+            tmp_seenbuf_simple: default(),
+            tmp_posbuf: default(),
             tmp_sortbuf: default(),
             last_min_viewdist: 0.,
             view_radius: 0.,
@@ -1004,6 +1008,102 @@ impl Terrain {
             dim,
         };
         (mv, crashed)
+    }
+
+    /// When an entity or an object that is drawn in one piece is clipping a portal, it must be
+    /// rendered twice (or as many times as portals it clips).
+    ///
+    /// This function calculates exactly how many copies and what offset should be applied to each
+    /// copy (as well as in which dimension each copy ends up in).
+    pub(crate) fn get_draw_positions(
+        &self,
+        abspos: WorldPos,
+        size: [f64; 3],
+        mut out_f: impl FnMut(usize, Int4),
+    ) {
+        let mut seen = self.tmp_seenbuf_simple.borrow_mut();
+        let mut seen_up_to = 0;
+        let mut out = self.tmp_posbuf.borrow_mut();
+        out.clear();
+        out.push(Int4 {
+            coords: Int3::zero(),
+            dim: abspos.dim,
+        });
+        seen.clear();
+        let chunks = self.chunks.read();
+
+        while seen_up_to < out.len() {
+            let jump = out[seen_up_to];
+            out_f(seen_up_to, jump);
+            seen_up_to += 1;
+            let pos = [
+                abspos.coords[0] + jump.coords[0] as f64,
+                abspos.coords[1] + jump.coords[1] as f64,
+                abspos.coords[2] + jump.coords[2] as f64,
+            ];
+            // Minimum portal block coords (inclusive)
+            let mn = Int3::new([
+                (pos[0] - size[0]).ceil() as i32,
+                (pos[1] - size[1]).ceil() as i32,
+                (pos[2] - size[2]).ceil() as i32,
+            ]);
+            // Maximum portal block coords (inclusive)
+            let mx = Int3::new([
+                (pos[0] + size[0]).floor() as i32,
+                (pos[1] + size[1]).floor() as i32,
+                (pos[2] + size[2]).floor() as i32,
+            ]);
+            // Maxmin chunk coords (inclusive)
+            let bounds = [mn >> CHUNK_BITS, mx >> CHUNK_BITS];
+            for z in bounds[0].z..=bounds[1].z {
+                for y in bounds[0].y..=bounds[1].y {
+                    for x in bounds[0].x..=bounds[1].x {
+                        let chunk_pos = Int3::new([x, y, z]);
+                        let chunk = match chunks.chunk_at(ChunkPos {
+                            coords: chunk_pos,
+                            dim: jump.dim,
+                        }) {
+                            Some(cnk) => cnk,
+                            None => continue,
+                        };
+                        let chunk = match chunk.blocks() {
+                            Some(chunk) => chunk,
+                            None => continue,
+                        };
+                        for portal in chunk.portals() {
+                            let portal_mn = (chunk_pos << CHUNK_BITS)
+                                + [
+                                    portal.pos[0] as i32,
+                                    portal.pos[1] as i32,
+                                    portal.pos[2] as i32,
+                                ];
+                            let portal_mx = portal_mn
+                                + [
+                                    portal.size[0] as i32,
+                                    portal.size[1] as i32,
+                                    portal.size[2] as i32,
+                                ];
+                            if mn.x <= portal_mx.x
+                                && portal_mn.x <= mx.x
+                                && mn.y <= portal_mx.y
+                                && portal_mn.y <= mx.y
+                                && mn.z <= portal_mx.z
+                                && portal_mn.z <= mx.z
+                            {
+                                // Entity collides with this portal
+                                let subjump = Int4 {
+                                    coords: jump.coords + portal.jump,
+                                    dim: portal.dim,
+                                };
+                                if seen.insert(subjump) {
+                                    out.push(subjump);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

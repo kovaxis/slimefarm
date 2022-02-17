@@ -1,7 +1,4 @@
-use crate::{
-    lua::{LocateBuf, MatrixStack},
-    prelude::*,
-};
+use crate::{lua::{MatrixStack, CameraStack, CameraFrame}, prelude::*};
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
 
 #[derive(Clone)]
@@ -425,12 +422,8 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         }
                     }
 
-                    fn locate_buf(()) {
-                        LocateBuf {
-                            origin: WorldPos {coords: [0.; 3], dim: 0}.into(),
-                            framequad: [Vec3::zero().into(), Vec3::zero().into(), Vec3::zero().into(), Vec3::zero().into()],
-                            depth: 0.into(),
-                        }
+                    fn camera_stack(()) {
+                        CameraStack::new()
                     }
 
                     fn texture(path: String) {
@@ -486,6 +479,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                     fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {
                         let mut frame = state.frame.borrow_mut();
                         match &**buf.rc {
+                            AnyBuffer::BufEmpty => Ok(()),
                             AnyBuffer::Buf2d(buf) => {
                                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
                             },

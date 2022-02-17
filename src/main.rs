@@ -257,6 +257,7 @@ struct Buffer2d {
 }
 
 enum AnyBuffer {
+    BufEmpty,
     Buf2d(Buffer2d),
     Buf3d(Buffer3d),
 }

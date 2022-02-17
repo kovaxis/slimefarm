@@ -49,11 +49,12 @@ function World:new()
         mvp_hud = system.matrix(),
         hfov = 1,
         vfov = 1,
+        entcopy_buf = {},
+        cam_stack = gfx.camera_stack(),
         cam_yaw = 0,
         cam_pitch = 0,
         s = 0,
         dt = 0,
-        locate_buf = gfx.locate_buf(),
         portal_budget = 0,
     }
     self.frame.params_sky:set_depth('always_pass', true)
@@ -214,21 +215,13 @@ local entpos_buf = system.world_pos()
 local campos_buf = system.world_pos()
 function World:subdraw()
     local frame = self.frame
-    local lbuf = frame.locate_buf
-    lbuf:origin(campos_buf)
-    local depth = lbuf:depth()
-    if depth >= 4 then
-        return
-    end
-    if frame.portal_budget <= 0 then
-        return
-    end
-    frame.portal_budget = frame.portal_budget - 1
+    local cam = frame.cam_stack
+    local depth = cam:depth()
     
-    local x0, y0, z0 = lbuf:framequad(0)
-    local x1, y1, z1 = lbuf:framequad(1)
-    local x2, y2, z2 = lbuf:framequad(2)
-    local x3, y3, z3 = lbuf:framequad(3)
+    local x0, y0, z0 = cam:framequad(0)
+    local x1, y1, z1 = cam:framequad(1)
+    local x2, y2, z2 = cam:framequad(2)
+    local x3, y3, z3 = cam:framequad(3)
 
     --Draw skybox
     do
@@ -248,6 +241,15 @@ function World:subdraw()
         self.shaders.skybox:draw(sky.screen, frame.params_sky)
         frame.mv_world:pop()
     end
+    
+    --If this portal cannot be rendered, this is a good point to stop drawing
+    if depth >= 4 then
+        return
+    end
+    if frame.portal_budget <= 0 then
+        return
+    end
+    frame.portal_budget = frame.portal_budget - 1
 
     --Draw terrain
     do
@@ -262,7 +264,7 @@ function World:subdraw()
         --dx, dy, dz = 2^-0.5, 0, -2^-0.5
         do
             local c, m = clip_buf, frame.mvp_world
-            self.terrain:calc_clip_planes(m, lbuf, c)
+            cam:clip_planes(c)
             self.shaders.terrain:set_vec4('nclip', c[1], c[2], c[3], c[4])
             m:push()
             m:set_col(0, c[5], c[6], c[7], c[8])
@@ -281,21 +283,25 @@ function World:subdraw()
         self.shaders.terrain:set_vec3('diffuse', diffuse, diffuse, diffuse)
         self.shaders.terrain:set_vec3('specular', specular, specular, specular)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
-        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, lbuf, self.subdraw_bound)
+        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end
     
     --Draw entities
+    local entcopies = frame.entcopy_buf
     frame.params_world:set_stencil_ref(depth)
     for _, ent in ipairs(self.entities) do
         local movx, movy, movz = ent.mov_x, ent.mov_y, ent.mov_z
         entpos_buf:copy_from(ent.pos)
         entpos_buf:move_box(self.terrain, movx * frame.s, movy * frame.s, movz * frame.s, 0.1, 0.1, 0.1) -- TODO: Replace with a raycast
-        local dx, dy, dz, dw = entpos_buf:raw_difference(campos_buf)
-        if dw == 0 then
-            frame.mvp_world:push()
-            frame.mvp_world:translate(dx, dy, dz)
-            ent:draw(self)
-            frame.mvp_world:pop()
+        self.terrain:get_draw_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, cam, entcopies)
+        for i = 1, #entcopies, 3 do
+            local dx, dy, dz = entcopies[i], entcopies[i+1], entcopies[i+2]
+            if cam:can_view(dx, dy, dz, ent.draw_r) then
+                frame.mvp_world:push()
+                frame.mvp_world:translate(dx, dy, dz)
+                ent:draw(self)
+                frame.mvp_world:pop()
+            end
         end
     end
 
@@ -346,8 +352,7 @@ function World:draw()
     self.last_frame = now
 
     --Find out real camera location
-    -- TODO: Include camera offset into the `mvp` instead of the offset, so as to make fog be
-    -- centered around the player instead of around the camera.
+    --TODO: Maybe center fog around the player instead of the camera
     local cam_yaw, cam_pitch
     do
         local movx, movy, movz = self.cam_mov_x * frame.s, self.cam_mov_y * frame.s, self.cam_mov_z * frame.s
@@ -378,19 +383,9 @@ function World:draw()
         frame.mv_world:rotate_x(-cam_pitch)
         frame.mv_world:rotate_z(-cam_yaw)
         frame.mvp_world:mul_right(frame.mv_world)
-        
 
         -- Update initial drawing conditions
-        local lbuf = frame.locate_buf
-        frame.mvp_world:push()
-        frame.mvp_world:invert()
-        lbuf:set_origin(campos_buf)
-        lbuf:set_framequad(0, frame.mvp_world:transform_point(-1, -1, -1))
-        lbuf:set_framequad(1, frame.mvp_world:transform_point( 1, -1, -1))
-        lbuf:set_framequad(2, frame.mvp_world:transform_point( 1,  1, -1))
-        lbuf:set_framequad(3, frame.mvp_world:transform_point(-1,  1, -1))
-        lbuf:set_depth(0)
-        frame.mvp_world:pop()
+        frame.cam_stack:reset(campos_buf, frame.mvp_world)
     end
 
     --Update fog distance

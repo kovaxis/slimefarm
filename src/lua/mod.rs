@@ -139,10 +139,18 @@ lua_type! {MatrixStack,
 struct LuaWorldPos {
     pos: Cell<WorldPos>,
 }
+impl LuaWorldPos {
+    fn get(&self) -> WorldPos {
+        self.pos.get()
+    }
+    fn set(&self, pos: WorldPos) {
+        self.pos.set(pos);
+    }
+}
 lua_type! {LuaWorldPos,
     fn raw_difference(lua, this, other: LuaWorldPos) {
-        let lhs = this.pos.get();
-        let rhs = other.pos.get();
+        let lhs = this.get();
+        let rhs = other.get();
         (
             lhs.coords[0] - rhs.coords[0],
             lhs.coords[1] - rhs.coords[1],
@@ -152,12 +160,12 @@ lua_type! {LuaWorldPos,
     }
 
     mut fn copy_from(lua, this, other: LuaWorldPos) {
-        this.pos.set(other.pos.get());
+        this.pos.set(other.get());
     }
 
     mut fn r#move(lua, this, (terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
         let terrain = terrain.rc.borrow();
-        let mut pos = this.pos.get();
+        let mut pos = this.get();
         let (mv, crash) = if dx == 0. && dy == 0. {
             terrain.raycast_aligned(&mut pos, 2, dz)
         } else if dx == 0. && dz == 0. {
@@ -174,7 +182,7 @@ lua_type! {LuaWorldPos,
 
     mut fn move_box(lua, this, (terrain, dx, dy, dz, sx, sy, sz, slide): (TerrainRef, f64, f64, f64, f64, f64, f64, Option<bool>)) {
         let terrain = terrain.rc.borrow();
-        let mut pos = this.pos.get();
+        let mut pos = this.get();
         let (mv, crash) = terrain.boxcast(&mut pos, [dx, dy, dz], [sx, sy, sz], !slide.unwrap_or(false));
         this.pos.set(pos);
         (mv[0], mv[1], mv[2], crash[0], crash[1], crash[2])
@@ -205,24 +213,13 @@ lua_type! {TerrainRef,
         this.rc.borrow().last_min_viewdist
     }
 
-    fn calc_clip_planes(lua, this, (mvp, locate, out): (MatrixStack, LuaAnyUserData, LuaTable)) {
-        let mvp = &mvp.stack.borrow().1;
-        let locate = locate.borrow::<LocateBuf>()?;
-        let p = Terrain::calc_clip_planes(mvp, &locate.framequad());
-        for i in 0..5 {
-            for j in 0..4 {
-                out.raw_set(i*4+j+1, p[i][j])?;
-            }
-        }
-    }
-
     fn draw(lua, this, (
         shader,
         uniforms,
         offset_uniform,
         params,
         mvp,
-        locate_raw,
+        camstack_raw,
         subdraw_callback
     ): (
         ShaderRef,
@@ -235,27 +232,52 @@ lua_type! {TerrainRef,
     )) {
         let this = this.rc.borrow();
         let mvp = mvp.stack.borrow().1;
-        let locate = locate_raw.borrow::<LocateBuf>()?;
+        let camstack = camstack_raw.borrow::<CameraStack>()?;
         let subdraw = |origin: &WorldPos, framequad: &[Vec3; 4], depth: u8| -> Result<()> {
-            locate.origin.set(*origin);
-            for i in 0..4 {
-                locate.framequad[i].set(framequad[i]);
-            }
-            locate.depth.set(depth);
-            subdraw_callback.call(locate_raw.clone())?;
+            camstack.push(&mvp, *origin, *framequad);
+            ensure!(camstack.depth() == depth, "invalid CameraStack depth");
+            subdraw_callback.call(camstack_raw.clone())?;
+            camstack.pop();
             Ok(())
         };
         this.draw(
             &shader.program,
             uniforms,
             offset_uniform,
-            locate.origin(),
+            camstack.origin(),
             &params.params,
             mvp,
-            locate.framequad(),
-            locate.depth(),
+            camstack.framequad(),
+            camstack.depth(),
             &subdraw,
         ).to_lua_err()?;
+    }
+
+    fn get_draw_positions(lua, this, (entpos, sx, sy, sz, camstack, out): (LuaWorldPos, f64, f64, f64, LuaAnyUserData, LuaTable)) {
+        let this = this.rc.borrow();
+        let entpos = entpos.get();
+        let camstack = camstack.borrow::<CameraStack>()?;
+        let origin = camstack.origin();
+
+        let mut idx: usize = 0;
+        this.get_draw_positions(entpos, [sx, sy, sz], |_, jump| {
+            if origin.dim == jump.dim {
+                let pos = [
+                    entpos.coords[0] + jump.coords[0] as f64 - origin.coords[0],
+                    entpos.coords[1] + jump.coords[1] as f64 - origin.coords[1],
+                    entpos.coords[2] + jump.coords[2] as f64 - origin.coords[2],
+                ];
+                idx += 1;
+                let _ = out.raw_set(idx, pos[0]);
+                idx += 1;
+                let _ = out.raw_set(idx, pos[1]);
+                idx += 1;
+                let _ = out.raw_set(idx, pos[2]);
+            }
+        });
+        for i in idx + 1 ..= out.raw_len() as usize {
+            out.raw_set(i, LuaValue::Nil)?;
+        }
     }
 
     fn chunk_gen_time(lua, this, ()) {
@@ -269,64 +291,125 @@ lua_type! {TerrainRef,
     }
 }
 
-struct LocateBuf {
+// TODO: Include portal/screen buffer to offload portal drawing to lua
+struct CameraFrame {
     /// Where should the graphics-world-coordinates origin be, in absolute world coordinates.
-    origin: Cell<WorldPos>,
-    /// A quad that contains all that is being currently rendered to the screen, in normalized
-    /// device coordinates (NDC).
-    framequad: [Cell<Vec3>; 4],
-    /// How deep in the portal chain are we.
-    /// 0 = real world
-    /// 1 = seen through a single portal
-    /// 2 = seen through a portal within a portal
-    /// ...
-    depth: Cell<u8>,
+    origin: WorldPos,
+    /// A quad that contains all that is being currently rendered to the screen, in relative world
+    /// coordinates (ie. relative to `origin`).
+    framequad: [Vec3; 4],
+    /// Clipping planes for the current framequad.
+    clip_planes: [Vec4; 5],
 }
-lua_type! {LocateBuf,
+impl CameraFrame {
+    fn new() -> Self {
+        Self {
+            origin: WorldPos {
+                coords: [0.; 3],
+                dim: 0,
+            },
+            framequad: default(),
+            clip_planes: default(),
+        }
+    }
+}
+
+/// A camera stack, representing portal cameras.
+struct CameraStack {
+    /// A stack of cameras.
+    stack: RefCell<Vec<CameraFrame>>,
+}
+impl CameraStack {
+    fn new() -> Self {
+        Self {
+            stack: vec![CameraFrame::new()].into(),
+        }
+    }
+
+    fn origin(&self) -> WorldPos {
+        self.stack.borrow().last().unwrap().origin
+    }
+
+    fn framequad(&self) -> [Vec3; 4] {
+        self.stack.borrow().last().unwrap().framequad
+    }
+
+    fn clip_planes(&self) -> [Vec4; 5] {
+        self.stack.borrow().last().unwrap().clip_planes
+    }
+
+    fn depth(&self) -> u8 {
+        (self.stack.borrow().len() - 1) as u8
+    }
+
+    fn push(&self, mvp: &Mat4, origin: WorldPos, fq: [Vec3; 4]) {
+        self.stack.borrow_mut().push(CameraFrame {
+            origin,
+            framequad: fq,
+            clip_planes: Terrain::calc_clip_planes(mvp, &fq),
+        });
+    }
+
+    fn pop(&self) {
+        self.stack.borrow_mut().pop();
+    }
+}
+lua_type! {CameraStack,
+    fn reset(lua, this, (origin, mvp): (LuaWorldPos, MatrixStack)) {
+        this.stack.borrow_mut().clear();
+        let mvp = mvp.stack.borrow().1;
+        let inv_mvp = mvp.inversed();
+        this.push(
+            &mvp,
+            origin.get(),
+            [
+                inv_mvp.transform_point3(Vec3::new(-1., -1., -1.)),
+                inv_mvp.transform_point3(Vec3::new(1., -1., -1.)),
+                inv_mvp.transform_point3(Vec3::new(1., 1., -1.)),
+                inv_mvp.transform_point3(Vec3::new(-1., 1., -1.)),
+            ],
+        );
+    }
+
     fn set_origin(lua, this, pos: LuaWorldPos) {
-        this.origin.set(pos.pos.get());
+        this.stack.borrow_mut().last_mut().unwrap().origin = pos.get();
     }
 
     fn set_framequad(lua, this, (i, x, y, z): (usize, f32, f32, f32)) {
-        match this.framequad.get(i) {
-            Some(v) => v.set(Vec3::new(x, y, z)),
+        match this.stack.borrow_mut().last_mut().unwrap().framequad.get_mut(i) {
+            Some(v) => *v = Vec3::new(x, y, z),
             None => lua_bail!("invalid framequad vertex index {}", i),
         }
     }
 
-    fn set_depth(lua, this, d: u8) {
-        this.depth.set(d);
-    }
-
     fn origin(lua, this, pos: LuaAnyUserData) {
         let pos = pos.borrow::<LuaWorldPos>()?;
-        pos.pos.set(this.origin());
+        pos.set(this.origin());
     }
 
     fn framequad(lua, this, i: usize) {
         lua_assert!(i < 4, "invalid framequad vertex index");
-        let v = this.framequad[i].get();
+        let v = this.framequad()[i];
         (v.x, v.y, v.z)
+    }
+
+    fn clip_planes(lua, this, out: LuaTable) {
+        let p = this.clip_planes();
+        for i in 0..5 {
+            for j in 0..4 {
+                out.raw_set(i*4+j+1, p[i][j])?;
+            }
+        }
+    }
+
+    fn can_view(lua, this, (x, y, z, r): (f32, f32, f32, f32)) {
+        let u = Vec4::new(x, y, z, 1.);
+        this.clip_planes().iter()
+            .all(|p| p.dot(u) >= -r)
     }
 
     fn depth(lua, this, ()) {
         this.depth()
-    }
-}
-impl LocateBuf {
-    fn origin(&self) -> WorldPos {
-        self.origin.get()
-    }
-    fn framequad(&self) -> [Vec3; 4] {
-        [
-            self.framequad[0].get(),
-            self.framequad[1].get(),
-            self.framequad[2].get(),
-            self.framequad[3].get(),
-        ]
-    }
-    fn depth(&self) -> u8 {
-        self.depth.get()
     }
 }
 

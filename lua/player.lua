@@ -71,6 +71,7 @@ function Player:new()
     self.idle_ticks = 0
     self.visual_lag_vel_z = 0
     self.visual_fall_time = 0
+    self.draw_r = 1.1 * math.sqrt(3)
 
     self.jumps_left = 0
     self.jump_was_down = false
