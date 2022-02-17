@@ -400,7 +400,6 @@ function World:draw()
             self.fog_poll_next = now + (self.fog_poll_interval - now % self.fog_poll_interval)
             --Poll fog
             local fog_now = self.terrain:visible_radius()
-            fog_now = 300 -- TODO: Fix
             self.fog_min_idx = self.fog_min_idx + 1
             self.fog_last_minimums[self.fog_min_idx] = fog_now
             self.fog_min_idx = self.fog_min_idx % #self.fog_last_minimums

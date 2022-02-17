@@ -189,48 +189,39 @@ fn try_mesh<'a>(
     })
 }
 
-#[derive(Copy, Clone)]
-pub enum RequestStatus {
-    Requested,
-    Working,
-}
-
 /// Organizes chunk requests between threads.
 /// Currently, coordinates:
 /// main thread -> chunk mesher
 /// main thread -> gen thread
 #[derive(Default)]
 pub struct RequestBuf {
-    map: HashMap<ChunkPos, RequestStatus>,
+    map: HashMap<ChunkPos, f32>,
 }
 impl RequestBuf {
     /// Request a chunk from the consumer thread.
-    pub fn mark(&mut self, pos: ChunkPos) {
-        self.map.entry(pos).or_insert(RequestStatus::Requested);
+    pub fn mark(&mut self, pos: ChunkPos, dist: f32) {
+        self.map.entry(pos).or_insert(dist);
     }
 
     /// Unmark all requested chunks that the mesher has not yet started working on.
     pub fn unmark_all(&mut self) {
-        self.map.retain(|_k, v| match v {
-            RequestStatus::Requested => false,
-            RequestStatus::Working => true,
-        });
+        self.map
+            .retain(|_k, v| v.to_bits() == f32::INFINITY.to_bits());
     }
 
     /// Collect requested chunks from the producer thread.
     pub fn collect(&mut self, buf: &mut Vec<ChunkPos>, maxn: usize) {
-        let n = maxn - buf.len();
+        buf.clear();
         buf.extend(
             self.map
                 .iter_mut()
-                .filter_map(|(k, v)| match v {
-                    RequestStatus::Requested => {
-                        *v = RequestStatus::Working;
-                        Some(*k)
-                    }
-                    RequestStatus::Working => None,
-                })
-                .take(n),
+                .filter(|(_p, d)| d.to_bits() != f32::INFINITY.to_bits())
+                .sorted_by(|a, b| Sortf32(*a.1).cmp(&Sortf32(*b.1)))
+                .take(maxn)
+                .map(|(pos, dist)| {
+                    *dist = f32::INFINITY;
+                    *pos
+                }),
         );
     }
 
@@ -243,11 +234,6 @@ impl RequestBuf {
         self.map.remove(&pos);
     }
 
-    /// Query the amount of marked chunks.
-    pub fn marked_count(&self) -> usize {
-        self.map.len()
-    }
-
     /// The ideal amount of marked chunks.
     /// This amount might adapt to the meshing speed.
     pub fn marked_goal(&self) -> usize {
@@ -257,20 +243,16 @@ impl RequestBuf {
 }
 
 fn run_mesher(mut state: MesherState) {
-    // The maximum amount of chunks to mesh in a single walk.
-    const MAX_MESH: i32 = 2;
-
     let mut last_stall_warning = Instant::now();
 
     let chunks_raw = state.chunks.take().unwrap();
-    const MESH_QUEUE: usize = 32;
+    const MESH_QUEUE: usize = 8;
     let mut mesh_queue = Vec::with_capacity(MESH_QUEUE);
     let mut fail_queue = Vec::with_capacity(MESH_QUEUE);
     let mut chunks_store = None;
     loop {
         // Get a list of candidate chunks from the main thread
         {
-            mesh_queue.clear();
             let mut request = match chunks_store {
                 Some(_) => match state.shared.request.try_lock() {
                     Some(req) => req,
@@ -281,24 +263,17 @@ fn run_mesher(mut state: MesherState) {
                 },
                 None => state.shared.request.lock(),
             };
-            request.collect(&mut mesh_queue, MESH_QUEUE);
             for pos in fail_queue.drain(..) {
                 request.remove(pos);
             }
-        }
-
-        // TODO: Fix input stalls
-        if mesh_queue.is_empty() {
-            println!("mesher has no input!");
+            request.collect(&mut mesh_queue, MESH_QUEUE);
         }
 
         // Check candidates
+        // It is important to drain the entire `mesh_queue`!
+        // If it is not done, at least push it back to `fail_queue`
         let mut meshed_count = 0;
         for pos in mesh_queue.drain(..) {
-            // Enforce maximum mesh count per run
-            if meshed_count >= MAX_MESH {
-                break;
-            }
             // Attempt to make this mesh
             let buf_pkg = match try_mesh(&mut state, pos, &chunks_raw, &mut chunks_store) {
                 Some(buf) => buf,
@@ -337,7 +312,7 @@ fn run_mesher(mut state: MesherState) {
                     }
                 }
             }
-            //Acquire chunk lock again if there are still potential chunks to mesh
+            //Count how many have we meshed
             meshed_count += 1;
         }
 

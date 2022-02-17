@@ -42,6 +42,7 @@ pub mod prelude {
         Display, DrawParameters, Frame, IndexBuffer, Program, Surface, Texture2d, VertexBuffer,
     };
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
+    pub use lazysort::{Sorted, SortedBy};
 
     pub type VertIdx = u32;
 

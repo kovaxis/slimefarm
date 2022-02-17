@@ -3,37 +3,16 @@ use std::f64::INFINITY;
 use crate::{chunkmesh::MesherHandle, gen::GenArea, prelude::*};
 use common::terrain::GridKeeper4;
 
-pub fn by_dist_up_to(radius: f32) -> impl FnMut(Vec3) -> Option<f32> {
-    let max_sq = radius * radius;
-    move |delta| {
-        let dist_sq = delta.mag_sq();
-        if dist_sq <= max_sq {
-            Some(dist_sq)
-        } else {
-            None
-        }
-    }
+#[derive(Default)]
+struct SphereBuf {
+    chunks: Vec<(Int3, f32)>,
+    range: f32,
 }
 
-pub fn gen_priorities(size: i32, mut cost: impl FnMut(Vec3) -> Option<f32>) -> Vec<i32> {
-    let mut chunks = Vec::<(Sortf32, u32, i32)>::with_capacity((size * size * size) as usize);
-    let mut rng = FastRng::seed_from_u64(0xadbcefabbd);
-    let mut idx = 0;
-    for z in 0..size {
-        for y in 0..size {
-            for x in 0..size {
-                let pos = Vec3::new(x as f32, y as f32, z as f32);
-                let center = (size / 2) as f32 - 0.5;
-                let delta = pos - Vec3::broadcast(center);
-                if let Some(cost) = cost(delta) {
-                    chunks.push((Sortf32(cost), rng.gen(), idx as i32));
-                }
-                idx += 1;
-            }
-        }
-    }
-    chunks.sort_unstable();
-    chunks.into_iter().map(|(_, _, idx)| idx).collect()
+#[derive(Default)]
+struct SphereBufs {
+    bufs: Vec<Cell<SphereBuf>>,
+    depth: usize,
 }
 
 pub struct ChunkStorage {
@@ -68,111 +47,169 @@ impl ChunkStorage {
             .and_then(|chunk| chunk.sub_portal_at(pos.coords.lowbits(CHUNK_BITS), axis))
     }
 
+    fn with_spherebuf<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut SphereBuf) -> R,
+    {
+        thread_local! {
+            static SPHERE_BUFS: RefCell<SphereBufs> = default();
+        }
+        SPHERE_BUFS.with(|bufs_cell| {
+            let mut bufs = bufs_cell.borrow_mut();
+            while bufs.bufs.len() <= bufs.depth {
+                bufs.bufs.push(default());
+            }
+            let mut buf = bufs.bufs[bufs.depth].take();
+            bufs.depth += 1;
+            drop(bufs);
+
+            let r = f(&mut buf);
+
+            let mut bufs = bufs_cell.borrow_mut();
+            bufs.depth -= 1;
+            bufs.bufs[bufs.depth].replace(buf);
+            r
+        })
+    }
+
+    fn get_sphere(sphere: &mut SphereBuf, radius: f32) {
+        if sphere.range >= radius {
+            return;
+        }
+        //Get up to the first chunk whose distance to the center is larger than `radius`
+        println!("generating spherebuf");
+        sphere.chunks.clear();
+        let r_chunk = radius * (CHUNK_SIZE as f32).recip();
+        let ir = r_chunk.ceil() as i32;
+        let r2 = (r_chunk * r_chunk).floor() as i32;
+        for z in -ir..=ir {
+            for y in -ir..=ir {
+                for x in -ir..=ir {
+                    let pos = Int3::new([x, y, z]);
+                    let d2 = pos.mag_sq();
+                    if d2 <= r2 {
+                        let dist = (d2 as f32).sqrt() * CHUNK_SIZE as f32;
+                        sphere.chunks.push((pos, dist));
+                    }
+                }
+            }
+        }
+        sphere.chunks.sort_by_key(|(_p, d)| Sortf32(*d));
+        sphere.range = radius;
+    }
+
     /// Iterate over all chunk positions within a certain radius, without portal hopping or any
     /// funny business.
     pub fn iter_nearby_raw<F>(center: [f64; 3], range: f32, mut f: F) -> Result<()>
     where
         F: FnMut(Int3) -> Result<()>,
     {
-        let center_block = Int3::from_f64(center);
-        let center_chunk = center_block >> CHUNK_BITS;
-        let mn = (center_block - Int3::splat(range.ceil() as i32)) >> CHUNK_BITS;
-        let mx = (center_block + Int3::splat(range.ceil() as i32)) >> CHUNK_BITS;
-        let range_chunk = range * (CHUNK_SIZE as f32).recip();
-        let range_chunk_sq = (range_chunk * range_chunk).ceil() as i32;
-        for z in mn.z..=mx.z {
-            for y in mn.y..=mx.y {
-                for x in mn.x..=mx.x {
-                    let chunk_pos = Int3::new([x, y, z]);
-                    let d = chunk_pos - center_chunk;
-                    if d.mag_sq() <= range_chunk_sq {
-                        f(chunk_pos)?;
-                    }
+        ChunkStorage::with_spherebuf(|sphere| {
+            ChunkStorage::get_sphere(sphere, range);
+            let center_chunk = Int3::from_f64(center) >> CHUNK_BITS;
+            for &(pos, dist) in sphere.chunks.iter() {
+                if dist > range {
+                    break;
                 }
+                let pos = center_chunk + pos;
+                f(pos)?;
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Iterate through all the chunks nearby to a certain position, including those that are nearby
     /// through portals.
-    /// Iterates over any given chunk at most once.
     /// Iterates over nonexisting chunk positions too.
     pub fn iter_nearby<F>(
         &self,
-        seenbuf: &mut HashSet<ChunkPos>,
+        seenbuf: &mut HashMap<ChunkPos, f32>,
         center: BlockPos,
         range: f32,
         f: F,
     ) -> Result<()>
     where
-        F: FnMut(ChunkPos, Option<ChunkRef>, (f32, i32)) -> Result<()>,
+        F: FnMut(ChunkPos, Option<ChunkRef>, f32) -> Result<()>,
     {
         struct State<'a, F> {
             chunks: &'a ChunkStorage,
-            seen: &'a mut HashSet<ChunkPos>,
+            sphere: &'a mut SphereBuf,
+            seen: &'a mut HashMap<ChunkPos, f32>,
             f: F,
         }
         fn explore<F>(s: &mut State<F>, center: BlockPos, range: f32, basedist: f32) -> Result<()>
         where
-            F: FnMut(ChunkPos, Option<ChunkRef>, (f32, i32)) -> Result<()>,
+            F: FnMut(ChunkPos, Option<ChunkRef>, f32) -> Result<()>,
         {
-            let mn = (center.coords - Int3::splat(range.ceil() as i32)) >> CHUNK_BITS;
-            let mx = (center.coords + Int3::splat(range.ceil() as i32)) >> CHUNK_BITS;
-            let center_dist = center.coords - Int3::splat(CHUNK_SIZE / 2);
-            let range_sq = (range * range).ceil() as i32;
-            for z in mn.z..=mx.z {
-                for y in mn.y..=mx.y {
-                    for x in mn.x..=mx.x {
-                        let chunk_pos = ChunkPos {
-                            coords: Int3::new([x, y, z]),
-                            dim: center.dim,
-                        };
-                        let pos_block = chunk_pos.coords << CHUNK_BITS;
-                        let d2 = (pos_block - center_dist).mag_sq();
-                        if d2 <= range_sq && s.seen.insert(chunk_pos) {
-                            let chunk = s.chunks.chunk_at(chunk_pos);
-                            (s.f)(chunk_pos, chunk, (basedist, d2))?;
-                            if let Some(data) = chunk.and_then(|c| c.blocks()) {
-                                for portal in data.portals() {
-                                    let portal_center = portal.get_center();
-                                    if !portal_center.is_within(Int3::splat(CHUNK_SIZE)) {
-                                        continue;
-                                    }
-                                    let portal_center = pos_block + portal_center;
-                                    let dist =
-                                        ((portal_center - center.coords).mag_sq() as f32).sqrt();
-                                    // TODO: Perhaps do something about large portals?
-                                    // Approximating a portal as a point at its center only works
-                                    // for smallish portals.
-                                    explore(
-                                        s,
-                                        BlockPos {
-                                            coords: portal_center + portal.jump,
-                                            dim: portal.dim,
-                                        },
-                                        range - dist,
-                                        basedist + dist,
-                                    )?;
-                                }
-                            }
+            use std::collections::hash_map::Entry;
+            let epsilon = 4.;
+            ChunkStorage::get_sphere(s.sphere, range);
+            let center_chunk = center.coords >> CHUNK_BITS;
+            let mut idx = 0;
+            while idx < s.sphere.chunks.len() {
+                let (pos, dist) = s.sphere.chunks[idx];
+                let pos = center_chunk + pos;
+                if dist > range {
+                    break;
+                }
+                idx += 1;
+
+                let chunk_pos = ChunkPos {
+                    coords: pos,
+                    dim: center.dim,
+                };
+                match s.seen.entry(chunk_pos) {
+                    Entry::Occupied(mut prevdist) => {
+                        if dist >= *prevdist.get() - epsilon {
+                            continue;
                         }
+                        prevdist.insert(dist);
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(dist);
+                    }
+                }
+                let chunk = s.chunks.chunk_at(chunk_pos);
+                (s.f)(chunk_pos, chunk, dist)?;
+                if let Some(data) = chunk.and_then(|c| c.blocks()) {
+                    for portal in data.portals() {
+                        let portal_center = portal.get_center();
+                        if !portal_center.is_within(Int3::splat(CHUNK_SIZE)) {
+                            continue;
+                        }
+                        let portal_center = (chunk_pos.coords << CHUNK_BITS) + portal_center;
+                        let pdist = ((portal_center - center.coords).mag_sq() as f32).sqrt();
+                        // TODO: Perhaps do something about large portals?
+                        // Approximating a portal as a point at its center only works
+                        // for smallish portals.
+                        explore(
+                            s,
+                            BlockPos {
+                                coords: portal_center + portal.jump,
+                                dim: portal.dim,
+                            },
+                            range - pdist,
+                            basedist + pdist,
+                        )?;
                     }
                 }
             }
             Ok(())
         }
-        seenbuf.clear();
-        explore(
-            &mut State {
-                chunks: self,
-                seen: seenbuf,
-                f,
-            },
-            center,
-            range,
-            0.,
-        )
+        Self::with_spherebuf(|sphere| {
+            seenbuf.clear();
+            explore(
+                &mut State {
+                    chunks: self,
+                    sphere,
+                    seen: seenbuf,
+                    f,
+                },
+                center,
+                range,
+                0.,
+            )
+        })
     }
 
     pub fn maybe_gc(&mut self) {
@@ -218,11 +255,10 @@ pub(crate) struct Terrain {
     pub view_radius: f32,
     pub gen_radius: f32,
     pub last_min_viewdist: f32,
-    last_mesh_range: f32,
-    last_mesh_finds: usize,
     tmp_bufs: Vec<RefCell<DynBuffer3d>>,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
-    tmp_seenbuf: RefCell<HashSet<ChunkPos>>,
+    tmp_seenbuf: RefCell<HashMap<ChunkPos, f32>>,
+    tmp_sortbuf: RefCell<Vec<(f32, Int4)>>,
 }
 impl Terrain {
     pub fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
@@ -242,9 +278,8 @@ impl Terrain {
             },
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
+            tmp_sortbuf: default(),
             last_min_viewdist: 0.,
-            last_mesh_range: 0.,
-            last_mesh_finds: 0,
             view_radius: 0.,
             gen_radius: 0.,
             generator: generator,
@@ -266,7 +301,6 @@ impl Terrain {
         //Lock communication buffer with chunk mesher
         let mut request = self.mesher.request().lock();
         //Receive buffers from mesher thread
-        let mut meshed_count = 0;
         for buf_pkg in self.mesher.recv_bufs.try_iter() {
             let mesh = ChunkMesh {
                 mesh: buf_pkg.mesh,
@@ -288,59 +322,51 @@ impl Terrain {
             };
             self.meshes.insert(buf_pkg.pos, mesh);
             request.remove(buf_pkg.pos);
-            meshed_count += 1;
         }
         //Request new meshes from mesher thread
+        // OPTIMIZE: Dedicate a thread to exploring chunks and determining which ones to mesh.
+        // This means sharing the mesh storage structure.
+        // This secondary thread could wait for a signal from the main thread that means "i'm not
+        // using the mesh storage"
         {
             request.unmark_all();
             let marked_goal = request.marked_goal();
 
-            let sphere_factor = 4. / 3. * f32::PI;
-            let last_range = self.last_mesh_range;
-            let mut last_volume = last_range * last_range * last_range * sphere_factor;
-            last_volume +=
-                (marked_goal as i32 - request.marked_count() as i32 - self.last_mesh_finds as i32
-                    + meshed_count) as f32
-                    * (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as f32;
-            self.last_mesh_range = (last_volume * sphere_factor.recip())
-                .cbrt()
-                .min(self.view_radius)
-                .max(0.);
+            let mut sortbuf = self.tmp_sortbuf.borrow_mut();
+            sortbuf.clear();
 
             let chunks = self.chunks.read();
-            let mut mesh_finds = 0;
-            let mut mindist = (self.last_mesh_range, 0., 0);
+            let mut visited = 0;
+            let mut mindist = self.view_radius;
             chunks
                 .iter_nearby(
                     &mut *self.tmp_seenbuf.borrow_mut(),
                     center,
-                    self.last_mesh_range,
-                    |pos, chunk, (df, d2)| {
+                    self.view_radius,
+                    |pos, chunk, dist| {
+                        visited += 1;
                         if self.meshes.get(pos).is_none() {
-                            if df == mindist.1 {
-                                if d2 < mindist.2 {
-                                    let dist = df + (d2 as f32).sqrt();
-                                    mindist = (dist, df, d2);
-                                }
-                            } else {
-                                let dist = df + (d2 as f32).sqrt();
-                                if dist < mindist.0 {
-                                    mindist = (dist, df, d2);
-                                }
+                            if dist < mindist {
+                                mindist = dist;
                             }
                             if chunk.is_some() {
-                                mesh_finds += 1;
-                                if request.marked_count() < marked_goal {
-                                    request.mark(pos);
-                                }
+                                sortbuf.push((dist, pos));
                             }
                         }
                         Ok(())
                     },
                 )
                 .unwrap();
-            self.last_min_viewdist = mindist.0;
-            self.last_mesh_finds = mesh_finds;
+
+            for &(dist, pos) in sortbuf
+                .iter()
+                .sorted_by(|a, b| Sortf32(a.0).cmp(&Sortf32(b.0)))
+                .take(marked_goal)
+            {
+                request.mark(pos, dist);
+            }
+
+            self.last_min_viewdist = (mindist - (CHUNK_SIZE / 2) as f32 * 3f32.sqrt()).max(0.);
         }
     }
 
@@ -411,35 +437,29 @@ impl Terrain {
     where
         F: FnMut(Int3) -> Result<()>,
     {
-        let center_block = Int3::from_f64(center);
-        let center_chunk = center_block >> CHUNK_BITS;
-        let center_chunk_f64 =
-            ((center_chunk << CHUNK_BITS) + Int3::splat(CHUNK_SIZE / 2)).to_f64();
-        let d_off = Vec3::from([
-            (center_chunk_f64[0] - center[0]) as f32,
-            (center_chunk_f64[1] - center[1]) as f32,
-            (center_chunk_f64[2] - center[2]) as f32,
-        ]);
-        let mn = (center_block - Int3::splat(range.ceil() as i32)) >> CHUNK_BITS;
-        let mx = (center_block + Int3::splat(range.ceil() as i32)) >> CHUNK_BITS;
-        let range_chunk = range * (CHUNK_SIZE as f32).recip();
-        let range_chunk_sq = (range_chunk * range_chunk).ceil() as i32;
-        for z in mn.z..=mx.z {
-            for y in mn.y..=mx.y {
-                for x in mn.x..=mx.x {
-                    let chunk_pos = Int3::new([x, y, z]);
-                    let d = chunk_pos - center_chunk;
-                    if d.mag_sq() <= range_chunk_sq {
-                        let dc = (d << CHUNK_BITS).to_f32() + d_off;
-                        if check_chunk_clip_planes(clip_planes, dc) {
-                            // Visible chunk!
-                            f(chunk_pos)?;
-                        }
-                    }
+        ChunkStorage::with_spherebuf(|sphere| {
+            ChunkStorage::get_sphere(sphere, range);
+            let center_chunk = Int3::from_f64(center) >> CHUNK_BITS;
+            let center_chunk_f64 =
+                ((center_chunk << CHUNK_BITS) + Int3::splat(CHUNK_SIZE / 2)).to_f64();
+            let d_off = Vec3::from([
+                (center_chunk_f64[0] - center[0]) as f32,
+                (center_chunk_f64[1] - center[1]) as f32,
+                (center_chunk_f64[2] - center[2]) as f32,
+            ]);
+            for &(dpos, dist) in sphere.chunks.iter() {
+                if dist > range {
+                    break;
+                }
+                let pos = center_chunk + dpos;
+                let fpos = (dpos << CHUNK_BITS).to_f32() + d_off;
+                if check_chunk_clip_planes(clip_planes, fpos) {
+                    // Visible chunk!
+                    f(pos)?;
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn draw(
@@ -675,54 +695,24 @@ impl Terrain {
 
     const SAFE_GAP: f64 = 1. / 128.;
 
-    /// Move an integer block coordinate by the given offset, crossing through portals but going
-    /// through solid blocks.
-    /// First moves on the X axis, then on the Y axis and then the Z axis.
-    /// The order could affect which portals are crossed!
-    pub(crate) fn offset_coords(&self, abspos: &mut BlockPos, delta: Int3) {
-        for i in 0..3 {
-            self.blockcast_ghost(abspos, i, delta[i]);
-        }
-    }
-
-    /// Move an integer block coordinate by the given amount of blocks in the given axis, crossing
-    /// through portals but going through blocks.
-    pub(crate) fn blockcast_ghost(&self, abspos: &mut BlockPos, axis: usize, delta: i32) {
-        let binary = (delta > 0) as i32;
-        let dir = if delta > 0 { 1 } else { -1 };
-        for _ in 0..delta * dir {
-            abspos.coords[axis] += dir;
-            if self
-                .block_at(*abspos)
-                .map(|b| b.is_portal(&self.style))
-                .unwrap_or(false)
-            {
-                let mut ppos = *abspos;
-                ppos.coords[axis] += 1 - binary;
-                if let Some(portal) = self.chunks.read().portal_at(ppos, axis) {
-                    abspos.coords += portal.jump;
-                    abspos.dim = portal.dim;
-                }
-            }
-        }
-    }
-
     /// Move an integer block coordinate by the given amount of blocks in the given axis, crossing
     /// through portals and stopping at the first solid block (returning the last clear block).
     pub(crate) fn blockcast(&self, abspos: &mut BlockPos, axis: usize, delta: i32) -> (i32, bool) {
         let binary = (delta > 0) as i32;
         let dir = if delta > 0 { 1 } else { -1 };
         let mut cur = *abspos;
-        let mut last;
+        let mut last = cur;
+        cur.coords[axis] += dir;
         for i in 0..delta * dir {
-            last = cur;
-            cur.coords[axis] += dir;
             match self
                 .block_at(cur)
                 .map(|b| self.style.lookup(b))
                 .unwrap_or(BlockStyle::Solid)
             {
-                BlockStyle::Clear => {}
+                BlockStyle::Clear => {
+                    last = cur;
+                    cur.coords[axis] += dir;
+                }
                 BlockStyle::Solid => {
                     *abspos = last;
                     return (i * dir, true);

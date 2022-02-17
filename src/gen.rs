@@ -1,9 +1,6 @@
 use std::num::NonZeroU32;
 
-use crate::{
-    prelude::*,
-    terrain::{by_dist_up_to, gen_priorities},
-};
+use crate::prelude::*;
 use common::{
     terrain::GridKeeper4,
     worldgen::{BlockIdAlloc, ChunkFiller, GenStore},
@@ -303,10 +300,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
     let gc_interval = Duration::from_millis(2435);
 
     let mut seenbuf = default();
-    let sphere_factor = 4. / 3. * f32::PI;
-    let mut last_range = 0.;
-    let mut last_findcount = 0;
-    let mut gencount = 0;
+    let mut gen_sortbuf = Vec::new();
 
     let provider = GenProvider::new(store);
     let mut gen_queue = Vec::with_capacity(GEN_QUEUE);
@@ -325,33 +319,31 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
         {
             let gen_area = gen.shared.gen_area.lock().clone();
             let chunks = gen.chunks.read();
-            let mut last_volume = last_range * last_range * last_range * sphere_factor;
-            last_volume += (GEN_QUEUE as i32 - last_findcount + gencount) as f32
-                * (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as f32;
-            last_range = (last_volume * sphere_factor.recip())
-                .cbrt()
-                .min(gen_area.gen_radius)
-                .max(0.);
-            gen_queue.clear();
-            last_findcount = 0;
+            gen_sortbuf.clear();
             chunks.iter_nearby(
                 &mut seenbuf,
                 gen_area.center,
-                last_range,
-                |pos, chunk, _| {
+                gen_area.gen_radius,
+                |pos, chunk, dist| {
                     if chunk.is_none() && !unsent.contains(&pos) {
-                        last_findcount += 1;
-                        if gen_queue.len() < GEN_QUEUE {
-                            gen_queue.push(pos);
-                        }
+                        gen_sortbuf.push((dist, pos));
                     }
                     Ok(())
                 },
             )?;
+            drop(chunks);
+            gen_queue.clear();
+            gen_queue.extend(
+                gen_sortbuf
+                    .iter()
+                    .sorted_by(|a, b| Sortf32(a.0).cmp(&Sortf32(b.0)))
+                    .take(GEN_QUEUE)
+                    .map(|(_dist, pos)| *pos),
+            );
         }
 
         //Generate chunks from the request queue
-        gencount = 0;
+        let mut gencount = 0;
         for pos in gen_queue.drain(..) {
             let gen_start = Instant::now();
 
