@@ -427,7 +427,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
 
                     fn locate_buf(()) {
                         LocateBuf {
-                            origin: [0.; 3].into(),
+                            origin: WorldPos {coords: [0.; 3], dim: 0}.into(),
                             framequad: [Vec3::zero().into(), Vec3::zero().into(), Vec3::zero().into(), Vec3::zero().into()],
                             depth: 0.into(),
                         }

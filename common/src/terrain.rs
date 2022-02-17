@@ -402,16 +402,50 @@ impl Clone for ChunkArc {
     }
 }
 
-pub type ChunkPos = Int3;
-#[allow(non_snake_case)]
-pub fn ChunkPos(x: [i32; 3]) -> ChunkPos {
-    Int3::new(x)
+/// An integer coordinate within the universe.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Int4 {
+    pub coords: Int3,
+    pub dim: u32,
+}
+impl Int4 {
+    pub fn block_to_chunk(&self) -> Int4 {
+        Int4 {
+            coords: self.coords >> CHUNK_BITS,
+            dim: self.dim,
+        }
+    }
+    pub fn chunk_to_block(&self) -> Int4 {
+        Int4 {
+            coords: self.coords << CHUNK_BITS,
+            dim: self.dim,
+        }
+    }
+
+    pub fn world_pos(&self) -> WorldPos {
+        WorldPos {
+            coords: self.coords.to_f64(),
+            dim: self.dim,
+        }
+    }
 }
 
-pub type BlockPos = Int3;
-#[allow(non_snake_case)]
-pub fn BlockPos(x: [i32; 3]) -> BlockPos {
-    Int3::new(x)
+pub type ChunkPos = Int4;
+pub type BlockPos = Int4;
+
+/// A floating-point valued coordinate within the universe.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct WorldPos {
+    pub coords: [f64; 3],
+    pub dim: u32,
+}
+impl WorldPos {
+    pub fn block_pos(&self) -> BlockPos {
+        BlockPos {
+            coords: Int3::from_f64(self.coords),
+            dim: self.dim,
+        }
+    }
 }
 
 /// Represents a single block id.
@@ -420,7 +454,7 @@ pub fn BlockPos(x: [i32; 3]) -> BlockPos {
 /// world.
 /// In the future, however, the byte might represent a different block depending on context (ie.
 /// position or dimension).
-/// Additionally, at some point block ids might become 2 bytes.
+/// Alternatively, at some point block ids might become 2 bytes.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BlockData {
     pub data: u8,
@@ -453,6 +487,8 @@ pub struct PortalData {
     /// Where does the portal teleport to, in coordinates relative to the portal.
     /// There should be an equal-size and reverse-jump portal at the destination.
     pub jump: [i32; 3],
+    /// The target dimension of the portal.
+    pub dim: u32,
 }
 impl PortalData {
     pub fn get_axis(&self) -> usize {
@@ -463,6 +499,15 @@ impl PortalData {
         } else {
             2
         }
+    }
+
+    pub fn get_center(&self) -> Int3 {
+        [
+            (self.pos[0] + (self.size[0] >> 1)) as i32,
+            (self.pos[1] + (self.size[1] >> 1)) as i32,
+            (self.pos[2] + (self.size[2] >> 1)) as i32,
+        ]
+        .into()
     }
 }
 
@@ -577,19 +622,120 @@ impl ChunkData {
     }
 }
 
+fn now_u32(epoch: &Instant) -> u32 {
+    epoch.elapsed().as_secs() as u32
+}
+
+pub struct GridKeeperSlot<T> {
+    last_use: std::sync::atomic::AtomicU32,
+    item: T,
+}
+impl<T> GridKeeperSlot<T> {
+    pub fn new(epoch: &Instant, t: T) -> Self {
+        Self {
+            last_use: now_u32(epoch).into(),
+            item: t,
+        }
+    }
+
+    pub fn touch(&self, epoch: &Instant) {
+        self.last_use
+            .store(now_u32(epoch), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+const KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
+
+pub struct GridKeeperN<K, T> {
+    map: HashMap<K, GridKeeperSlot<T>>,
+    epoch: Instant,
+    keepalive: u32,
+}
+impl<K, T> GridKeeperN<K, T>
+where
+    K: Hash + Eq,
+{
+    pub fn new() -> Self {
+        Self {
+            map: default(),
+            epoch: Instant::now(),
+            keepalive: KEEPALIVE_DURATION.as_secs() as u32,
+        }
+    }
+
+    pub fn get(&self, pos: K) -> Option<&T> {
+        self.map.get(&pos).map(|t| {
+            t.touch(&self.epoch);
+            &t.item
+        })
+    }
+
+    pub fn get_mut(&mut self, pos: K) -> Option<&mut T> {
+        let epoch = &self.epoch;
+        self.map.get_mut(&pos).map(|t| {
+            t.touch(epoch);
+            &mut t.item
+        })
+    }
+
+    pub fn insert(&mut self, pos: K, t: T) {
+        self.map.insert(pos, GridKeeperSlot::new(&self.epoch, t));
+    }
+
+    pub fn or_insert(&mut self, pos: K, f: impl FnOnce() -> T) -> &mut T {
+        use std::collections::hash_map::Entry;
+        match self.map.entry(pos) {
+            Entry::Occupied(entry) => {
+                let t = entry.into_mut();
+                t.touch(&self.epoch);
+                &mut t.item
+            }
+            Entry::Vacant(entry) => &mut entry.insert(GridKeeperSlot::new(&self.epoch, f())).item,
+        }
+    }
+
+    pub fn try_or_insert<E, F>(&mut self, pos: K, f: F) -> StdResult<&mut T, E>
+    where
+        F: FnOnce() -> StdResult<T, E>,
+    {
+        use std::collections::hash_map::Entry;
+        match self.map.entry(pos) {
+            Entry::Occupied(entry) => {
+                let t = entry.into_mut();
+                t.touch(&self.epoch);
+                Ok(&mut t.item)
+            }
+            Entry::Vacant(entry) => {
+                Ok(&mut entry.insert(GridKeeperSlot::new(&self.epoch, f()?)).item)
+            }
+        }
+    }
+
+    pub fn gc(&mut self) {
+        let cutoff = now_u32(&self.epoch).saturating_sub(self.keepalive);
+        self.map
+            .retain(|_k, t| t.last_use.load(std::sync::atomic::Ordering::Relaxed) >= cutoff)
+    }
+}
+
+pub type GridKeeper2<T> = GridKeeperN<Int2, T>;
+pub type GridKeeper3<T> = GridKeeperN<Int3, T>;
+pub type GridKeeper4<T> = GridKeeperN<Int4, T>;
+
+/*
 pub struct GridKeeper<T> {
-    corner_pos: ChunkPos,
+    corner_pos: Int3,
     size_log2: u32,
     origin_idx: i32,
     slots: Vec<T>,
 }
 impl<T: GridSlot> GridKeeper<T> {
-    pub fn with_radius(radius: f32, center: ChunkPos) -> Self {
+    pub fn with_radius(radius: f32, center: Int3) -> Self {
         let size = ((radius * 2.).max(2.) as u32).next_power_of_two().max(1) as i32;
         Self::new(size, center)
     }
 
-    pub fn new(size: i32, center: ChunkPos) -> Self {
+    pub fn new(size: i32, center: Int3) -> Self {
         //Make sure length is a power of two
         let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
         assert_eq!(
@@ -603,7 +749,7 @@ impl<T: GridSlot> GridKeeper<T> {
         slots.resize_with(total, T::new);
         //Group em up
         Self {
-            corner_pos: center - ChunkPos::splat(1 << (size_log2 - 1)),
+            corner_pos: center - Int3::splat(1 << (size_log2 - 1)),
             size_log2,
             origin_idx: 0,
             slots,
@@ -611,7 +757,7 @@ impl<T: GridSlot> GridKeeper<T> {
     }
 
     /// Will slide chunks and remove chunks that went over the border.
-    pub fn set_center(&mut self, new_center: ChunkPos) {
+    pub fn set_center(&mut self, new_center: Int3) {
         let new_corner = new_center + [-self.half_size(), -self.half_size(), -self.half_size()];
         let adj = new_corner - self.corner_pos;
         let clear_range =
@@ -664,7 +810,7 @@ impl<T: GridSlot> GridKeeper<T> {
 }
 impl<T> GridKeeper<T> {
     #[inline]
-    pub fn center(&self) -> ChunkPos {
+    pub fn center(&self) -> Int3 {
         self.corner_pos + [self.half_size(), self.half_size(), self.half_size()]
     }
 
@@ -689,7 +835,7 @@ impl<T> GridKeeper<T> {
     }
 
     #[inline]
-    pub fn get(&self, pos: ChunkPos) -> Option<&T> {
+    pub fn get(&self, pos: Int3) -> Option<&T> {
         let pos = pos - self.corner_pos;
         if pos.is_within(Int3::splat(self.size())) {
             Some(self.sub_get(pos))
@@ -698,7 +844,7 @@ impl<T> GridKeeper<T> {
         }
     }
     #[inline]
-    pub fn get_mut(&mut self, pos: ChunkPos) -> Option<&mut T> {
+    pub fn get_mut(&mut self, pos: Int3) -> Option<&mut T> {
         let pos = pos - self.corner_pos;
         if pos.is_within(Int3::splat(self.size())) {
             Some(self.sub_get_mut(pos))
@@ -733,7 +879,7 @@ impl<T> GridKeeper<T> {
     }
 
     #[inline]
-    pub fn sub_idx_to_pos(&self, idx: i32) -> ChunkPos {
+    pub fn sub_idx_to_pos(&self, idx: i32) -> Int3 {
         self.corner_pos + Int3::from_index([self.size_log2 as i32; 3].into(), idx as usize)
     }
 }
@@ -887,6 +1033,7 @@ where
         *self = T::default();
     }
 }
+*/
 
 #[derive(Default, Clone, Deserialize)]
 pub struct BlockTexture {

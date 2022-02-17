@@ -199,7 +199,7 @@
 //! - OPTIMIZE: For each chunk save a bit indicating whether the entire chunk is made out of the
 //!     same block. Do this recursively in an octree.
 
-use crate::{prelude::*, terrain::GridKeeper2d};
+use crate::{prelude::*, terrain::GridKeeper2};
 
 pub trait GenStore {
     fn register_raw(&self, name: &[u8], obj: [usize; 2], destroy: unsafe fn([usize; 2]));
@@ -279,17 +279,17 @@ impl OccupChunk {
 }
 
 pub struct OccupMap {
-    map: RefCell<GridKeeper2d<OccupChunk>>,
+    map: RefCell<GridKeeper2<OccupChunk>>,
 }
 impl OccupMap {
-    pub fn new(size: i32) -> Self {
+    pub fn new() -> Self {
         Self {
-            map: GridKeeper2d::new(size, Int2::zero()).into(),
+            map: GridKeeper2::new().into(),
         }
     }
 
-    pub fn set_center(&self, center: Int2) {
-        self.map.borrow_mut().set_center(center);
+    fn gc(&self) {
+        self.map.borrow_mut().gc();
     }
 
     /// Decompose an absolute block position into a `(chunk, subchunk_occup)` coordinate pair.

@@ -2,10 +2,10 @@ use std::num::NonZeroU32;
 
 use crate::{
     prelude::*,
-    terrain::{by_dist_up_to, gen_priorities, BookKeepHandle},
+    terrain::{by_dist_up_to, gen_priorities},
 };
 use common::{
-    terrain::{GridKeeper, GridSlot},
+    terrain::GridKeeper4,
     worldgen::{BlockIdAlloc, ChunkFiller, GenStore},
 };
 
@@ -13,8 +13,6 @@ const AVERAGE_WEIGHT: f32 = 0.005;
 
 pub struct GeneratorHandle {
     shared: Arc<GenSharedState>,
-    reshape_send: Sender<(i32, ChunkPos)>,
-    last_shape: Cell<(i32, ChunkPos)>,
     tex_recv: Receiver<BlockTextures>,
     thread: Option<JoinHandle<Result<()>>>,
 }
@@ -23,13 +21,19 @@ impl GeneratorHandle {
         cfg: &[u8],
         global: &Arc<GlobalState>,
         chunks: Arc<RwLock<ChunkStorage>>,
-        bookkeep: &BookKeepHandle,
     ) -> Result<Self> {
         let shared = Arc::new(GenSharedState {
+            gen_area: GenArea {
+                center: BlockPos {
+                    coords: [0; 3].into(),
+                    dim: 0,
+                },
+                gen_radius: 0.,
+            }
+            .into(),
             close: false.into(),
             avg_gen_time: 0f32.into(),
         });
-        let (reshape_send, reshape_recv) = channel::bounded(64);
         let (tex_send, tex_recv) = channel::bounded(0);
         let cfg = cfg.to_vec();
         //let (colorizer_send, colorizer_recv) = channel::bounded(0);
@@ -37,16 +41,13 @@ impl GeneratorHandle {
             let shared = shared.clone();
             let global = global.clone();
             let chunks = chunks.clone();
-            let generated_send = bookkeep.generated_send.clone();
             thread::Builder::new()
                 .name("worldgen".to_string())
                 .spawn(move || {
                     let state = GenState {
-                        _chunks: chunks,
+                        chunks,
                         shared,
                         global,
-                        reshape_recv,
-                        generated_send,
                     };
                     let res = gen_thread(state, tex_send, &cfg);
                     if let Err(err) = &res {
@@ -65,8 +66,6 @@ impl GeneratorHandle {
         };*/
         Ok(Self {
             shared,
-            reshape_send,
-            last_shape: (0, ChunkPos([0, 0, 0])).into(),
             tex_recv,
             thread: Some(join_handle),
         })
@@ -106,15 +105,12 @@ impl GeneratorHandle {
         }
     }
 
-    pub fn reshape(&self, size: i32, center: ChunkPos) {
-        if self.last_shape.get() != (size, center) {
-            self.last_shape.set((size, center));
-            let _ = self.reshape_send.send((size, center));
-        }
-    }
-
     pub fn take_block_textures(&self) -> Result<BlockTextures> {
         self.tex_recv.recv().context("block texture channel closed")
+    }
+
+    pub fn set_gen_area(&self, genarea: GenArea) {
+        *self.shared.gen_area.lock() = genarea;
     }
 }
 impl ops::Deref for GeneratorHandle {
@@ -131,19 +127,6 @@ impl Drop for GeneratorHandle {
             let _ = join.join().unwrap();
         }
     }
-}
-
-pub struct GenSharedState {
-    close: AtomicCell<bool>,
-    pub avg_gen_time: AtomicCell<f32>,
-}
-
-struct GenState {
-    shared: Arc<GenSharedState>,
-    global: Arc<GlobalState>,
-    _chunks: Arc<RwLock<ChunkStorage>>,
-    reshape_recv: Receiver<(i32, ChunkPos)>,
-    generated_send: Sender<(ChunkPos, ChunkArc)>,
 }
 
 #[derive(Default)]
@@ -244,33 +227,44 @@ impl BlockIdAlloc for BlockIdAllocConcrete {
 }
 
 struct GenProvider {
-    priority: Vec<i32>,
-    provided: GridKeeper<bool>,
-
-    center: ChunkPos,
-    // OPTIMIZE: Instead of an option, use a dummy void chunkfill as the default value.
     fill: &'static dyn ChunkFiller,
 }
 impl GenProvider {
     fn new(store: &'static dyn GenStore) -> GenProvider {
         GenProvider {
-            priority: vec![],
-            provided: GridKeeper::new(2, ChunkPos([0, 0, 0])),
-
-            center: ChunkPos([0, 0, 0]),
             fill: unsafe { store.lookup::<dyn ChunkFiller>("base.chunkfill") },
         }
     }
+}
 
-    fn reshape(&mut self, size: i32, center: ChunkPos) {
-        if self.provided.size() != size {
-            self.priority = gen_priorities(size, by_dist_up_to(size as f32));
-            self.provided = GridKeeper::new(size, center);
-        } else if self.center != center {
-            self.provided.set_center(center);
-        }
-        self.center = center;
+#[derive(Clone)]
+pub struct GenArea {
+    pub center: BlockPos,
+    pub gen_radius: f32,
+}
+
+pub struct GenSharedState {
+    gen_area: Mutex<GenArea>,
+    close: AtomicCell<bool>,
+    pub avg_gen_time: AtomicCell<f32>,
+}
+
+struct GenState {
+    shared: Arc<GenSharedState>,
+    global: Arc<GlobalState>,
+    chunks: Arc<RwLock<ChunkStorage>>,
+}
+
+fn empty_chunk_buf(
+    chunks: &mut ChunkStorage,
+    buf: &mut Vec<(ChunkPos, ChunkArc)>,
+    unsent: &mut HashSet<ChunkPos>,
+) {
+    for (pos, chunk) in buf.drain(..) {
+        unsent.remove(&pos);
+        chunks.insert(pos, chunk);
     }
+    chunks.maybe_gc();
 }
 
 fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Result<()> {
@@ -303,37 +297,78 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
         .send(tex)
         .map_err(|_| Error::msg("failed to send block textures"))?;
 
-    let mut provider = GenProvider::new(store);
+    const GEN_QUEUE: usize = 32;
+    const READY_QUEUE: usize = 64;
+    let mut last_gc = Instant::now();
+    let gc_interval = Duration::from_millis(2435);
+
+    let mut seenbuf = default();
+    let sphere_factor = 4. / 3. * f32::PI;
+    let mut last_range = 0.;
+    let mut last_findcount = 0;
+    let mut gencount = 0;
+
+    let provider = GenProvider::new(store);
+    let mut gen_queue = Vec::with_capacity(GEN_QUEUE);
+    let mut ready_buf = Vec::with_capacity(READY_QUEUE);
+    let mut unsent: HashSet<ChunkPos> = default();
     'outer: loop {
-        //Make sure provider structure has the right size
-        for (size, center) in gen.reshape_recv.try_iter() {
-            provider.reshape(size, center);
+        //Collect unused data every once in a while
+        if last_gc.elapsed() > gc_interval {
             unsafe {
-                store.trigger("base.recenter", &center);
+                store.trigger("base.gc", &());
             }
+            last_gc = Instant::now();
         }
-        //Find a suitable chunk and generate it
-        let mut priority_idx = 0;
-        let mut generated = 0;
-        let mut failed = 0;
-        while priority_idx < provider.priority.len() && generated < 4 && failed < 8 {
+
+        //Gather a set of chunks to generate by scanning available chunks
+        {
+            let gen_area = gen.shared.gen_area.lock().clone();
+            let chunks = gen.chunks.read();
+            let mut last_volume = last_range * last_range * last_range * sphere_factor;
+            last_volume += (GEN_QUEUE as i32 - last_findcount + gencount) as f32
+                * (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as f32;
+            last_range = (last_volume * sphere_factor.recip())
+                .cbrt()
+                .min(gen_area.gen_radius)
+                .max(0.);
+            gen_queue.clear();
+            last_findcount = 0;
+            chunks.iter_nearby(
+                &mut seenbuf,
+                gen_area.center,
+                last_range,
+                |pos, chunk, _| {
+                    if chunk.is_none() && !unsent.contains(&pos) {
+                        last_findcount += 1;
+                        if gen_queue.len() < GEN_QUEUE {
+                            gen_queue.push(pos);
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+
+        //Generate chunks from the request queue
+        gencount = 0;
+        for pos in gen_queue.drain(..) {
             let gen_start = Instant::now();
-            let idx = provider.priority[priority_idx];
-            priority_idx += 1;
-            let pos = provider.provided.sub_idx_to_pos(idx);
-            let provided = provider.provided.get_by_idx_mut(idx);
-            if *provided {
-                continue;
-            }
+
+            // Generate chunk from scratch
             let mut chunk = match provider.fill.fill(pos) {
                 Some(chunk) => chunk,
                 None => {
-                    failed += 1;
+                    println!("failed to generate chunk at {:?}", pos);
                     continue;
                 }
             };
             chunk.consolidate(&style);
             let chunk = ChunkArc::new(chunk);
+            unsent.insert(pos);
+            ready_buf.push((pos, chunk));
+            gencount += 1;
+
             //Keep chunkgen timing statistics
             {
                 //Dont care about data races here, after all it's just stats
@@ -343,36 +378,37 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
                 let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
                 gen.shared.avg_gen_time.store(new_time);
             }
-            //Send chunk back to main thread
-            *provided = true;
-            match gen.generated_send.try_send((pos, chunk)) {
-                Ok(()) => {}
-                Err(err) if err.is_full() => {
-                    let stall_start = Instant::now();
-                    if gen.generated_send.send(err.into_inner()).is_err() {
-                        break;
-                    }
-                    let now = Instant::now();
-                    if now - last_stall_warning > Duration::from_millis(1500) {
-                        last_stall_warning = now;
-                        eprintln!(
-                            "worldgen thread stalled for {}ms",
-                            (now - stall_start).as_millis()
-                        );
-                    }
-                }
-                Err(_) => {
-                    //Disconnected
-                    break;
-                }
+
+            //Send chunks back to main thread
+            if let Some(mut chunks) = gen.chunks.try_write() {
+                empty_chunk_buf(&mut chunks, &mut ready_buf, &mut unsent);
             }
-            generated += 1;
+
+            // Close quickly if requested
             if gen.shared.close.load() {
                 break 'outer;
             }
         }
+
+        //Try harder to send back chunks
+        if !ready_buf.is_empty() {
+            let stall_start = Instant::now();
+            let mut chunks = gen.chunks.write();
+            empty_chunk_buf(&mut chunks, &mut ready_buf, &mut unsent);
+            let now = Instant::now();
+            if now - stall_start > Duration::from_millis(50)
+                && now - last_stall_warning > Duration::from_millis(1500)
+            {
+                last_stall_warning = now;
+                eprintln!(
+                    "worldgen thread stalled for {}ms",
+                    (now - stall_start).as_millis()
+                );
+            }
+        }
+
         //Sleep if no chunks were found
-        if generated <= 0 {
+        if gencount <= 0 {
             thread::park_timeout(Duration::from_millis(50));
             if gen.shared.close.load() {
                 break 'outer;

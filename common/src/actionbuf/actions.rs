@@ -6,22 +6,30 @@ use crate::{
 pub struct Portal {
     pos: Int3,
     size: Int3,
-    jump: Int3,
+    jump: BlockPos,
 }
 impl Portal {
-    pub fn new(pos: Int3, size: Int3, target: Int3) -> ([Int3; 2], Box<dyn PaintAction>) {
-        (
-            [pos, pos + size],
-            Box::new(Self {
-                pos,
-                size,
-                jump: target - pos,
-            }),
-        )
+    pub fn new(pos: Int3, size: Int3, jump: BlockPos) -> ([Int3; 2], Box<dyn PaintAction>) {
+        ([pos, pos + size], Box::new(Self { pos, size, jump }))
     }
 
-    pub fn paint(buf: &mut ActionBuf, pos: Int3, size: Int3, target: Int3) {
-        buf.act(Self::new(pos, size, target));
+    pub fn paint_pair(buf: &mut ActionBuf, dim: u32, pos0: Int3, pos1: Int3, size: Int3) {
+        buf.act(Self::new(
+            pos0,
+            size,
+            BlockPos {
+                coords: pos1 - pos0,
+                dim,
+            },
+        ));
+        buf.act(Self::new(
+            pos1,
+            size,
+            BlockPos {
+                coords: pos0 - pos1,
+                dim,
+            },
+        ));
     }
 }
 impl PaintAction for Portal {
@@ -31,7 +39,8 @@ impl PaintAction for Portal {
         chunk.push_portal(PortalData {
             pos: [pos.x as i16, pos.y as i16, pos.z as i16],
             size: [self.size.x as i16, self.size.y as i16, self.size.z as i16],
-            jump: self.jump.into(),
+            jump: self.jump.coords.into(),
+            dim: self.jump.dim,
         });
     }
 }

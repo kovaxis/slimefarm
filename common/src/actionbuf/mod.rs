@@ -6,15 +6,15 @@ pub trait PaintAction {
     /// coordinates.
     /// The bounding box given is in action-local coordinates, and is within the chunk, otherwise
     /// `apply` will not be called.
-    fn apply(&self, pos: BlockPos, bbox: [Int3; 2], chunk: &mut ChunkBox);
+    fn apply(&self, pos: Int3, bbox: [Int3; 2], chunk: &mut ChunkBox);
 }
 
 pub struct ActionBuf {
-    origin: BlockPos,
+    origin: Int3,
     actions: Vec<([Int3; 2], Box<dyn PaintAction>)>,
 }
 impl ActionBuf {
-    pub fn new(origin: BlockPos) -> Self {
+    pub fn new(origin: Int3) -> Self {
         Self {
             origin,
             actions: vec![],
@@ -25,7 +25,7 @@ impl ActionBuf {
         self.actions.push(action);
     }
 
-    pub fn transfer(&self, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
+    pub fn transfer(&self, chunkpos: Int3, chunk: &mut ChunkBox) {
         let chunk_mn = (chunkpos << CHUNK_BITS) - self.origin;
         let chunk_mx = chunk_mn + [CHUNK_SIZE; 3];
         for &([mn, mx], ref action) in &self.actions {

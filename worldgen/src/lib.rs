@@ -12,7 +12,7 @@ mod prelude {
         noise3d::{Noise3d, NoiseScaler3d},
         prelude::*,
         spread2d::Spread2d,
-        terrain::{GridKeeper, GridKeeper2d, PortalData},
+        terrain::{GridKeeper2, GridKeeper3, PortalData},
         worldgen::BlockIdAlloc,
         worldgen::{ChunkFiller, GenStore},
     };
@@ -56,8 +56,7 @@ where
 
 trait Generator {
     fn fill(&mut self, _pos: ChunkPos) -> Option<ChunkBox>;
-
-    fn recenter(&mut self, _center: ChunkPos) {}
+    fn gc(&mut self);
 }
 
 fn register_gen<G>(store: &'static dyn GenStore, gen: G)
@@ -79,8 +78,8 @@ where
         store.register("base.chunkfill", Box::new(w) as Box<dyn ChunkFiller>);
     }
     unsafe {
-        store.listen("base.recenter", move |center: &ChunkPos| {
-            w.0.borrow_mut().recenter(*center);
+        store.listen("base.gc", move |_: &()| {
+            w.0.borrow_mut().gc();
         });
     }
 }
@@ -98,7 +97,6 @@ fn lookup_block(store: &'static dyn GenStore, name: &str) -> BlockData {
 #[derive(Deserialize)]
 struct Config {
     seed: u64,
-    gen_radius: f32,
     kind: GenKind,
     air_tex: BlockTexture,
     void_tex: BlockTexture,
@@ -148,14 +146,18 @@ fn parkour(store: &'static dyn GenStore, cfg: Config, k: Parkour) {
         );
         // */
         //*
-        noise_scaler.fill(&noise_gen, (pos << CHUNK_BITS).to_f64(), CHUNK_SIZE as f64);
+        noise_scaler.fill(
+            &noise_gen,
+            (pos.coords << CHUNK_BITS).to_f64(),
+            CHUNK_SIZE as f64,
+        );
         // */
         //Transform bulk noise into block ids
         let mut idx = 0;
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 for x in 0..CHUNK_SIZE {
-                    let real_z = pos[2] * CHUNK_SIZE + z;
+                    let real_z = pos.coords.z * CHUNK_SIZE + z;
                     //let noise = noise_buf[idx] - real_z as f32 * 0.04;
                     let noise = noise_scaler.get(Vec3::new(x as f32, y as f32, z as f32))
                         - real_z as f32 * k.z_offset;
@@ -245,8 +247,8 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         lua: Rc<Lua>,
         cfg: Config,
         k: Plains,
-        cols: GridKeeper2d<Option<(i16, i16, LoafBox<i16>)>>,
-        trees: GridKeeper2d<Option<ActionBuf>>,
+        cols: GridKeeper2<(i16, i16, LoafBox<i16>)>,
+        trees: GridKeeper2<ActionBuf>,
         noise2d: Noise2d,
         tree_spread: Spread2d,
         void: BlockData,
@@ -271,7 +273,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         fn gen_hmap(&mut self, pos: Int2) -> Option<&(i16, i16, LoafBox<i16>)> {
             let k = &self.k;
             let noise2d = &self.noise2d;
-            Some(self.cols.get_mut(pos)?.get_or_insert_with(|| {
+            Some(self.cols.or_insert(pos, || {
                 //Generate the height map for this column
                 let mut hmap: LoafBox<i16> = unsafe { common::arena::alloc().assume_init() };
                 let mut noise_buf = [0.; (CHUNK_SIZE * CHUNK_SIZE) as usize];
@@ -294,8 +296,8 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         }
 
         /// generate the base terrain of a given chunk.
-        fn gen_terrain(&mut self, pos: ChunkPos) -> Option<ChunkBox> {
-            let (col_min, col_max, col) = self.cols.get(pos.xy())?.as_ref()?;
+        fn gen_terrain(&mut self, pos: Int3) -> Option<ChunkBox> {
+            let (col_min, col_max, col) = self.cols.get(pos.xy())?;
             if pos[2] * CHUNK_SIZE >= *col_max as i32 {
                 //Chunk is high enough to be all-air
                 return Some(ChunkBox::new_homogeneous(self.air));
@@ -378,7 +380,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         /// (`TREESUBDIV` tree-units per chunk.)
         fn gen_tree(&mut self, tcoord: Int2) -> Option<()> {
             let k = &self.k.tree;
-            if self.trees.get(tcoord)?.is_some() {
+            if self.trees.get(tcoord).is_some() {
                 return Some(());
             }
             // generate a tree at this tree-grid position
@@ -415,13 +417,13 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                 eprintln!("error building tree: {}", e);
             }
 
-            self.trees.get_mut(tcoord)?.get_or_insert(bbuf);
+            self.trees.insert(tcoord, bbuf);
             Some(())
         }
 
         fn gen_portal(&mut self, tcoord: Int2) -> Option<()> {
             let k = &self.k.tree;
-            if self.trees.get(tcoord)?.is_some() {
+            if self.trees.get(tcoord).is_some() {
                 return Some(());
             }
 
@@ -456,12 +458,6 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     Vec3::new(6., 1., 14.),
                     self.portal,
                 );
-                actions::Portal::paint(
-                    &mut bbuf,
-                    [-3, 3, 1].into(),
-                    [6, 0, 14].into(),
-                    [-3, 16, -60].into(),
-                );
 
                 // Build inner cube
                 actions::Cube::paint(
@@ -482,20 +478,24 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     Vec3::new(6., 1., 14.),
                     self.portal,
                 );
-                actions::Portal::paint(
+
+                // Build portal between them
+                actions::Portal::paint_pair(
                     &mut bbuf,
+                    0, // TODO: Set up a dimension registry
+                    [-3, 3, 1].into(),
                     [-3, 16, -60].into(),
                     [6, 0, 14].into(),
-                    [-3, 3, 1].into(),
                 );
             }
 
-            self.trees.get_mut(tcoord)?.get_or_insert(bbuf);
+            self.trees.insert(tcoord, bbuf);
             Some(())
         }
     }
     impl Generator for PlainsGen {
         fn fill(&mut self, pos: ChunkPos) -> Option<ChunkBox> {
+            let pos = pos.coords;
             self.gen_hmap(pos.xy())?;
             let mut chunk = self.gen_terrain(pos)?;
 
@@ -509,7 +509,7 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
                     let tcoord = Int2::new([x, y]);
                     //self.gen_tree(tcoord)?;
                     self.gen_portal(tcoord)?;
-                    let treebuf = self.trees.get(tcoord)?.as_ref()?;
+                    let treebuf = self.trees.get(tcoord)?;
                     treebuf.transfer(pos, &mut chunk);
                 }
             }
@@ -533,10 +533,9 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
             Some(chunk)
         }
 
-        fn recenter(&mut self, center: ChunkPos) {
-            self.cols.set_center(center.xy());
-            self.trees
-                .set_center((center.xy() << CHUNK_BITS) / self.k.tree.spacing);
+        fn gc(&mut self) {
+            self.cols.gc();
+            self.trees.gc();
         }
     }
     let gen = PlainsGen {
@@ -547,8 +546,8 @@ fn plains(store: &'static dyn GenStore, cfg: Config, k: Plains) {
         wood: register_block(store, "base.wood", &k.tree.wood_tex),
         leaf: register_block(store, "base.leaf", &k.tree.leaf_tex),
         lua: get_lua(store),
-        cols: GridKeeper2d::with_radius(cfg.gen_radius / CHUNK_SIZE as f32, Int2::zero()),
-        trees: GridKeeper2d::with_radius(cfg.gen_radius / k.tree.spacing as f32, Int2::zero()),
+        cols: GridKeeper2::new(),
+        trees: GridKeeper2::new(),
         noise2d: Noise2d::new_octaves(cfg.seed, k.xy_scale, k.detail),
         tree_spread: Spread2d::new(cfg.seed),
         cfg,

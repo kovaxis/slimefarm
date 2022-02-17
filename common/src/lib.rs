@@ -11,8 +11,8 @@ pub mod prelude {
         slotmap::{SlotId, SlotMap},
         terrain::{
             BlockData, BlockPos, BlockStyle, BlockTexture, BlockTextures, ChunkArc, ChunkBox,
-            ChunkData, ChunkPos, ChunkRef, LoafBox, PortalData, StyleTable, CHUNK_BITS, CHUNK_MASK,
-            CHUNK_SIZE,
+            ChunkData, ChunkPos, ChunkRef, Int4, LoafBox, PortalData, StyleTable, WorldPos,
+            CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
         },
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
@@ -39,11 +39,13 @@ pub mod prelude {
         f64::consts as f64,
         fmt::{self, Write as _},
         fs::{self, File},
+        hash::Hash,
         marker::PhantomData,
         mem::{self, MaybeUninit as Uninit},
         ops,
         ptr::{self, NonNull},
         rc::Rc,
+        result::Result as StdResult,
         sync::Arc,
         thread::{self, JoinHandle},
         time::{Duration, Instant},

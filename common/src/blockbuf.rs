@@ -20,7 +20,7 @@ pub struct BlockBuf {
     size: Int3,
 }
 impl BlockBuf {
-    pub fn with_capacity(origin: BlockPos, fill: BlockData, corner: Int3, size: Int3) -> Self {
+    pub fn with_capacity(origin: Int3, fill: BlockData, corner: Int3, size: Int3) -> Self {
         let size_log2 = [
             (mem::size_of_val(&size.x) * 8) as i32 - (size.x - 1).leading_zeros() as i32,
             (mem::size_of_val(&size.y) * 8) as i32 - (size.y - 1).leading_zeros() as i32,
@@ -37,13 +37,13 @@ impl BlockBuf {
     }
 
     /// Creates a new block buffer with its origin at [0, 0, 0].
-    pub fn new(origin: BlockPos, fill: BlockData) -> Self {
+    pub fn new(origin: Int3, fill: BlockData) -> Self {
         Self::with_capacity(origin, fill, [-2, -2, -2].into(), [4, 4, 4].into())
     }
 
     /// Get the block data at the given position relative to the block buffer origin.
     /// If the position is out of bounds, return the filler block.
-    pub fn get(&self, pos: BlockPos) -> BlockData {
+    pub fn get(&self, pos: Int3) -> BlockData {
         let pos = pos - self.corner;
         if pos.is_within([1 << self.size[0], 1 << self.size[1], 1 << self.size[2]].into()) {
             self.blocks[pos.to_index(self.size)]
@@ -53,7 +53,7 @@ impl BlockBuf {
     }
 
     /// extend the inner box buffer so that the given block is covered by it.
-    pub fn reserve(&mut self, pos: BlockPos) {
+    pub fn reserve(&mut self, pos: Int3) {
         let mut pos = pos - self.corner;
         if !pos.is_within([1 << self.size[0], 1 << self.size[1], 1 << self.size[2]].into()) {
             // determine a new fitting bounding box
@@ -154,7 +154,7 @@ impl BlockBuf {
     /// Set the block data at the given position relative to the block buffer origin.
     /// If the position is out of bounds, allocates new blocks filled with the filler block and
     /// only then sets the given position.
-    pub fn set(&mut self, pos: BlockPos, block: BlockData) {
+    pub fn set(&mut self, pos: Int3, block: BlockData) {
         self.reserve(pos);
         let pos = pos - self.corner;
         self.blocks[pos.to_index(self.size)] = block;
@@ -163,7 +163,7 @@ impl BlockBuf {
     /// Copy the contents of the block buffer over to the given chunk.
     /// Locates the block buffer origin at the buffer origin position, and locates the chunk at the
     /// given chunk coordinates.
-    pub fn transfer(&self, chunkpos: ChunkPos, chunk: &mut ChunkBox) {
+    pub fn transfer(&self, chunkpos: Int3, chunk: &mut ChunkBox) {
         let chunkpos = chunkpos << CHUNK_BITS;
         // position of the buffer relative to the destination chunk
         let pos = self.origin + self.corner - chunkpos;

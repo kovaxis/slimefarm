@@ -125,7 +125,6 @@ function config()
             style = 'Portal',
         },
 
-        gen_radius = 512,
         seed = 123443,
     }
 end

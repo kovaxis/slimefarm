@@ -136,6 +136,52 @@ lua_type! {MatrixStack,
 }
 
 #[derive(Clone)]
+struct LuaWorldPos {
+    pos: Cell<WorldPos>,
+}
+lua_type! {LuaWorldPos,
+    fn raw_difference(lua, this, other: LuaWorldPos) {
+        let lhs = this.pos.get();
+        let rhs = other.pos.get();
+        (
+            lhs.coords[0] - rhs.coords[0],
+            lhs.coords[1] - rhs.coords[1],
+            lhs.coords[2] - rhs.coords[2],
+            lhs.dim.wrapping_sub(rhs.dim),
+        )
+    }
+
+    mut fn copy_from(lua, this, other: LuaWorldPos) {
+        this.pos.set(other.pos.get());
+    }
+
+    mut fn r#move(lua, this, (terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
+        let terrain = terrain.rc.borrow();
+        let mut pos = this.pos.get();
+        let (mv, crash) = if dx == 0. && dy == 0. {
+            terrain.raycast_aligned(&mut pos, 2, dz)
+        } else if dx == 0. && dz == 0. {
+            terrain.raycast_aligned(&mut pos, 1, dy)
+        } else if dy == 0. && dz == 0. {
+            terrain.raycast_aligned(&mut pos, 0, dx)
+        } else {
+            // TODO: Implement particle raycasting
+            todo!("unaligned particle raycasting is not implemented yet")
+        };
+        this.pos.set(pos);
+        (mv, crash)
+    }
+
+    mut fn move_box(lua, this, (terrain, dx, dy, dz, sx, sy, sz, slide): (TerrainRef, f64, f64, f64, f64, f64, f64, Option<bool>)) {
+        let terrain = terrain.rc.borrow();
+        let mut pos = this.pos.get();
+        let (mv, crash) = terrain.boxcast(&mut pos, [dx, dy, dz], [sx, sy, sz], !slide.unwrap_or(false));
+        this.pos.set(pos);
+        (mv[0], mv[1], mv[2], crash[0], crash[1], crash[2])
+    }
+}
+
+#[derive(Clone)]
 pub struct TerrainRef {
     rc: AssertSync<Rc<RefCell<Terrain>>>,
 }
@@ -147,41 +193,16 @@ impl TerrainRef {
     }
 }
 lua_type! {TerrainRef,
-    fn hint_center(lua, this, (x, y, z): (i32, i32, i32)) {
-        this.rc.borrow_mut().hint_center(BlockPos([x, y, z]));
+    fn bookkeep(lua, this, pos: LuaWorldPos) {
+        this.rc.borrow_mut().bookkeep(pos.pos.get().block_pos());
     }
 
-    fn set_view_distance(lua, this, dist: f32) {
-        this.rc.borrow_mut().set_view_radius(dist)
+    fn set_view_distance(lua, this, (view, gen): (f32, f32)) {
+        this.rc.borrow_mut().set_view_radius(view, gen)
     }
 
-    fn collide(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
-        let terrain = this.rc.borrow();
-        let [fx, fy, fz] = terrain.boxcast([x, y, z], [dx, dy, dz], [sx, sy, sz], false);
-        (fx, fy, fz)
-    }
-
-    fn raycast(lua, this, (x, y, z, dx, dy, dz, sx, sy, sz): (f64, f64, f64, f64, f64, f64, f64, f64, f64)) {
-        let terrain = this.rc.borrow();
-        let [fx, fy, fz] = terrain.boxcast([x, y, z], [dx, dy, dz], [sx, sy, sz], true);
-        (fx, fy, fz)
-    }
-
-    fn visible_radius(lua, this, (x, y, z): (f64, f64, f64)) {
-        let terrain = this.rc.borrow();
-        for &idx in terrain.meshes.render_order.iter() {
-            if terrain.meshes.get_by_idx(idx).mesh.is_none() {
-                // This mesh is not visible
-                let block = (terrain.meshes.sub_idx_to_pos(idx) << CHUNK_BITS) + Int3::splat(CHUNK_SIZE/2);
-                let dx = block[0] as f64 - x;
-                let dy = block[1] as f64 - y;
-                let dz = block[2] as f64 - z;
-                let delta = Vec3::new(dx as f32, dy as f32, dz as f32);
-                let radius = delta.mag() - (CHUNK_SIZE as f32 / 2.) * 3f32.cbrt();
-                return Ok(radius.max(0.));
-            }
-        }
-        terrain.meshes.radius * CHUNK_SIZE as f32
+    fn visible_radius(lua, this, ()) {
+        this.rc.borrow().last_min_viewdist
     }
 
     fn calc_clip_planes(lua, this, (mvp, locate, out): (MatrixStack, LuaAnyUserData, LuaTable)) {
@@ -215,7 +236,7 @@ lua_type! {TerrainRef,
         let this = this.rc.borrow();
         let mvp = mvp.stack.borrow().1;
         let locate = locate_raw.borrow::<LocateBuf>()?;
-        let subdraw = |origin: &[f64; 3], framequad: &[Vec3; 4], depth: u8| -> Result<()> {
+        let subdraw = |origin: &WorldPos, framequad: &[Vec3; 4], depth: u8| -> Result<()> {
             locate.origin.set(*origin);
             for i in 0..4 {
                 locate.framequad[i].set(framequad[i]);
@@ -250,7 +271,7 @@ lua_type! {TerrainRef,
 
 struct LocateBuf {
     /// Where should the graphics-world-coordinates origin be, in absolute world coordinates.
-    origin: Cell<[f64; 3]>,
+    origin: Cell<WorldPos>,
     /// A quad that contains all that is being currently rendered to the screen, in normalized
     /// device coordinates (NDC).
     framequad: [Cell<Vec3>; 4],
@@ -262,8 +283,8 @@ struct LocateBuf {
     depth: Cell<u8>,
 }
 lua_type! {LocateBuf,
-    fn set_origin(lua, this, (x, y, z): (f64, f64, f64)) {
-        this.origin.set([x, y, z]);
+    fn set_origin(lua, this, pos: LuaWorldPos) {
+        this.origin.set(pos.pos.get());
     }
 
     fn set_framequad(lua, this, (i, x, y, z): (usize, f32, f32, f32)) {
@@ -277,9 +298,9 @@ lua_type! {LocateBuf,
         this.depth.set(d);
     }
 
-    fn origin(lua, this, ()) {
-        let o = this.origin();
-        (o[0], o[1], o[2])
+    fn origin(lua, this, pos: LuaAnyUserData) {
+        let pos = pos.borrow::<LuaWorldPos>()?;
+        pos.pos.set(this.origin());
     }
 
     fn framequad(lua, this, i: usize) {
@@ -293,7 +314,7 @@ lua_type! {LocateBuf,
     }
 }
 impl LocateBuf {
-    fn origin(&self) -> [f64; 3] {
+    fn origin(&self) -> WorldPos {
         self.origin.get()
     }
     fn framequad(&self) -> [Vec3; 4] {
@@ -499,6 +520,19 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                         _ => return Err("expected string").to_lua_err()
                     };
                     TerrainRef::new(state, cfg).to_lua_err()?
+                }
+
+                fn world_pos((raw_x, raw_y, raw_z, raw_dim): (Option<f64>, Option<f64>, Option<f64>, Option<u32>)) {
+                    LuaWorldPos {
+                        pos: WorldPos {
+                            coords: [
+                                raw_x.unwrap_or(0.),
+                                raw_y.unwrap_or(0.),
+                                raw_z.unwrap_or(0.),
+                            ],
+                            dim: raw_dim.unwrap_or(0),
+                        }.into(),
+                    }
                 }
             },
         )

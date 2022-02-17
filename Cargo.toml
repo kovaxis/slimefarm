@@ -28,7 +28,7 @@ glium_text_rusttype = { path = "glium_text_rusttype" }
 rlua = "0.17"
 anyhow = "1"
 uv = { package = "ultraviolet", version = "0.8", features = ["serde"] }
-fxhash = "0.2"
+fxhash = "0.2" # TODO: Check if aHash would be more appropiate for hash tables
 rand = "0.8"
 rand_xoshiro = "0.6"
 crossbeam = "0.8"

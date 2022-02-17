@@ -7,10 +7,10 @@ local util = require 'util'
 local Player = class{}
 
 Player.mesh = Mesh{}
-Player.mesh:add_cube(   0,   0,   1,   1.2, 1.2, 1.2,      0, 0.31, 0.13,   1)
-Player.mesh:add_cube( 0.4,   1, 1.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
-Player.mesh:add_cube(-0.4,   1, 1.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
-Player.mesh:add_cube(   0,   0,   1,     2,   2,   2,      0, 0.63, 0.26, 0.4)
+Player.mesh:add_cube(   0,   0,   0,   1.2, 1.2, 1.2,      0, 0.31, 0.13,   1)
+Player.mesh:add_cube( 0.4,   1, 0.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
+Player.mesh:add_cube(-0.4,   1, 0.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
+Player.mesh:add_cube(   0,   0,   0,     2,   2,   2,      0, 0.63, 0.26, 0.4)
 Player.mesh_buf = Player.mesh:as_buffer()
 
 local bbox_h = 2
@@ -58,15 +58,13 @@ local function wasd_delta(yaw)
 end
 
 function Player:new()
-    assert(self.x)
-    assert(self.y)
-    assert(self.z)
+    assert(self.pos)
+    self.mov_x = 0
+    self.mov_y = 0
+    self.mov_z = 0
     self.vel_x = 0
     self.vel_y = 0
     self.vel_z = 0
-    self.prev_x = self.x
-    self.prev_y = self.y
-    self.prev_z = self.z
     self.on_ground = false
     self.visual_yaw = 0
     self.yaw = 0
@@ -88,11 +86,6 @@ function Player:new()
 end
 
 function Player:tick(world)
-    --Save previous position to interpolate smoothly
-    self.prev_x = self.x
-    self.prev_y = self.y
-    self.prev_z = self.z
-
     --Apply friction
     if self.on_ground then
         self.vel_x = 0
@@ -182,25 +175,18 @@ function Player:tick(world)
     do
         local radius_h = bbox_h / 2
         local radius_v = bbox_v / 2
-        local fx, fy, fz = world.terrain:collide(self.x, self.y, self.z+radius_v, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_v, radius_h)
-        self.on_ground = self.vel_z < 0 and fz > self.z + radius_v + self.vel_z + gravity / 2
-        self.x, self.y, self.z = fx, fy, fz-radius_v
+        local mov_x, mov_y, mov_z, cx, cy, cz = self.pos:move_box(world.terrain, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_h, radius_v, true)
+        self.on_ground = self.vel_z < 0 and cz
+        self.mov_x, self.mov_y, self.mov_z = mov_x, mov_y, mov_z
     end
 
     --Move camera to point at player
     do
         local focus_height = 3.2
         local focus_dist = 8
-        world.cam_prev_x, world.cam_prev_y, world.cam_prev_z = world.cam_x, world.cam_y, world.cam_z
         local cam_wall_dist = 0.4
-        world.cam_x, world.cam_y, world.cam_z = world.terrain:collide(self.x, self.y, self.z, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
-
-        world.cam_prev_x = self.prev_x
-        world.cam_prev_y = self.prev_y
-        world.cam_prev_z = self.prev_z + focus_height
-        world.cam_x = self.x
-        world.cam_y = self.y
-        world.cam_z = self.z + focus_height
+        world.cam_pos:copy_from(self.pos)
+        world.cam_mov_x, world.cam_mov_y, world.cam_mov_z = self.mov_x, self.mov_y, self.mov_z
         world.cam_rollback = focus_dist
     end
 end

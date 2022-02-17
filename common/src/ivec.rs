@@ -307,6 +307,11 @@ impl Int2 {
     pub fn with_z(self, z: i32) -> Int3 {
         Int3::new([self.x, self.y, z])
     }
+
+    #[inline]
+    pub fn mag_sq(self) -> i32 {
+        self.x * self.x + self.y * self.y
+    }
 }
 
 #[repr(C)]
@@ -650,5 +655,10 @@ impl Int3 {
     #[inline]
     pub fn xy(self) -> Int2 {
         Int2::new([self.x, self.y])
+    }
+
+    #[inline]
+    pub fn mag_sq(self) -> i32 {
+        self.x * self.x + self.y * self.y + self.z * self.z
     }
 }

@@ -49,9 +49,6 @@ function World:new()
         mvp_hud = system.matrix(),
         hfov = 1,
         vfov = 1,
-        cam_x = 0,
-        cam_y = 0,
-        cam_z = 0,
         cam_yaw = 0,
         cam_pitch = 0,
         s = 0,
@@ -72,12 +69,10 @@ function World:new()
         self:subdraw()
     end
 
-    self.cam_prev_x = 0
-    self.cam_prev_y = 0
-    self.cam_prev_z = 0
-    self.cam_x = 0
-    self.cam_y = 0
-    self.cam_z = 0
+    self.cam_pos = system.world_pos()
+    self.cam_mov_x = 0
+    self.cam_mov_y = 0
+    self.cam_mov_z = 0
     self.cam_rollback = 0
     self.cam_yaw = 0
     self.cam_pitch = 0
@@ -134,7 +129,7 @@ function World:tick()
 
     --Bookkeep terrain
     local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
-    self.terrain:hint_center(self.cam_x, self.cam_y, self.cam_z)
+    self.terrain:bookkeep(self.cam_pos)
 
     --Advance tick count
     self.tick_count = self.tick_count + 1
@@ -169,8 +164,8 @@ function World:load_terrain()
     local worldgen = file:read('a')
     file:close()
     self.terrain = system.terrain(worldgen)
-    --self.terrain:set_view_distance(32*12)
-    self.terrain:set_view_distance(32*6)
+    --self.terrain:set_view_distance(32*12, 32*14)
+    self.terrain:set_view_distance(32*6, 32*8)
 end
 
 local sky = {}
@@ -215,10 +210,12 @@ end
 
 -- Draw terrain within a frame or portal (the camera being a frame)
 local clip_buf = {}
+local entpos_buf = system.world_pos()
+local campos_buf = system.world_pos()
 function World:subdraw()
     local frame = self.frame
     local lbuf = frame.locate_buf
-    local cam_x, cam_y, cam_z = lbuf:origin()
+    lbuf:origin(campos_buf)
     local depth = lbuf:depth()
     if depth >= 4 then
         return
@@ -290,13 +287,16 @@ function World:subdraw()
     --Draw entities
     frame.params_world:set_stencil_ref(depth)
     for _, ent in ipairs(self.entities) do
-        local prevx, prevy, prevz = ent.prev_x - cam_x, ent.prev_y - cam_y, ent.prev_z - cam_z
-        local x, y, z = ent.x - cam_x, ent.y - cam_y, ent.z - cam_z
-        x, y, z = prevx + (x - prevx) * frame.s, prevy + (y - prevy) * frame.s, prevz + (z - prevz) * frame.s
-        frame.mvp_world:push()
-        frame.mvp_world:translate(x, y, z)
-        ent:draw(self)
-        frame.mvp_world:pop()
+        local movx, movy, movz = ent.mov_x, ent.mov_y, ent.mov_z
+        entpos_buf:copy_from(ent.pos)
+        entpos_buf:move_box(self.terrain, movx * frame.s, movy * frame.s, movz * frame.s, 0.1, 0.1, 0.1) -- TODO: Replace with a raycast
+        local dx, dy, dz, dw = entpos_buf:raw_difference(campos_buf)
+        if dw == 0 then
+            frame.mvp_world:push()
+            frame.mvp_world:translate(dx, dy, dz)
+            ent:draw(self)
+            frame.mvp_world:pop()
+        end
     end
 
     if false and depth ~= 0 then
@@ -315,6 +315,7 @@ function World:subdraw()
     end
 end
 
+local raw_origin = system.world_pos()
 function World:draw()
     local frame = self.frame
     local now = os.clock()
@@ -341,18 +342,17 @@ function World:draw()
 
     --Get interpolation factor `s`, a weight between the previous tick and the current one
     frame.dt = now - self.last_frame
-    frame.s = (now - self.next_tick) / self.tick_period + 1
+    frame.s = (now - self.next_tick) / self.tick_period
     self.last_frame = now
 
     --Find out real camera location
     -- TODO: Include camera offset into the `mvp` instead of the offset, so as to make fog be
     -- centered around the player instead of around the camera.
-    local cam_x, cam_y, cam_z
     local cam_yaw, cam_pitch
     do
-        local og_cam_x = self.cam_prev_x + (self.cam_x - self.cam_prev_x) * frame.s
-        local og_cam_y = self.cam_prev_y + (self.cam_y - self.cam_prev_y) * frame.s
-        local og_cam_z = self.cam_prev_z + (self.cam_z - self.cam_prev_z) * frame.s
+        local movx, movy, movz = self.cam_mov_x * frame.s, self.cam_mov_y * frame.s, self.cam_mov_z * frame.s
+        campos_buf:copy_from(self.cam_pos)
+        campos_buf:move_box(self.terrain, movx, movy, movz, 0.1, 0.1, 0.1) --TODO: Replace with a raycast
         cam_yaw = self.cam_yaw
         cam_pitch = self.cam_pitch
 
@@ -361,29 +361,9 @@ function World:draw()
         local dx = -math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dy = math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dz = math.sin(self.cam_pitch) * rollback
-        cam_x, cam_y, cam_z = self.terrain:raycast(og_cam_x, og_cam_y, og_cam_z, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
-        frame.cam_x = cam_x
-        frame.cam_y = cam_y
-        frame.cam_z = cam_z
+        campos_buf:move_box(self.terrain, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
         frame.cam_yaw = cam_yaw
         frame.cam_pitch = cam_pitch
-        self.cam_effective_x = cam_x
-        self.cam_effective_y = cam_y
-        self.cam_effective_z = cam_z
-
-        --[[
-        cam_yaw = math.atan(og_cam_x - cam_x, cam_z - og_cam_z)
-        local len = ((og_cam_x - cam_x)^2 + (og_cam_z - cam_z)^2)^0.5
-        cam_pitch = math.atan(og_cam_y - cam_y, len)
-
-        --Set camera back a bit
-        dx, dy, dz = cam_x - og_cam_x, cam_y - og_cam_y, cam_z - og_cam_z
-        len = (dx*dx + dy*dy + dz*dz)^0.5
-        local factor = (len - cam_wall_dist) / len
-        cam_x = og_cam_x + dx * factor
-        cam_y = og_cam_y + dy * factor
-        cam_z = og_cam_z + dz * factor
-        ]]
     end
 
     --Setup model-view-projection matrix for world drawing
@@ -404,7 +384,7 @@ function World:draw()
         local lbuf = frame.locate_buf
         frame.mvp_world:push()
         frame.mvp_world:invert()
-        lbuf:set_origin(cam_x, cam_y, cam_z)
+        lbuf:set_origin(campos_buf)
         lbuf:set_framequad(0, frame.mvp_world:transform_point(-1, -1, -1))
         lbuf:set_framequad(1, frame.mvp_world:transform_point( 1, -1, -1))
         lbuf:set_framequad(2, frame.mvp_world:transform_point( 1,  1, -1))
@@ -419,7 +399,8 @@ function World:draw()
         if now > self.fog_poll_next then
             self.fog_poll_next = now + (self.fog_poll_interval - now % self.fog_poll_interval)
             --Poll fog
-            local fog_now = self.terrain:visible_radius(cam_x, cam_y, cam_z)
+            local fog_now = self.terrain:visible_radius()
+            fog_now = 300 -- TODO: Fix
             self.fog_min_idx = self.fog_min_idx + 1
             self.fog_last_minimums[self.fog_min_idx] = fog_now
             self.fog_min_idx = self.fog_min_idx % #self.fog_last_minimums
@@ -461,7 +442,8 @@ function World:draw()
     frame.mvp_hud:translate(0, -1.25, 0)
     self.font:draw("upload: "..util.format_time(self.terrain:chunk_mesh_upload_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:translate(0, -1.25, 0)
-    self.font:draw("pos: "..math.floor(self.cam_x)..", "..math.floor(self.cam_y)..", "..math.floor(self.cam_z), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
+    self.font:draw("pos: "..math.floor(raw_x)..", "..math.floor(raw_y)..", "..math.floor(raw_z).." : "..math.floor(raw_w), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
 
     --Draw crosshair

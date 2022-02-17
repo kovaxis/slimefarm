@@ -1,5 +1,5 @@
 use crate::{prelude::*, terrain::PortalMesh};
-use common::terrain::GridKeeper;
+use common::terrain::GridKeeper4;
 
 pub(crate) struct BufPackage {
     pub pos: ChunkPos,
@@ -22,6 +22,7 @@ impl MesherHandle {
         textures: BlockTextures,
     ) -> Self {
         let shared = Arc::new(SharedState {
+            request: default(),
             close: false.into(),
             avg_mesh_time: 0f32.into(),
             avg_upload_time: 0f32.into(),
@@ -36,15 +37,13 @@ impl MesherHandle {
             thread::spawn(move || {
                 let gl_ctx =
                     Display::from_gl_window(gl_ctx).expect("failed to create headless gl context");
-                run_mesher(
-                    MesherState {
-                        shared,
-                        chunks,
-                        gl_ctx,
-                        send_bufs,
-                    },
-                    textures,
-                );
+                run_mesher(MesherState {
+                    shared,
+                    chunks: Some(chunks),
+                    gl_ctx,
+                    send_bufs,
+                    mesher: Box::new(Mesher::new(textures)),
+                });
             })
         };
         Self {
@@ -52,6 +51,10 @@ impl MesherHandle {
             recv_bufs,
             shared,
         }
+    }
+
+    pub(crate) fn request(&self) -> &Mutex<RequestBuf> {
+        &self.shared.request
     }
 }
 impl ops::Deref for MesherHandle {
@@ -72,6 +75,7 @@ impl Drop for MesherHandle {
 }
 
 pub struct SharedState {
+    request: Mutex<RequestBuf>,
     close: AtomicCell<bool>,
     pub avg_mesh_time: AtomicCell<f32>,
     pub avg_upload_time: AtomicCell<f32>,
@@ -79,168 +83,274 @@ pub struct SharedState {
 
 struct MesherState {
     shared: Arc<SharedState>,
-    chunks: Arc<RwLock<ChunkStorage>>,
+    chunks: Option<Arc<RwLock<ChunkStorage>>>,
     gl_ctx: Display,
+    mesher: Box<Mesher>,
     send_bufs: Sender<BufPackage>,
 }
 
-fn run_mesher(state: MesherState, textures: BlockTextures) {
+fn try_mesh<'a>(
+    state: &mut MesherState,
+    pos: ChunkPos,
+    chunks_raw: &'a RwLock<ChunkStorage>,
+    chunks_store: &mut Option<RwLockReadGuard<'a, ChunkStorage>>,
+) -> Option<BufPackage> {
+    let mesh_start = Instant::now();
+    let chunks = chunks_store.get_or_insert_with(|| chunks_raw.read());
+
+    //Gather all of the adjacent chunk neighbors
+    //TODO: Figure out occlusion with portals
+    macro_rules! build_neighbors {
+        (@$x:expr, $y:expr, $z:expr) => {{
+            let mut subpos = pos;
+            subpos.coords += [$x-1, $y-1, $z-1];
+            chunks.chunk_arc_at(subpos)?
+        }};
+        ($($x:tt, $y:tt, $z:tt;)*) => {{
+            [$(
+                build_neighbors!(@$x, $y, $z),
+            )*]
+        }};
+    }
+    let neighbors = build_neighbors![
+        0, 0, 0;
+        1, 0, 0;
+        2, 0, 0;
+        0, 1, 0;
+        1, 1, 0;
+        2, 1, 0;
+        0, 2, 0;
+        1, 2, 0;
+        2, 2, 0;
+
+        0, 0, 1;
+        1, 0, 1;
+        2, 0, 1;
+        0, 1, 1;
+        1, 1, 1;
+        2, 1, 1;
+        0, 2, 1;
+        1, 2, 1;
+        2, 2, 1;
+
+        0, 0, 2;
+        1, 0, 2;
+        2, 0, 2;
+        0, 1, 2;
+        1, 1, 2;
+        2, 1, 2;
+        0, 2, 2;
+        1, 2, 2;
+        2, 2, 2;
+    ];
+
+    // Release the chunk storage lock
+    drop(chunks);
+    chunks_store.take();
+
+    //Mesh the chunk
+    let mesh = state.mesher.make_mesh(pos, &neighbors);
+
+    //Figure out portals
+    let portals = state.mesher.mesh_portals(&neighbors[13]);
+
+    //Keep meshing statistics
+    {
+        //Dont care about data races here, after all it's just stats
+        //Therefore, dont synchronize
+        let time = mesh_start.elapsed().as_secs_f32();
+        let old_time = state.shared.avg_mesh_time.load();
+        let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+        state.shared.avg_mesh_time.store(new_time);
+    }
+
+    //Upload the chunk buffer to GPU
+    let buf_pkg = if mesh.indices.is_empty() {
+        None
+    } else {
+        let upload_start = Instant::now();
+        let buf = mesh.make_buffer(&state.gl_ctx);
+        //Keep upload statistics
+        //Dont care about data races here, after all it's just stats
+        //Therefore, dont synchronize
+        let time = upload_start.elapsed().as_secs_f32();
+        let old_time = state.shared.avg_upload_time.load();
+        let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+        state.shared.avg_upload_time.store(new_time);
+        Some((buf.vertex.into_raw_package(), buf.index.into_raw_package()))
+    };
+
+    //Package it all up
+    Some(BufPackage {
+        pos,
+        mesh,
+        buf: buf_pkg,
+        portals,
+    })
+}
+
+#[derive(Copy, Clone)]
+pub enum RequestStatus {
+    Requested,
+    Working,
+}
+
+/// Organizes chunk requests between threads.
+/// Currently, coordinates:
+/// main thread -> chunk mesher
+/// main thread -> gen thread
+#[derive(Default)]
+pub struct RequestBuf {
+    map: HashMap<ChunkPos, RequestStatus>,
+}
+impl RequestBuf {
+    /// Request a chunk from the consumer thread.
+    pub fn mark(&mut self, pos: ChunkPos) {
+        self.map.entry(pos).or_insert(RequestStatus::Requested);
+    }
+
+    /// Unmark all requested chunks that the mesher has not yet started working on.
+    pub fn unmark_all(&mut self) {
+        self.map.retain(|_k, v| match v {
+            RequestStatus::Requested => false,
+            RequestStatus::Working => true,
+        });
+    }
+
+    /// Collect requested chunks from the producer thread.
+    pub fn collect(&mut self, buf: &mut Vec<ChunkPos>, maxn: usize) {
+        let n = maxn - buf.len();
+        buf.extend(
+            self.map
+                .iter_mut()
+                .filter_map(|(k, v)| match v {
+                    RequestStatus::Requested => {
+                        *v = RequestStatus::Working;
+                        Some(*k)
+                    }
+                    RequestStatus::Working => None,
+                })
+                .take(n),
+        );
+    }
+
+    /// Remove a mark slot altogether.
+    ///
+    /// This method can be called from both threads:
+    /// - From the producer thread, if producing a chunk failed.
+    /// - From the consumer thread, once a chunk is received.
+    pub fn remove(&mut self, pos: ChunkPos) {
+        self.map.remove(&pos);
+    }
+
+    /// Query the amount of marked chunks.
+    pub fn marked_count(&self) -> usize {
+        self.map.len()
+    }
+
+    /// The ideal amount of marked chunks.
+    /// This amount might adapt to the meshing speed.
+    pub fn marked_goal(&self) -> usize {
+        // TODO: Make adaptive
+        32
+    }
+}
+
+fn run_mesher(mut state: MesherState) {
     // The maximum amount of chunks to mesh in a single walk.
     const MAX_MESH: i32 = 2;
 
-    let mut mesher = Box::new(Mesher::new(textures));
-    let mut meshed = GridKeeper::new(32, ChunkPos([0, 0, 0]));
     let mut last_stall_warning = Instant::now();
+
+    let chunks_raw = state.chunks.take().unwrap();
+    const MESH_QUEUE: usize = 32;
+    let mut mesh_queue = Vec::with_capacity(MESH_QUEUE);
+    let mut fail_queue = Vec::with_capacity(MESH_QUEUE);
+    let mut chunks_store = None;
     loop {
-        //Mission: find a meshable chunk
-        let mut chunks_store = Some(state.chunks.read());
-        meshed.set_center(chunks_store.as_ref().unwrap().center());
-        //Look for candidate chunks
-        let mut order_idx = 0;
+        // Get a list of candidate chunks from the main thread
+        {
+            mesh_queue.clear();
+            let mut request = match chunks_store {
+                Some(_) => match state.shared.request.try_lock() {
+                    Some(req) => req,
+                    None => {
+                        chunks_store.take();
+                        state.shared.request.lock()
+                    }
+                },
+                None => state.shared.request.lock(),
+            };
+            request.collect(&mut mesh_queue, MESH_QUEUE);
+            for pos in fail_queue.drain(..) {
+                request.remove(pos);
+            }
+        }
+
+        // TODO: Fix input stalls
+        if mesh_queue.is_empty() {
+            println!("mesher has no input!");
+        }
+
+        // Check candidates
         let mut meshed_count = 0;
-        while meshed_count < MAX_MESH && order_idx < chunks_store.as_ref().unwrap().priority.len() {
-            let idx = chunks_store.as_ref().unwrap().priority[order_idx];
-            order_idx += 1;
-            (|| {
-                let chunks = chunks_store.as_ref().unwrap();
-                let mesh_start = Instant::now();
-                let chunk_slot = chunks.get_by_idx(idx);
-                let chunk = chunk_slot.as_arc_ref()?;
-                let pos = chunks.sub_idx_to_pos(idx);
-                let meshed_mark = meshed.get_mut(pos)?;
-                if *meshed_mark {
-                    //Make sure not to duplicate work
-                    return None;
+        for pos in mesh_queue.drain(..) {
+            // Enforce maximum mesh count per run
+            if meshed_count >= MAX_MESH {
+                break;
+            }
+            // Attempt to make this mesh
+            let buf_pkg = match try_mesh(&mut state, pos, &chunks_raw, &mut chunks_store) {
+                Some(buf) => buf,
+                None => {
+                    // Something failed
+                    // Probably, a neighboring chunk was not available
+                    fail_queue.push(pos);
+                    continue;
                 }
-                //Get all of its adjacent neighbors
-                macro_rules! build_neighbors {
-                    (@_, _, _) => {{
-                        chunk
-                    }};
-                    (@$x:expr, $y:expr, $z:expr) => {{
-                        chunks.chunk_slot_at(pos + [$x-1, $y-1, $z-1])?.as_arc_ref()?
-                    }};
-                    ($($x:tt, $y:tt, $z:tt;)*) => {{
-                        [$(
-                            build_neighbors!(@$x, $y, $z),
-                        )*]
-                    }};
-                }
-                let neighbors = build_neighbors![
-                    0, 0, 0;
-                    1, 0, 0;
-                    2, 0, 0;
-                    0, 1, 0;
-                    1, 1, 0;
-                    2, 1, 0;
-                    0, 2, 0;
-                    1, 2, 0;
-                    2, 2, 0;
-
-                    0, 0, 1;
-                    1, 0, 1;
-                    2, 0, 1;
-                    0, 1, 1;
-                    _, _, _;
-                    2, 1, 1;
-                    0, 2, 1;
-                    1, 2, 1;
-                    2, 2, 1;
-
-                    0, 0, 2;
-                    1, 0, 2;
-                    2, 0, 2;
-                    0, 1, 2;
-                    1, 1, 2;
-                    2, 1, 2;
-                    0, 2, 2;
-                    1, 2, 2;
-                    2, 2, 2;
-                ];
-                //Free the chunk lock, since we have `Arc` references to all necessary chunks
-                drop(chunks);
-                chunks_store.take();
-                //Mesh the chunk
-                let mesh = mesher.make_mesh(pos, &neighbors);
-                //Figure out portals
-                let portals = mesher.mesh_portals(&neighbors[13]);
-                {
-                    //Keep meshing statistics
-                    //Dont care about data races here, after all it's just stats
-                    //Therefore, dont synchronize
-                    let time = mesh_start.elapsed().as_secs_f32();
-                    let old_time = state.shared.avg_mesh_time.load();
-                    let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
-                    state.shared.avg_mesh_time.store(new_time);
-                }
-                //Upload the chunk buffer to GPU
-                let buf_pkg = if mesh.indices.is_empty() {
-                    None
-                } else {
-                    let upload_start = Instant::now();
-                    let buf = mesh.make_buffer(&state.gl_ctx);
-                    //Keep upload statistics
-                    //Dont care about data races here, after all it's just stats
-                    //Therefore, dont synchronize
-                    let time = upload_start.elapsed().as_secs_f32();
-                    let old_time = state.shared.avg_upload_time.load();
-                    let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
-                    state.shared.avg_upload_time.store(new_time);
-                    Some((buf.vertex.into_raw_package(), buf.index.into_raw_package()))
-                };
-                //Send the buffer back
-                let buf_pkg = BufPackage {
-                    pos,
-                    mesh,
-                    buf: buf_pkg,
-                    portals,
-                };
-                match state.send_bufs.try_send(buf_pkg) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        if err.is_full() {
-                            //Channel is full, make sure to unlock chunks
-                            let stall_start = Instant::now();
-                            //RwLockReadGuard::unlocked(&mut chunks, || {
-                            let _ = state.send_bufs.send(err.into_inner());
-                            //});
-                            let now = Instant::now();
-                            if now - last_stall_warning > Duration::from_millis(1500) {
-                                last_stall_warning = now;
-                                eprintln!(
-                                    "meshing thread stalled for {}ms",
-                                    (now - stall_start).as_millis()
-                                );
-                            }
+            };
+            // Send the buffer back
+            match state.send_bufs.try_send(buf_pkg) {
+                Ok(()) => {}
+                Err(err) => {
+                    if err.is_full() {
+                        //Channel is full, make sure to unlock chunks
+                        let buf_pkg = err.into_inner();
+                        let stall_start = Instant::now();
+                        if let Some(chunks) = &mut chunks_store {
+                            RwLockReadGuard::unlocked(chunks, || {
+                                let _ = state.send_bufs.send(buf_pkg);
+                            });
                         } else {
-                            //Channel closed, just discard it, we're gonna exit soon anyways
+                            let _ = state.send_bufs.send(buf_pkg);
                         }
+                        let now = Instant::now();
+                        if now - last_stall_warning > Duration::from_millis(1500) {
+                            last_stall_warning = now;
+                            eprintln!(
+                                "meshing thread stalled for {}ms",
+                                (now - stall_start).as_millis()
+                            );
+                        }
+                    } else {
+                        //Channel closed, just discard it, we're gonna exit soon anyway
                     }
                 }
-                //Mark chunk as meshed
-                *meshed_mark = true;
-                //Acquire chunk lock again if there are still potential chunks to mesh
-                meshed_count += 1;
-                if meshed_count < MAX_MESH {
-                    chunks_store = Some(state.chunks.read());
-                }
-                Some(())
-            })();
+            }
+            //Acquire chunk lock again if there are still potential chunks to mesh
+            meshed_count += 1;
         }
-        chunks_store.take();
+
         if state.shared.close.load() {
             break;
         }
-        if meshed_count > 0 {
-            //Make sure the bookkeeper thread gets a chance to write on the chunks
-            //RwLockReadGuard::bump(&mut chunks);
-        } else {
+        if meshed_count <= 0 {
             //Pause for a while
+            chunks_store.take();
             thread::park_timeout(Duration::from_millis(50));
             if state.shared.close.load() {
                 break;
             }
-            //chunks = state.chunks.read();
         }
     }
 }
@@ -309,7 +419,10 @@ impl Mesher {
             },
             front: Self::BLOCK_COUNT as i32,
             back: 0,
-            chunk_pos: ChunkPos([0, 0, 0]),
+            chunk_pos: ChunkPos {
+                coords: Int3::zero(),
+                dim: 0,
+            },
             mesh: default(),
         }
     }
@@ -566,7 +679,7 @@ impl Mesher {
         // Generate texture noise
         {
             let mut idx = 0;
-            let base_pos = chunk_pos << CHUNK_BITS;
+            let base_pos = chunk_pos.coords << CHUNK_BITS;
             for z in 0..=CHUNK_SIZE {
                 for y in 0..=CHUNK_SIZE {
                     for x in 0..=CHUNK_SIZE {
@@ -694,7 +807,7 @@ impl Mesher {
                     portal.size[1] as i32,
                     portal.size[2] as i32,
                 ]);
-                let center = pos + size / 2;
+                let center = pos + (size >> 1);
                 if 0 <= center.x
                     && center.x < CHUNK_SIZE
                     && 0 <= center.y
@@ -755,6 +868,7 @@ impl Mesher {
                             v01.to_f32(), // - x0 + x1 - x2,
                         ],
                         jump: Int3::new(portal.jump).to_f64(),
+                        dim: portal.dim,
                     });
                 }
             }
