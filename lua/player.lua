@@ -187,6 +187,7 @@ function Player:tick(world)
         local focus_dist = 8
         local cam_wall_dist = 0.4
         world.cam_pos:copy_from(self.pos)
+        world.cam_pos:move_box(world.terrain, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
         world.cam_mov_x, world.cam_mov_y, world.cam_mov_z = self.mov_x, self.mov_y, self.mov_z
         world.cam_rollback = focus_dist
     end

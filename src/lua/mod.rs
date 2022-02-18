@@ -1,5 +1,5 @@
 use crate::{
-    lua::gfx::{LuaDrawParams, ShaderRef, UniformStorage, UniformVal},
+    lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, UniformStorage, UniformVal},
     prelude::*,
 };
 use common::{lua::LuaRng, lua_assert, lua_bail, lua_func, lua_lib, lua_type};
@@ -233,8 +233,8 @@ lua_type! {TerrainRef,
         let this = this.rc.borrow();
         let mvp = mvp.stack.borrow().1;
         let camstack = camstack_raw.borrow::<CameraStack>()?;
-        let subdraw = |origin: &WorldPos, framequad: &[Vec3; 4], depth: u8| -> Result<()> {
-            camstack.push(&mvp, *origin, *framequad);
+        let subdraw = |origin: &WorldPos, framequad: &[Vec3; 4], buf: &Rc<Buffer3d>, buf_off: Vec3, depth: u8| -> Result<()> {
+            camstack.push(&mvp, *origin, *framequad, BufferRef::Buf3d(buf.clone()), buf_off);
             ensure!(camstack.depth() == depth, "invalid CameraStack depth");
             subdraw_callback.call(camstack_raw.clone())?;
             camstack.pop();
@@ -300,18 +300,15 @@ struct CameraFrame {
     framequad: [Vec3; 4],
     /// Clipping planes for the current framequad.
     clip_planes: [Vec4; 5],
-}
-impl CameraFrame {
-    fn new() -> Self {
-        Self {
-            origin: WorldPos {
-                coords: [0.; 3],
-                dim: 0,
-            },
-            framequad: default(),
-            clip_planes: default(),
-        }
-    }
+    /// A point is proper if it is on the front side of the camera.
+    /// (Even if it is behind the near clipping plane)
+    /// This indicates the "properness value" for all 4 points of the framequad.
+    proper: [bool; 4],
+    /// The geometry that makes up the portal frame.
+    /// Used to draw the portal into the stencil buffer and the skybox.
+    geometry: BufferRef,
+    /// The offset that the geometry buffer expects to be in the correct place.
+    geometry_off: Vec3,
 }
 
 /// A camera stack, representing portal cameras.
@@ -322,7 +319,18 @@ struct CameraStack {
 impl CameraStack {
     fn new() -> Self {
         Self {
-            stack: vec![CameraFrame::new()].into(),
+            stack: vec![CameraFrame {
+                origin: WorldPos {
+                    coords: [0.; 3],
+                    dim: 0,
+                },
+                framequad: default(),
+                clip_planes: default(),
+                proper: default(),
+                geometry: BufferRef::NoBuf,
+                geometry_off: Vec3::zero(),
+            }]
+            .into(),
         }
     }
 
@@ -338,15 +346,31 @@ impl CameraStack {
         self.stack.borrow().last().unwrap().clip_planes
     }
 
+    fn proper(&self) -> [bool; 4] {
+        self.stack.borrow().last().unwrap().proper
+    }
+
+    fn geometry(&self) -> BufferRef {
+        self.stack.borrow().last().unwrap().geometry.clone()
+    }
+
+    fn geometry_off(&self) -> Vec3 {
+        self.stack.borrow().last().unwrap().geometry_off
+    }
+
     fn depth(&self) -> u8 {
         (self.stack.borrow().len() - 1) as u8
     }
 
-    fn push(&self, mvp: &Mat4, origin: WorldPos, fq: [Vec3; 4]) {
+    fn push(&self, mvp: &Mat4, origin: WorldPos, fq: [Vec3; 4], buf: BufferRef, buf_off: Vec3) {
+        let (clip_planes, proper) = Terrain::calc_clip_planes(mvp, &fq);
         self.stack.borrow_mut().push(CameraFrame {
             origin,
             framequad: fq,
-            clip_planes: Terrain::calc_clip_planes(mvp, &fq),
+            clip_planes,
+            proper,
+            geometry: buf,
+            geometry_off: buf_off,
         });
     }
 
@@ -355,7 +379,7 @@ impl CameraStack {
     }
 }
 lua_type! {CameraStack,
-    fn reset(lua, this, (origin, mvp): (LuaWorldPos, MatrixStack)) {
+    fn reset(lua, this, (origin, mvp, buf, offx, offy, offz): (LuaWorldPos, MatrixStack, Option<BufferRef>, f32, f32, f32)) {
         this.stack.borrow_mut().clear();
         let mvp = mvp.stack.borrow().1;
         let inv_mvp = mvp.inversed();
@@ -368,6 +392,8 @@ lua_type! {CameraStack,
                 inv_mvp.transform_point3(Vec3::new(1., 1., -1.)),
                 inv_mvp.transform_point3(Vec3::new(-1., 1., -1.)),
             ],
+            buf.unwrap_or(BufferRef::NoBuf),
+            [offx, offy, offz].into(),
         );
     }
 
@@ -393,12 +419,31 @@ lua_type! {CameraStack,
         (v.x, v.y, v.z)
     }
 
+    fn geometry(lua, this, out: LuaAnyUserData) {
+        let mut out = out.borrow_mut::<BufferRef>()?;
+        *out = this.geometry();
+    }
+
+    fn geometry_offset(lua, this, ()) {
+        let off = this.geometry_off();
+        (off.x, off.y, off.z)
+    }
+
     fn clip_planes(lua, this, out: LuaTable) {
         let p = this.clip_planes();
         for i in 0..5 {
             for j in 0..4 {
                 out.raw_set(i*4+j+1, p[i][j])?;
             }
+        }
+    }
+
+    fn proper(lua, this, i: Option<usize>) {
+        let proper = this.proper();
+        match i {
+            Some(i) if i < 4 => proper[i],
+            None => proper.iter().all(|b| *b),
+            _ => lua_bail!("invalid framequad index"),
         }
     }
 

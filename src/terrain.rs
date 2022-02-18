@@ -1,7 +1,12 @@
 use std::f64::INFINITY;
 
-use crate::{chunkmesh::MesherHandle, gen::GenArea, prelude::*};
+use crate::{
+    chunkmesh::{MesherHandle, RawBufPackage},
+    gen::GenArea,
+    prelude::*,
+};
 use common::terrain::GridKeeper4;
+use glium::buffer::RawBufferPackage;
 
 #[derive(Default)]
 struct SphereBuf {
@@ -313,16 +318,25 @@ impl Terrain {
                         // A chunk with no geometry (ie. full air or full solid)
                         None
                     }
-                    Some((vert, idx)) => unsafe {
+                    Some(raw) => unsafe {
                         // Deconstructed buffers
                         // Construct them back
-                        Some(Buffer3d {
-                            vertex: VertexBuffer::from_raw_package(&self.state.display, vert),
-                            index: IndexBuffer::from_raw_package(&self.state.display, idx),
-                        })
+                        Some(raw.unpack(&self.state.display))
                     },
                 },
-                portals: buf_pkg.portals,
+                portals: {
+                    buf_pkg
+                        .portals
+                        .into_iter()
+                        .map(|p| PortalMesh {
+                            mesh: p.mesh.into(),
+                            buf: unsafe { Rc::new(p.buf.unpack(&self.state.display)) },
+                            bounds: p.bounds,
+                            jump: p.jump,
+                            dim: p.dim,
+                        })
+                        .collect()
+                },
             };
             self.meshes.insert(buf_pkg.pos, mesh);
             request.remove(buf_pkg.pos);
@@ -383,48 +397,61 @@ impl Terrain {
     /// This function receives and outputs world coordinates.
     /// If the framequad has strange coordinates that intersect the near plane, the 4 side clipping
     /// planes may be disabled.
-    pub fn calc_clip_planes(mvp: &Mat4, fq: &[Vec3; 4]) -> [Vec4; 5] {
+    pub fn calc_clip_planes(mvp: &Mat4, fq: &[Vec3; 4]) -> ([Vec4; 5], [bool; 4]) {
         let inv_mvp = mvp.inversed();
-        let f000 = fq[0];
-        let f100 = fq[1];
-        let f110 = fq[2];
-        let f010 = fq[3];
 
-        let f100_clip = *mvp * f100.into_homogeneous_point();
-        let mut f101_ndc = f100_clip.normalized_homogeneous_point().truncated();
-        f101_ndc.z = 1.;
-        let f101 = inv_mvp.transform_point3(f101_ndc);
+        let clip = [
+            *mvp * fq[0].into_homogeneous_point(),
+            *mvp * fq[1].into_homogeneous_point(),
+            *mvp * fq[2].into_homogeneous_point(),
+            *mvp * fq[3].into_homogeneous_point(),
+        ];
+        let mut ndc = [
+            clip[0].normalized_homogeneous_point().truncated(),
+            clip[1].normalized_homogeneous_point().truncated(),
+            clip[2].normalized_homogeneous_point().truncated(),
+            clip[3].normalized_homogeneous_point().truncated(),
+        ];
+        for i in 0..4 {
+            ndc[i].z = 1.;
+        }
+        let fw = [
+            inv_mvp.transform_point3(ndc[0]),
+            inv_mvp.transform_point3(ndc[1]),
+            inv_mvp.transform_point3(ndc[2]),
+            inv_mvp.transform_point3(ndc[3]),
+        ];
 
-        let f010_clip = *mvp * f010.into_homogeneous_point();
-        let mut f011_ndc = f010_clip.normalized_homogeneous_point().truncated();
-        f011_ndc.z = 1.;
-        let f011 = inv_mvp.transform_point3(f011_ndc);
+        let proper = [
+            clip[0].w > 0.,
+            clip[1].w > 0.,
+            clip[2].w > 0.,
+            clip[3].w > 0.,
+        ];
 
-        let calc_plane = |p: [Vec3; 3]| {
+        let calc_plane_raw = |p: [Vec3; 3]| {
             let n = (p[1] - p[0]).cross(p[2] - p[0]).normalized();
             Vec4::new(n.x, n.y, n.z, -p[0].dot(n))
         };
+        let calc_plane = |i: usize, j: usize| {
+            if proper[i] {
+                calc_plane_raw([fq[i], fq[j], fw[i]])
+            } else if proper[j] {
+                calc_plane_raw([fq[i], fq[j], fw[j]])
+            } else {
+                Vec4::new(0., 0., 0., 1.)
+            }
+        };
 
-        if f100_clip.w > 0. && f010_clip.w > 0. {
-            [
-                calc_plane([f000, f010, f100]), // near plane
-                calc_plane([f000, f011, f010]), // left plane
-                calc_plane([f100, f110, f101]), // right plane
-                calc_plane([f000, f100, f101]), // bottom plane
-                calc_plane([f010, f011, f110]), // top plane
-            ]
-        } else {
-            // Some coordinates fall outside the proper range
-            // Give up on the 4 side clipping planes
-            let disabled = Vec4::new(0., 0., 0., 1.);
-            [
-                calc_plane([f000, f010, f100]), // near plane
-                disabled,
-                disabled,
-                disabled,
-                disabled,
-            ]
-        }
+        let planes = [
+            calc_plane_raw([fq[2], fq[1], fq[0]]), // near plane
+            calc_plane(3, 0),                      // left plane
+            calc_plane(1, 2),                      // right plane
+            calc_plane(0, 1),                      // bottom plane
+            calc_plane(2, 3),                      // top plane
+        ];
+
+        (planes, proper)
     }
 
     /// Iterate through all the chunks that are visible from the given position, range and clip
@@ -476,12 +503,12 @@ impl Terrain {
         mvp: Mat4,
         framequad: [Vec3; 4],
         stencil: u8,
-        subdraw: &dyn Fn(&WorldPos, &[Vec3; 4], u8) -> Result<()>,
+        subdraw: &dyn Fn(&WorldPos, &[Vec3; 4], &Rc<Buffer3d>, Vec3, u8) -> Result<()>,
     ) -> Result<()> {
         let frame = &self.state.frame;
 
         // Calculate the frustum planes
-        let clip_planes = Self::calc_clip_planes(&mvp, &framequad);
+        let (clip_planes, _) = Self::calc_clip_planes(&mvp, &framequad);
 
         // Calculate some positioning
         let center_chunk = Int3::from_f64(origin.coords) >> CHUNK_BITS;
@@ -585,11 +612,21 @@ impl Terrain {
                             continue 'portal;
                         }
                     }
+                    // Draw the portal and its interior
+                    // But let Lua do it
+                    let portal_mesh = &portal.buf;
+                    let suborigin = WorldPos {
+                        coords: [
+                            origin.coords[0] + portal.jump[0],
+                            origin.coords[1] + portal.jump[1],
+                            origin.coords[2] + portal.jump[2],
+                        ],
+                        dim: portal.dim,
+                    };
+                    subdraw(&suborigin, &subfq_world, portal_mesh, offset, stencil + 1)?;
+
+                    /*
                     // Get the portal shape into a buffer
-                    let mut mesh = portal.mesh.take();
-                    let mut portal_buf = self.tmp_bufs[stencil as usize].borrow_mut();
-                    portal_buf.write(&self.state, &mut mesh.vertices, &mut mesh.indices);
-                    portal.mesh.replace(mesh);
                     // Step 1: Figure out which parts of the portal are visible by drawing the
                     // portal shape (with depth testing) into the stencil buffer.
                     // TODO: Let Lua handle drawing the portal frame
@@ -649,7 +686,7 @@ impl Terrain {
                         ],
                         dim: portal.dim,
                     };
-                    subdraw(&suborigin, &subfq_world, stencil + 1)?;
+                    subdraw(&suborigin, &subfq_world, portal_mesh, offset, stencil + 1)?;
                     // Step 3: Artificially replace the depth value for the portal shape.
                     // This allows the portal to occlude objects that are behind it and be occluded
                     // by objects in front.
@@ -689,6 +726,7 @@ impl Terrain {
                             ..default()
                         },
                     )?;
+                    */
                 }
             }
             Ok(())
@@ -1138,6 +1176,15 @@ pub(crate) struct ChunkMesh {
 
 pub(crate) struct PortalMesh {
     pub mesh: Cell<Mesh>,
+    pub buf: Rc<Buffer3d>,
+    pub bounds: [Vec3; 4],
+    pub jump: [f64; 3],
+    pub dim: u32,
+}
+
+pub(crate) struct RawPortalMesh {
+    pub mesh: Mesh,
+    pub buf: RawBufPackage,
     pub bounds: [Vec3; 4],
     pub jump: [f64; 3],
     pub dim: u32,

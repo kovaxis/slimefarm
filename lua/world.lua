@@ -20,6 +20,11 @@ function World:new()
             fragment = 'terrain.frag',
             uniforms = {'mvp', 'mv', 'nclip', 'clip', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
+        portal = util.Shader{
+            vertex = 'portal.vert',
+            fragment = 'portal.frag',
+            uniforms = {'mvp', 'offset', 'nclip', 'clip'},
+        },
         basic = util.Shader{
             vertex = 'basic.vert',
             fragment = 'basic.frag',
@@ -28,7 +33,7 @@ function World:new()
         skybox = util.Shader{
             vertex = 'skybox.vert',
             fragment = 'skybox.frag',
-            uniforms = {'view', 'base', 'lowest', 'highest', 'sunrise', 'sunrise_dir'},
+            uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sunrise_dir'},
         },
     }
 
@@ -41,6 +46,8 @@ function World:new()
         physical_h = 1,
         w = 1,
         h = 1,
+        params_portalopen = gfx.draw_params(),
+        params_portalclose = gfx.draw_params(),
         params_sky = gfx.draw_params(),
         params_world = gfx.draw_params(),
         params_hud = gfx.draw_params(),
@@ -57,13 +64,24 @@ function World:new()
         dt = 0,
         portal_budget = 0,
     }
+    self.frame.params_portalopen:set_depth('if_less', false, 'both')
+    self.frame.params_portalopen:set_stencil('ccw', 'if_equal', 0, 'increment_wrap')
+    self.frame.params_portalopen:set_cull('cw')
+    self.frame.params_portalopen:set_clip_planes(31)
+    self.frame.params_portalopen:set_color_mask(false)
+    self.frame.params_portalopen:set_polygon_offset(true, -1, -2)
+    self.frame.params_portalclose:set_depth('always_pass', true, 'both')
+    self.frame.params_portalclose:set_stencil('ccw', 'if_equal', 0, 'decrement_wrap')
+    self.frame.params_portalclose:set_cull('cw')
+    self.frame.params_portalclose:set_clip_planes(31)
+    self.frame.params_portalclose:set_color_mask(false)
     self.frame.params_sky:set_depth('always_pass', true)
-    self.frame.params_sky:set_stencil('if_equal', 0)
+    self.frame.params_sky:set_stencil('ccw', 'if_equal', 0)
     self.frame.params_world:set_cull('cw')
     self.frame.params_world:set_depth('if_less', true)
-    self.frame.params_world:set_stencil('if_equal', 0)
+    self.frame.params_world:set_stencil('ccw', 'if_equal', 0)
     self.frame.params_world:set_clip_planes(31)
-    self.frame.params_world:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
+    self.frame.params_world:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha') -- TODO: Goodbye slimes
     self.frame.params_hud:set_depth('always_pass', false);
     self.frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
     self.subdraw_bound = function()
@@ -174,6 +192,7 @@ do
     local dawn, day, eve, night
     local lo, hi
     sky.screen = Mesh{}:add_quad(-1, -1, 1,   1, -1, 1,   1, 1, 1,   -1, 1, 1):as_buffer()
+    sky.portalscreen = gfx.buffer_empty()
 
     dawn = {.14, .42, .77}
     day = {.08, .52, .90}
@@ -209,8 +228,23 @@ do
     sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
 end
 
+-- Set the `nclip` and `clip` shader uniforms to the clipping planes of the given camera
+local set_clip_planes
+do
+    local c, m = {}, system.matrix()
+    function set_clip_planes(shader, cam)
+        cam:clip_planes(c)
+        m:set_col(0, c[5], c[6], c[7], c[8])
+        m:set_col(1, c[9], c[10], c[11], c[12])
+        m:set_col(2, c[13], c[14], c[15], c[16])
+        m:set_col(3, c[17], c[18], c[19], c[20])
+        shader:set_vec4('nclip', c[1], c[2], c[3], c[4])
+        shader:set_matrix('clip', m)
+    end
+end
+
 -- Draw terrain within a frame or portal (the camera being a frame)
-local clip_buf = {}
+local portalbuf = gfx.buffer_empty()
 local entpos_buf = system.world_pos()
 local campos_buf = system.world_pos()
 function World:subdraw()
@@ -223,23 +257,60 @@ function World:subdraw()
     local x2, y2, z2 = cam:framequad(2)
     local x3, y3, z3 = cam:framequad(3)
 
+    -- Whether the portal geometry intersects the near clipping plane
+    local proper = cam:proper()
+
+    --Draw portal itself into the stencil buffer
+    if depth > 0 then
+        cam:geometry(portalbuf)
+        self.shaders.portal:set_matrix('mvp', frame.mvp_world)
+        self.shaders.portal:set_vec3('offset', cam:geometry_offset())
+        set_clip_planes(self.shaders.portal, cam)
+        frame.params_portalopen:set_depth('if_less', false, proper and 'none' or 'both')
+        frame.params_portalopen:set_stencil_ref(depth - 1)
+        self.shaders.portal:draw(portalbuf, frame.params_portalopen)
+    end
+
     --Draw skybox
     do
         local cycle = self.day_cycle
+        local whole_screen = depth == 0 or not proper
+
+        local skybuf, dx, dy, dz
+        if whole_screen then
+            skybuf = sky.screen
+            dx, dy, dz = 0, 0, 0
+        else
+            skybuf = sky.portalscreen
+            cam:geometry(skybuf)
+            dx, dy, dz = cam:geometry_offset()
+        end
+
+        if whole_screen then
+            frame.mvp_world:push()
+            frame.mvp_world:identity()
+            self.shaders.skybox:set_matrix('mvp', frame.mvp_world)
+            frame.mvp_world:pop()
+        else
+            self.shaders.skybox:set_matrix('mvp', frame.mvp_world)
+        end
+        self.shaders.skybox:set_vec3('offset', dx, dy, dz)
+
         frame.mv_world:push()
         frame.mv_world:identity()
         frame.mv_world:rotate_z(frame.cam_yaw)
         frame.mv_world:rotate_x(frame.cam_pitch)
         frame.mv_world:scale(math.tan(frame.hfov / 2), math.tan(frame.vfov / 2), 1)
-        frame.params_sky:set_stencil_ref(depth)
         self.shaders.skybox:set_matrix('view', frame.mv_world)
+        frame.mv_world:pop()
+
+        frame.params_sky:set_stencil_ref(depth)
         self.shaders.skybox:set_vec3('base', sky.base:at(cycle))
         self.shaders.skybox:set_vec3('highest', sky.highest:at(cycle))
         self.shaders.skybox:set_vec3('lowest', sky.lowest:at(cycle))
         self.shaders.skybox:set_vec3('sunrise', sky.sunrise:at(cycle))
         self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
-        self.shaders.skybox:draw(sky.screen, frame.params_sky)
-        frame.mv_world:pop()
+        self.shaders.skybox:draw(skybuf, frame.params_sky)
     end
     
     --If this portal cannot be rendered, this is a good point to stop drawing
@@ -262,18 +333,7 @@ function World:subdraw()
         --diffuse = 0.2
         --specular = 0.03
         --dx, dy, dz = 2^-0.5, 0, -2^-0.5
-        do
-            local c, m = clip_buf, frame.mvp_world
-            cam:clip_planes(c)
-            self.shaders.terrain:set_vec4('nclip', c[1], c[2], c[3], c[4])
-            m:push()
-            m:set_col(0, c[5], c[6], c[7], c[8])
-            m:set_col(1, c[9], c[10], c[11], c[12])
-            m:set_col(2, c[13], c[14], c[15], c[16])
-            m:set_col(3, c[17], c[18], c[19], c[20])
-            self.shaders.terrain:set_matrix('clip', m)
-            m:pop()
-        end
+        set_clip_planes(self.shaders.terrain, cam)
         dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
         frame.params_world:set_stencil_ref(depth)
         self.shaders.terrain:set_float('fog', self.fog_current)
@@ -318,6 +378,16 @@ function World:subdraw()
         frame.params_hud:set_color_blend('add', 'src_alpha', 'one_minus_src_alpha')
         self.shaders.basic:set_vec4('tint', 1, 1, 1, 0.5)
         self.shaders.basic:draw(buf:as_buffer(), frame.params_hud)
+    end
+
+    --Draw portal itself out of the stencil buffer and into the depth buffer
+    if depth > 0 then
+        cam:geometry(portalbuf)
+        self.shaders.portal:set_matrix('mvp', frame.mvp_world)
+        self.shaders.portal:set_vec3('offset', cam:geometry_offset())
+        set_clip_planes(self.shaders.portal, cam)
+        frame.params_portalclose:set_stencil_ref(depth)
+        self.shaders.portal:draw(portalbuf, frame.params_portalclose)
     end
 end
 
@@ -385,7 +455,7 @@ function World:draw()
         frame.mvp_world:mul_right(frame.mv_world)
 
         -- Update initial drawing conditions
-        frame.cam_stack:reset(campos_buf, frame.mvp_world)
+        frame.cam_stack:reset(campos_buf, frame.mvp_world, nil, 0, 0, 0)
     end
 
     --Update fog distance
@@ -421,6 +491,7 @@ function World:draw()
     end
 
     --Draw terrain
+    propers = {}
     frame.portal_budget = 16
     self:subdraw()
 
@@ -438,6 +509,8 @@ function World:draw()
     frame.mvp_hud:translate(0, -1.25, 0)
     local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
     self.font:draw("pos: "..math.floor(raw_x)..", "..math.floor(raw_y)..", "..math.floor(raw_z).." : "..math.floor(raw_w), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    frame.mvp_hud:translate(0, -1.25, 0)
+    self.font:draw("propers: "..table.concat(propers, ', '), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
 
     --Draw crosshair

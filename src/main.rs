@@ -20,8 +20,7 @@ pub mod prelude {
         gen::GeneratorHandle,
         mesh::Mesh,
         terrain::{ChunkStorage, Terrain},
-        AnyBuffer, Buffer2d, Buffer3d, DynBuffer3d, GlobalState, SimpleVertex, State,
-        TexturedVertex,
+        Buffer2d, Buffer3d, DynBuffer3d, GlobalState, SimpleVertex, State, TexturedVertex,
     };
     pub use common::prelude::*;
     pub use glium::{
@@ -254,12 +253,6 @@ implement_vertex!(TexturedVertex, pos, tex);
 struct Buffer2d {
     vertex: VertexBuffer<TexturedVertex>,
     index: IndexBuffer<VertIdx>,
-}
-
-enum AnyBuffer {
-    BufEmpty,
-    Buf2d(Buffer2d),
-    Buf3d(Buffer3d),
 }
 
 fn main() {

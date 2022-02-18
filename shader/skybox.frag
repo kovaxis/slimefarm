@@ -18,4 +18,13 @@ void main() {
     float decline = pow(max(-dir.z, 0), 1) * 0.4;
     float east = max(2 * dot(dir, sunrise_dir) - 4 * max(dir.z, -0.2), 0);
     out_color = vec4(base + highest_d * altitude + lowest_d * decline + sunrise * east, 1);
+
+    //* // DEBUG: See the horizon
+    // TODO: Change the sky appearance depending on the fog distance
+    // Near fog should have a more monotone color
+    // Far fog has more "sky" in it, with a marked horizon and directional features
+    if (abs(dir.z) < 0.01) {
+        out_color = vec4(0, 0, 0, 1);
+    }
+    // */
 }

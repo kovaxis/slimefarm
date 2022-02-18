@@ -1,11 +1,31 @@
-use crate::{prelude::*, terrain::PortalMesh};
+use crate::{prelude::*, terrain::RawPortalMesh};
 use common::terrain::GridKeeper4;
 
 pub(crate) struct BufPackage {
     pub pos: ChunkPos,
     pub mesh: Mesh,
-    pub buf: Option<(RawVertexPackage<SimpleVertex>, RawIndexPackage<VertIdx>)>,
-    pub portals: Vec<PortalMesh>,
+    pub buf: Option<RawBufPackage>,
+    pub portals: Vec<RawPortalMesh>,
+}
+
+pub(crate) struct RawBufPackage<V = SimpleVertex, I: glium::index::Index = VertIdx> {
+    vert: RawVertexPackage<V>,
+    idx: RawIndexPackage<I>,
+}
+impl RawBufPackage {
+    pub(crate) fn pack(buf: Buffer3d) -> Self {
+        Self {
+            vert: buf.vertex.into_raw_package(),
+            idx: buf.index.into_raw_package(),
+        }
+    }
+
+    pub(crate) unsafe fn unpack(self, display: &Display) -> Buffer3d {
+        Buffer3d {
+            vertex: VertexBuffer::from_raw_package(display, self.vert),
+            index: IndexBuffer::from_raw_package(display, self.idx),
+        }
+    }
 }
 
 const AVERAGE_WEIGHT: f32 = 0.02;
@@ -152,7 +172,7 @@ fn try_mesh<'a>(
     let mesh = state.mesher.make_mesh(pos, &neighbors);
 
     //Figure out portals
-    let portals = state.mesher.mesh_portals(&neighbors[13]);
+    let portals = state.mesher.mesh_portals(&neighbors[13], &state.gl_ctx);
 
     //Keep meshing statistics
     {
@@ -177,7 +197,7 @@ fn try_mesh<'a>(
         let old_time = state.shared.avg_upload_time.load();
         let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
         state.shared.avg_upload_time.store(new_time);
-        Some((buf.vertex.into_raw_package(), buf.index.into_raw_package()))
+        Some(RawBufPackage::pack(buf))
     };
 
     //Package it all up
@@ -767,7 +787,7 @@ impl Mesher {
         mem::take(&mut self.mesh)
     }
 
-    fn mesh_portals(&mut self, chunk: &ChunkArc) -> Vec<PortalMesh> {
+    fn mesh_portals(&mut self, chunk: &ChunkArc, gl_ctx: &Display) -> Vec<RawPortalMesh> {
         let mut portals = Vec::new();
         if let Some(chunk) = chunk.blocks() {
             for portal in chunk.portals() {
@@ -794,16 +814,13 @@ impl Mesher {
                     // Figure out the front side of the portal
                     let det = pos.max(Int3::zero());
                     let axis0 = portal.get_axis();
-                    //let mut x0 = Vec3::zero();
                     let (axis1, axis2) = if chunk.sub_get(det).is_portal(&self.style) {
                         // Positive side of this portal is `portal`
                         // Portal faces negative side
-                        //x0[axis0] = -1.;
                         ((axis0 + 2) % 3, (axis0 + 1) % 3)
                     } else {
                         // Positive side of this portal is not `portal`
                         // Portal faces positive side
-                        //x0[axis0] = 1.;
                         ((axis0 + 1) % 3, (axis0 + 2) % 3)
                     };
 
@@ -825,17 +842,13 @@ impl Mesher {
                     mesh.add_face(0, 1, 2);
                     mesh.add_face(0, 2, 3);
 
-                    // Group it all up
-                    /*let mut x1 = Vec3::zero();
-                    x1[axis1] = 1.;
-                    let mut x2 = Vec3::zero();
-                    x2[axis2] = 1.;
-                    let off = 0.5;
-                    x0 *= off;
-                    x1 *= off;
-                    x2 *= off;*/
-                    portals.push(PortalMesh {
+                    // Upload buffer to GPU
+                    let buf_pkg = RawBufPackage::pack(mesh.make_buffer(gl_ctx));
+
+                    // Pack it up
+                    portals.push(RawPortalMesh {
                         mesh: mesh.into(),
+                        buf: buf_pkg,
                         bounds: [
                             v00.to_f32(), // - x0 + x1 + x2,
                             v10.to_f32(), // - x0 - x1 + x2,

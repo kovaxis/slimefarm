@@ -1,10 +1,17 @@
-use crate::{lua::{MatrixStack, CameraStack, CameraFrame}, prelude::*};
+use crate::{
+    lua::{CameraFrame, CameraStack, MatrixStack},
+    prelude::*,
+};
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
 
 #[derive(Clone)]
-pub(crate) struct BufferRef {
-    pub rc: AssertSync<Rc<AnyBuffer>>,
+pub(crate) enum BufferRef {
+    NoBuf,
+    Buf2d(Rc<Buffer2d>),
+    Buf3d(Rc<Buffer3d>),
 }
+unsafe impl Send for BufferRef {}
+unsafe impl Sync for BufferRef {}
 impl LuaUserData for BufferRef {}
 
 pub(crate) enum UniformVal {
@@ -223,8 +230,8 @@ pub(crate) struct LuaDrawParams {
     pub params: AssertSync<DrawParameters<'static>>,
 }
 lua_type! {LuaDrawParams,
-    mut fn set_depth(lua, this, (test, write): (LuaString, bool)) {
-        use glium::draw_parameters::DepthTest::*;
+    mut fn set_depth(lua, this, (test, write, clamp, near, far): (LuaString, bool, Option<LuaString>, Option<f32>, Option<f32>)) {
+        use glium::draw_parameters::{DepthTest::*, DepthClamp::*, Depth};
         let test = match test.as_bytes() {
             b"always_fail" => Ignore,
             b"always_pass" => Overwrite,
@@ -236,8 +243,28 @@ lua_type! {LuaDrawParams,
             b"if_less_or_equal" => IfLessOrEqual,
             _ => lua_bail!("unknown depth test"),
         };
-        this.params.depth.test = test;
-        this.params.depth.write = write;
+        let clamp = match clamp.as_ref().map(|s| s.as_bytes()) {
+            Some(b"none") => NoClamp,
+            Some(b"both") => Clamp,
+            Some(b"near") => ClampNear,
+            Some(b"far") => ClampFar,
+            None => NoClamp,
+            _ => lua_bail!("invalid depth clamp"),
+        };
+        this.params.depth = Depth {
+            test,
+            write,
+            clamp,
+            range: (near.unwrap_or(0.), far.unwrap_or(1.)),
+        };
+    }
+
+    mut fn set_color_mask(lua, this, (r, g, b, a): (bool, Option<bool>, Option<bool>, Option<bool>)) {
+        this.params.color_mask = match (r, g, b, a) {
+            (d, None, None, None) => (d, d, d, d),
+            (r, Some(g), Some(b), Some(a)) => (r, g, b, a),
+            _ => lua_bail!("invalid color channel mask"),
+        };
     }
 
     mut fn set_color_blend(lua, this, (func, src, dst): (LuaString, LuaString, LuaString)) {
@@ -323,8 +350,26 @@ lua_type! {LuaDrawParams,
         this.params.backface_culling = cull;
     }
 
-    mut fn set_stencil(lua, this, (test, refval, pass, fail, depthfail): (LuaString, i32, Option<LuaString>, Option<LuaString>, Option<LuaString>)) {
+    mut fn set_stencil(lua, this, (winding, test, refval, pass, fail, depthfail): (LuaString, LuaString, i32, Option<LuaString>, Option<LuaString>, Option<LuaString>)) {
         use glium::draw_parameters::{StencilTest::*, StencilOperation::*};
+        let p = &mut this.params.stencil;
+        let (mtest, mrefval, mpass, mfail, mdepthfail) = match winding.as_bytes() {
+            b"cw" => (
+                &mut p.test_clockwise,
+                &mut p.reference_value_clockwise,
+                &mut p.depth_pass_operation_clockwise,
+                &mut p.fail_operation_clockwise,
+                &mut p.pass_depth_fail_operation_clockwise,
+            ),
+            b"ccw" => (
+                &mut p.test_counter_clockwise,
+                &mut p.reference_value_counter_clockwise,
+                &mut p.depth_pass_operation_counter_clockwise,
+                &mut p.fail_operation_counter_clockwise,
+                &mut p.pass_depth_fail_operation_counter_clockwise,
+            ),
+            _ => lua_bail!("unknown winding"),
+        };
         let test = match test.as_bytes() {
             b"always_pass" => AlwaysPass,
             b"always_fail" => AlwaysFail,
@@ -353,11 +398,11 @@ lua_type! {LuaDrawParams,
         let pass = get_op(pass, "pass")?;
         let fail = get_op(fail, "fail")?;
         let depthfail = get_op(depthfail, "depth fail")?;
-        this.params.stencil.test_counter_clockwise = test;
-        this.params.stencil.reference_value_counter_clockwise = refval;
-        this.params.stencil.depth_pass_operation_counter_clockwise = pass;
-        this.params.stencil.fail_operation_counter_clockwise = fail;
-        this.params.stencil.pass_depth_fail_operation_counter_clockwise = depthfail;
+        *mtest = test;
+        *mrefval = refval;
+        *mpass = pass;
+        *mfail = fail;
+        *mdepthfail = depthfail;
     }
 
     mut fn set_stencil_ref(lua, this, refval: i32) {
@@ -366,6 +411,70 @@ lua_type! {LuaDrawParams,
 
     mut fn set_clip_planes(lua, this, planes: u32) {
         this.params.clip_planes_bitmask = planes;
+    }
+
+    mut fn set_multisampling(lua, this, enable: bool) {
+        this.params.multisampling = enable;
+    }
+
+    mut fn set_dithering(lua, this, enable: bool) {
+        this.params.dithering = enable;
+    }
+
+    mut fn set_viewport(lua, this, (left, bottom, w, h): (Option<u32>, Option<u32>, Option<u32>, Option<u32>)) {
+        this.params.viewport = match (left, bottom, w, h) {
+            (None, None, None, None) => None,
+            (Some(left), Some(bottom), Some(width), Some(height)) => Some(glium::Rect {
+                left,
+                bottom,
+                width,
+                height,
+            }),
+            _ => lua_bail!("invalid viewport rectangle"),
+        };
+    }
+
+    mut fn set_scissor(lua, this, (left, bottom, w, h): (Option<u32>, Option<u32>, Option<u32>, Option<u32>)) {
+        this.params.scissor = match (left, bottom, w, h) {
+            (None, None, None, None) => None,
+            (Some(left), Some(bottom), Some(width), Some(height)) => Some(glium::Rect {
+                left,
+                bottom,
+                width,
+                height,
+            }),
+            _ => lua_bail!("invalid scissor rectangle"),
+        };
+    }
+
+    mut fn set_draw_primitives(lua, this, enable: bool) {
+        this.params.draw_primitives = enable;
+    }
+
+    mut fn set_smooth(lua, this, smooth: Option<LuaString>) {
+        use glium::draw_parameters::Smooth::*;
+        this.params.smooth = match smooth.as_ref().map(|s| s.as_bytes()) {
+            Some(b"fastest") => Some(Fastest),
+            Some(b"nicest") => Some(Nicest),
+            Some(b"dont_care") => Some(DontCare),
+            None => None,
+            _ => lua_bail!("invalid smooth mode"),
+        };
+    }
+
+    mut fn set_bounding_box(lua, this, (x0, x1, y0, y1, z0, z1, w0, w1): (f32, f32, f32, f32, f32, f32, f32, f32)) {
+        this.params.primitive_bounding_box = (x0..x1, y0..y1, z0..z1, w0..w1);
+    }
+
+    mut fn set_polygon_offset(lua, this, (enable, factor, units): (bool, f32, f32)) {
+        use glium::draw_parameters::PolygonOffset;
+        this.params.polygon_offset = PolygonOffset {
+            factor,
+            units,
+            fill: enable,
+            point: false,
+            line: false,
+        };
     }
 }
 
@@ -384,6 +493,23 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         ShaderRef{program: AssertSync(Rc::new(shader))}
                     }
 
+                    fn buffer_empty(()) {
+                        BufferRef::NoBuf
+                    }
+
+                    fn buffer_2d((pos, tex, indices): (Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
+                        lua_assert!(pos.len() % 2 == 0, "positions not multiple of 2");
+                        lua_assert!(tex.len() % 2 == 0, "texcoords not multiple of 4");
+                        lua_assert!(pos.len() == tex.len(), "not the same amount of positions as texcoords");
+                        let vertices = pos.chunks_exact(2).zip(tex.chunks_exact(2)).map(|(pos, tex)| {
+                            TexturedVertex {pos: [pos[0], pos[1]], tex: [tex[0], tex[1]]}
+                        }).collect::<Vec<_>>();
+                        BufferRef::Buf2d(Rc::new(Buffer2d {
+                            vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
+                            index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
+                        }))
+                    }
+
                     fn buffer_3d((pos, normal, color, indices): (Vec<f32>, Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
                         lua_assert!(pos.len() % 3 == 0, "positions not multiple of 3");
                         lua_assert!(normal.len() % 3 == 0, "normals not multiple of 3");
@@ -399,27 +525,10 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                                 color: [qc(color[0]), qc(color[1]), qc(color[2]), qc(color[3])],
                             }
                         }).collect::<Vec<_>>();
-                        BufferRef {
-                            rc: AssertSync(Rc::new(AnyBuffer::Buf3d(Buffer3d {
-                                vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
-                                index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
-                            })))
-                        }
-                    }
-
-                    fn buffer_2d((pos, tex, indices): (Vec<f32>, Vec<f32>, Vec<VertIdx>)) {
-                        lua_assert!(pos.len() % 2 == 0, "positions not multiple of 2");
-                        lua_assert!(tex.len() % 2 == 0, "texcoords not multiple of 4");
-                        lua_assert!(pos.len() == tex.len(), "not the same amount of positions as texcoords");
-                        let vertices = pos.chunks_exact(2).zip(tex.chunks_exact(2)).map(|(pos, tex)| {
-                            TexturedVertex {pos: [pos[0], pos[1]], tex: [tex[0], tex[1]]}
-                        }).collect::<Vec<_>>();
-                        BufferRef {
-                            rc: AssertSync(Rc::new(AnyBuffer::Buf2d(Buffer2d {
-                                vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
-                                index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
-                            })))
-                        }
+                        BufferRef::Buf3d(Rc::new(Buffer3d {
+                            vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
+                            index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
+                        }))
                     }
 
                     fn camera_stack(()) {
@@ -478,12 +587,12 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
 
                     fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {
                         let mut frame = state.frame.borrow_mut();
-                        match &**buf.rc {
-                            AnyBuffer::BufEmpty => Ok(()),
-                            AnyBuffer::Buf2d(buf) => {
+                        match &buf {
+                            BufferRef::NoBuf => Ok(()),
+                            BufferRef::Buf2d(buf) => {
                                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
                             },
-                            AnyBuffer::Buf3d(buf) => {
+                            BufferRef::Buf3d(buf) => {
                                 frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
                             },
                         }.unwrap();
