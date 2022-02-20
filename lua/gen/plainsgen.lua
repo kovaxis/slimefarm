@@ -60,9 +60,33 @@ local heightmap = native.heightmap {
     air = blockreg.lookup 'base.air',
 }
 
+blockreg.register(texture {
+    name = 'base.wood',
+    base = {0.31, 0.19, 0.13, 0.01},
+    noise = {0.136, 0.089, 0.065},
+    octs = {0.2, 0.4},
+    rough = true,
+})
+
+local spheres = native.structure_grid_2d {
+    seed = math.hash(gen.seed, "plains_spheres"),
+    cell_size = 19,
+    margin = 8,
+}
+local spherebuf = native.action_buf()
+local function gen_sphere(rx, ry)
+    local bx, by = math.floor(rx), math.floor(ry)
+    local bz = heightmap:height_at(bx, by)
+    local fx, fy = rx - bx, ry - by
+    spherebuf:reset(bx, by, bz)
+    spherebuf:sphere(fx, fy, 10, 7, blockreg.blocks['base.wood'])
+    return spherebuf
+end
+
 function plainsgen.generate(x, y, z, w)
     local chunk = native.chunk(blockreg.blocks['base.air'])
     heightmap:fill_chunk(x, y, z, chunk)
+    spheres:fill_chunk(x, y, z, chunk, gen_sphere)
     return chunk:into_raw()
 end
 

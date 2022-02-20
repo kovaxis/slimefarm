@@ -3,10 +3,7 @@
 use crate::prelude::*;
 
 mod prelude {
-    pub(crate) use crate::{
-        actionbuf::{actions, ActionBuf},
-        blockbuf::BlockBuf,
-    };
+    pub(crate) use crate::{actionbuf::ActionBuf, blockbuf::BlockBuf};
     pub(crate) use common::{
         lua_assert, lua_bail, lua_func, lua_lib, lua_type,
         noise2d::{Noise2d, NoiseScaler2d},
@@ -38,6 +35,85 @@ lua_type! {LuaChunkBox,
 impl From<ChunkBox> for LuaChunkBox {
     fn from(chunk: ChunkBox) -> Self {
         Self { chunk }
+    }
+}
+
+#[derive(Deserialize)]
+struct BufGridCfg {
+    seed: i64,
+    cell_size: i32,
+    margin: i32,
+}
+
+struct BufGrid2 {
+    grid: GridKeeper2<ActionBuf>,
+    cellsize: i32,
+    margin: i32,
+    spread: Spread2d,
+}
+impl BufGrid2 {
+    fn new(k: BufGridCfg) -> Self {
+        Self {
+            grid: default(),
+            cellsize: k.cell_size,
+            margin: k.margin,
+            spread: Spread2d::new(k.seed as u64),
+        }
+    }
+
+    fn gen_col(&mut self, gen: &LuaFunction, pos: Int2) -> LuaResult<&ActionBuf> {
+        let cellsize = self.cellsize;
+        let spread = &self.spread;
+        Ok(&*self.grid.try_or_insert(pos, || -> LuaResult<_> {
+            let cellfrac = spread.gen(pos) * cellsize as f32;
+            let cellf64 = (pos * cellsize).to_f64();
+            let realpos = [
+                cellf64[0] + cellfrac[0] as f64,
+                cellf64[1] + cellfrac[1] as f64,
+            ];
+            let tmpbuf = gen.call::<_, LuaAnyUserData>((realpos[0], realpos[1]))?;
+            let mut tmpbuf = tmpbuf.borrow_mut::<ActionBuf>()?;
+            Ok(tmpbuf.take())
+        })?)
+    }
+
+    fn fill_chunk(
+        &mut self,
+        gen: &LuaFunction,
+        chunk_pos: Int3,
+        chunk: &mut ChunkBox,
+    ) -> LuaResult<()> {
+        // Minimum and maximum block positions (both inclusive)
+        let mn = (chunk_pos.xy() << CHUNK_BITS) - Int2::splat(self.margin);
+        let mx = (chunk_pos.xy() << CHUNK_BITS) + Int2::splat(CHUNK_SIZE - 1 + self.margin);
+        // Minimum and maximum cell positions (both inclusive)
+        let mn = mn / self.cellsize;
+        let mx = mx / self.cellsize;
+        // Apply actionbufs from all touching cells
+        for y in mn.y..=mx.y {
+            for x in mn.x..=mx.x {
+                let cellpos = Int2::new([x, y]);
+                let cellbuf = self.gen_col(gen, cellpos)?;
+                cellbuf.transfer(chunk_pos, chunk);
+            }
+        }
+        Ok(())
+    }
+}
+lua_type! {BufGrid2,
+    mut fn fill_chunk(lua, this, (x, y, z, chunk, gen): (i32, i32, i32, LuaAnyUserData, LuaFunction)) {
+        let pos = Int3::new([x, y, z]);
+        let mut chunk = chunk.borrow_mut::<LuaChunkBox>()?;
+        this.fill_chunk(&gen, pos, &mut chunk.chunk)?;
+
+    }
+
+    fn cell_size(lua, this, ()) {
+        this.cellsize
+    }
+
+    fn margin(lua, this, ()) {
+        this.margin
     }
 }
 
@@ -97,6 +173,11 @@ impl HeightMap {
         })
     }
 
+    fn height_at(&mut self, pos: Int2) -> i16 {
+        let (_, _, cnk) = self.gen_col(pos >> CHUNK_BITS);
+        cnk[pos.lowbits(CHUNK_BITS).to_index([CHUNK_BITS; 2].into())]
+    }
+
     fn fill_chunk(&mut self, pos: Int3, chunk: &mut ChunkBox) {
         self.gen_col(pos.xy());
         let (col_min, col_max, col) = self.cols.get(pos.xy()).unwrap();
@@ -138,6 +219,12 @@ lua_type! {HeightMap,
         let mut chunk = chunk.borrow_mut::<LuaChunkBox>()?;
         this.fill_chunk(pos, &mut chunk.chunk);
     }
+
+    // The Z coordinate of the lowest air block in the given column.
+    mut fn height_at(lua, this, (x, y): (i32, i32)) {
+        let pos = Int2::new([x, y]);
+        this.height_at(pos)
+    }
 }
 
 fn open_lib(lua: LuaContext) -> Result<LuaTable> {
@@ -164,6 +251,15 @@ fn open_lib(lua: LuaContext) -> Result<LuaTable> {
         fn heightmap(cfg: LuaValue) {
             let cfg = rlua_serde::from_value(cfg).to_lua_err()?;
             HeightMap::new(cfg)
+        }
+
+        fn action_buf(()) {
+            ActionBuf::new(Int3::zero())
+        }
+
+        fn structure_grid_2d(cfg: LuaValue) {
+            let cfg = rlua_serde::from_value(cfg).to_lua_err()?;
+            BufGrid2::new(cfg)
         }
     };
     Ok(lib)

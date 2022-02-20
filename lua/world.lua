@@ -187,8 +187,8 @@ function World:load_terrain()
         seed = 6813264,
         kind = 'gen.plainsgen',
     })
-    self.terrain:set_view_distance(32*12, 32*14)
-    --self.terrain:set_view_distance(32*6, 32*8)
+    --self.terrain:set_view_distance(32*12, 32*14)
+    self.terrain:set_view_distance(32*6, 32*8)
 end
 
 local sky = {}
@@ -495,7 +495,6 @@ function World:draw()
     end
 
     --Draw terrain
-    propers = {}
     frame.portal_budget = 16
     self:subdraw()
 
@@ -513,8 +512,6 @@ function World:draw()
     frame.mvp_hud:translate(0, -1.25, 0)
     local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
     self.font:draw("pos: "..math.floor(raw_x)..", "..math.floor(raw_y)..", "..math.floor(raw_z).." : "..math.floor(raw_w), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    frame.mvp_hud:translate(0, -1.25, 0)
-    self.font:draw("propers: "..table.concat(propers, ', '), frame.mvp_hud, frame.params_hud, 1, 1, 1)
     frame.mvp_hud:pop()
 
     --Draw crosshair
