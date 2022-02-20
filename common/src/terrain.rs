@@ -455,7 +455,8 @@ impl WorldPos {
 /// In the future, however, the byte might represent a different block depending on context (ie.
 /// position or dimension).
 /// Alternatively, at some point block ids might become 2 bytes.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
+#[serde(transparent)]
 pub struct BlockData {
     pub data: u8,
 }
@@ -627,8 +628,8 @@ fn now_u32(epoch: &Instant) -> u32 {
 }
 
 pub struct GridKeeperSlot<T> {
-    last_use: std::sync::atomic::AtomicU32,
-    item: T,
+    pub last_use: std::sync::atomic::AtomicU32,
+    pub item: T,
 }
 impl<T> GridKeeperSlot<T> {
     pub fn new(epoch: &Instant, t: T) -> Self {
@@ -647,9 +648,9 @@ impl<T> GridKeeperSlot<T> {
 const KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
 
 pub struct GridKeeperN<K, T> {
-    map: HashMap<K, GridKeeperSlot<T>>,
-    epoch: Instant,
-    keepalive: u32,
+    pub map: HashMap<K, GridKeeperSlot<T>>,
+    pub epoch: Instant,
+    pub keepalive: u32,
 }
 impl<K, T> GridKeeperN<K, T>
 where
@@ -717,323 +718,15 @@ where
             .retain(|_k, t| t.last_use.load(std::sync::atomic::Ordering::Relaxed) >= cutoff)
     }
 }
+impl<K: Hash + Eq, T> Default for GridKeeperN<K, T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub type GridKeeper2<T> = GridKeeperN<Int2, T>;
 pub type GridKeeper3<T> = GridKeeperN<Int3, T>;
 pub type GridKeeper4<T> = GridKeeperN<Int4, T>;
-
-/*
-pub struct GridKeeper<T> {
-    corner_pos: Int3,
-    size_log2: u32,
-    origin_idx: i32,
-    slots: Vec<T>,
-}
-impl<T: GridSlot> GridKeeper<T> {
-    pub fn with_radius(radius: f32, center: Int3) -> Self {
-        let size = ((radius * 2.).max(2.) as u32).next_power_of_two().max(1) as i32;
-        Self::new(size, center)
-    }
-
-    pub fn new(size: i32, center: Int3) -> Self {
-        //Make sure length is a power of two
-        let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
-        assert_eq!(
-            1 << size_log2,
-            size,
-            "GridKeeper size must be a power of two"
-        );
-        //Allocate space for meshes
-        let total = (1 << (size_log2 * 3)) as usize;
-        let mut slots = Vec::with_capacity(total);
-        slots.resize_with(total, T::new);
-        //Group em up
-        Self {
-            corner_pos: center - Int3::splat(1 << (size_log2 - 1)),
-            size_log2,
-            origin_idx: 0,
-            slots,
-        }
-    }
-
-    /// Will slide chunks and remove chunks that went over the border.
-    pub fn set_center(&mut self, new_center: Int3) {
-        let new_corner = new_center + [-self.half_size(), -self.half_size(), -self.half_size()];
-        let adj = new_corner - self.corner_pos;
-        let clear_range =
-            |this: &mut Self, x: ops::Range<i32>, y: ops::Range<i32>, z: ops::Range<i32>| {
-                // OPTIMIZE: Store lists of active slots in each plane slice, so as to only visit
-                // actual active slots.
-                for z in z.clone() {
-                    for y in y.clone() {
-                        for x in x.clone() {
-                            this.sub_get_mut([x, y, z].into()).reset();
-                        }
-                    }
-                }
-            };
-        if adj.x > 0 {
-            clear_range(self, 0..adj.x, 0..self.size(), 0..self.size());
-        } else if adj.x < 0 {
-            clear_range(
-                self,
-                self.size() + adj.x..self.size(),
-                0..self.size(),
-                0..self.size(),
-            );
-        }
-        if adj.y > 0 {
-            clear_range(self, 0..self.size(), 0..adj.y, 0..self.size());
-        } else if adj.y < 0 {
-            clear_range(
-                self,
-                0..self.size(),
-                self.size() + adj.y..self.size(),
-                0..self.size(),
-            );
-        }
-        if adj.z > 0 {
-            clear_range(self, 0..self.size(), 0..self.size(), 0..adj.z);
-        } else if adj.z < 0 {
-            clear_range(
-                self,
-                0..self.size(),
-                0..self.size(),
-                self.size() + adj.z..self.size(),
-            );
-        }
-        self.origin_idx =
-            (self.origin_idx + adj.x + adj.y * self.size() + adj.z * (self.size() * self.size()))
-                .rem_euclid(self.total_len());
-        self.corner_pos = new_corner;
-    }
-}
-impl<T> GridKeeper<T> {
-    #[inline]
-    pub fn center(&self) -> Int3 {
-        self.corner_pos + [self.half_size(), self.half_size(), self.half_size()]
-    }
-
-    #[inline]
-    pub fn size_log2(&self) -> u32 {
-        self.size_log2
-    }
-
-    #[inline]
-    pub fn size(&self) -> i32 {
-        1 << self.size_log2
-    }
-
-    #[inline]
-    pub fn half_size(&self) -> i32 {
-        1 << (self.size_log2 - 1)
-    }
-
-    #[inline]
-    pub fn total_len(&self) -> i32 {
-        1 << (self.size_log2 * 3)
-    }
-
-    #[inline]
-    pub fn get(&self, pos: Int3) -> Option<&T> {
-        let pos = pos - self.corner_pos;
-        if pos.is_within(Int3::splat(self.size())) {
-            Some(self.sub_get(pos))
-        } else {
-            None
-        }
-    }
-    #[inline]
-    pub fn get_mut(&mut self, pos: Int3) -> Option<&mut T> {
-        let pos = pos - self.corner_pos;
-        if pos.is_within(Int3::splat(self.size())) {
-            Some(self.sub_get_mut(pos))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn get_by_idx(&self, idx: i32) -> &T {
-        &self.slots[(self.origin_idx + idx).rem_euclid(self.total_len()) as usize]
-    }
-    #[inline]
-    pub fn get_by_idx_mut(&mut self, idx: i32) -> &mut T {
-        let idx = (self.origin_idx + idx).rem_euclid(self.total_len()) as usize;
-        &mut self.slots[idx]
-    }
-    #[inline]
-    pub fn sub_get(&self, pos: Int3) -> &T {
-        &self.slots[(self.origin_idx
-            + pos.x
-            + pos.y * self.size()
-            + pos.z * (self.size() * self.size()))
-        .rem_euclid(self.total_len()) as usize]
-    }
-    #[inline]
-    pub fn sub_get_mut(&mut self, pos: Int3) -> &mut T {
-        let size = self.size();
-        let total_len = self.total_len();
-        &mut self.slots[(self.origin_idx + pos.x + pos.y * size + pos.z * (size * size))
-            .rem_euclid(total_len) as usize]
-    }
-
-    #[inline]
-    pub fn sub_idx_to_pos(&self, idx: i32) -> Int3 {
-        self.corner_pos + Int3::from_index([self.size_log2 as i32; 3].into(), idx as usize)
-    }
-}
-
-pub struct GridKeeper2d<T> {
-    corner_pos: Int2,
-    size_log2: u32,
-    origin_idx: i32,
-    slots: Vec<T>,
-}
-impl<T: GridSlot> GridKeeper2d<T> {
-    pub fn with_radius(radius: f32, center: Int2) -> Self {
-        let size = ((radius * 2.).max(2.) as u32).next_power_of_two().max(1) as i32;
-        Self::new(size, center)
-    }
-
-    pub fn new(size: i32, center: Int2) -> Self {
-        //Make sure length is a power of two
-        let size_log2 = (mem::size_of_val(&size) * 8) as u32 - (size - 1).leading_zeros();
-        assert_eq!(
-            1 << size_log2,
-            size,
-            "GridKeeper2d size must be a power of two"
-        );
-        //Allocate space for meshes
-        let total = (1 << (size_log2 * 2)) as usize;
-        let mut slots = Vec::with_capacity(total);
-        slots.resize_with(total, T::new);
-        //Group em up
-        Self {
-            corner_pos: center - Int2::splat(1 << (size_log2 - 1)),
-            size_log2,
-            origin_idx: 0,
-            slots,
-        }
-    }
-
-    /// Will slide chunks and remove chunks that went over the border.
-    pub fn set_center(&mut self, new_center: Int2) {
-        let new_corner = new_center - Int2::splat(self.half_size());
-        let adj = new_corner - self.corner_pos;
-        let clear_range = |this: &mut Self, x: ops::Range<i32>, y: ops::Range<i32>| {
-            for y in y.clone() {
-                for x in x.clone() {
-                    this.sub_get_mut([x, y].into()).reset();
-                }
-            }
-        };
-        if adj.x > 0 {
-            clear_range(self, 0..adj.x, 0..self.size());
-        } else if adj.x < 0 {
-            clear_range(self, self.size() + adj.x..self.size(), 0..self.size());
-        }
-        if adj.y > 0 {
-            clear_range(self, 0..self.size(), 0..adj.y);
-        } else if adj.y < 0 {
-            clear_range(self, 0..self.size(), self.size() + adj.y..self.size());
-        }
-        self.origin_idx =
-            (self.origin_idx + adj.x + adj.y * self.size()).rem_euclid(self.total_len());
-        self.corner_pos = new_corner;
-    }
-}
-impl<T> GridKeeper2d<T> {
-    #[inline]
-    pub fn center(&self) -> Int2 {
-        self.corner_pos + Int2::splat(self.half_size())
-    }
-
-    #[inline]
-    pub fn size_log2(&self) -> u32 {
-        self.size_log2
-    }
-
-    #[inline]
-    pub fn size(&self) -> i32 {
-        1 << self.size_log2
-    }
-    #[inline]
-
-    pub fn half_size(&self) -> i32 {
-        1 << (self.size_log2 - 1)
-    }
-
-    #[inline]
-    pub fn total_len(&self) -> i32 {
-        1 << (self.size_log2 * 2)
-    }
-
-    #[inline]
-    pub fn get(&self, pos: Int2) -> Option<&T> {
-        let pos = pos - self.corner_pos;
-        if pos.is_within([self.size(); 2].into()) {
-            Some(self.sub_get(pos))
-        } else {
-            None
-        }
-    }
-    #[inline]
-    pub fn get_mut(&mut self, pos: Int2) -> Option<&mut T> {
-        let pos = pos - self.corner_pos;
-        if pos.is_within([self.size(); 2].into()) {
-            Some(self.sub_get_mut(pos))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn get_by_idx(&self, idx: i32) -> &T {
-        &self.slots[(self.origin_idx + idx).rem_euclid(self.total_len()) as usize]
-    }
-    #[inline]
-    pub fn get_by_idx_mut(&mut self, idx: i32) -> &mut T {
-        let idx = (self.origin_idx + idx).rem_euclid(self.total_len()) as usize;
-        &mut self.slots[idx]
-    }
-    #[inline]
-    pub fn sub_get(&self, pos: Int2) -> &T {
-        &self.slots
-            [(self.origin_idx + pos.x + pos.y * self.size()).rem_euclid(self.total_len()) as usize]
-    }
-    #[inline]
-    pub fn sub_get_mut(&mut self, pos: Int2) -> &mut T {
-        let size = self.size();
-        let total_len = self.total_len();
-        &mut self.slots[(self.origin_idx + pos.x + pos.y * size).rem_euclid(total_len) as usize]
-    }
-
-    #[inline]
-    pub fn sub_idx_to_pos(&self, idx: i32) -> Int2 {
-        self.corner_pos + Int2::from_index([self.size(); 2].into(), idx as usize)
-    }
-}
-
-pub trait GridSlot {
-    fn new() -> Self;
-    fn reset(&mut self);
-}
-impl<T> GridSlot for T
-where
-    T: Default,
-{
-    #[inline]
-    fn new() -> T {
-        T::default()
-    }
-
-    #[inline]
-    fn reset(&mut self) {
-        *self = T::default();
-    }
-}
-*/
 
 #[derive(Default, Clone, Deserialize)]
 pub struct BlockTexture {

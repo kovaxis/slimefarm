@@ -1,4 +1,4 @@
-use crate::{prelude::*, terrain::PortalData};
+use crate::prelude::*;
 
 pub trait PaintAction {
     /// Apply this action onto a chunk.

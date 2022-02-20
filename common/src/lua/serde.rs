@@ -11,7 +11,7 @@ use serde::{
 
 type Result<T> = std::result::Result<T, Error>;
 
-pub(crate) fn deserialize<'de, T: Deserialize<'de>>(
+pub fn deserialize<'de, T: Deserialize<'de>>(
     lua: LuaContext<'de>,
     val: LuaValue<'de>,
 ) -> Result<T> {
@@ -632,7 +632,7 @@ impl<'de, 'a, 'b> de::Deserializer<'de> for &'a mut Deserializer<'de, 'b> {
 }
 
 #[repr(transparent)]
-pub(crate) struct LuaFuncRef {
+pub struct LuaFuncRef {
     pub key: LuaRegistryKey,
 }
 impl LuaFuncRef {

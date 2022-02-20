@@ -1,9 +1,11 @@
 use crate::{
+    gen::GenConfig,
     lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, UniformStorage, UniformVal},
     prelude::*,
 };
-use common::{lua::LuaRng, lua_assert, lua_bail, lua_func, lua_lib, lua_type};
+use common::{lua::LuaValueStatic, lua_assert, lua_bail, lua_func, lua_lib, lua_type};
 use notify::{DebouncedEvent as WatcherEvent, Watcher as _};
+use rand_distr::StandardNormal;
 
 pub(crate) mod gen;
 pub(crate) mod gfx;
@@ -194,7 +196,7 @@ pub struct TerrainRef {
     rc: AssertSync<Rc<RefCell<Terrain>>>,
 }
 impl TerrainRef {
-    pub(crate) fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<TerrainRef> {
+    pub(crate) fn new(state: &Rc<State>, gen_cfg: GenConfig) -> Result<TerrainRef> {
         Ok(TerrainRef {
             rc: AssertSync(Rc::new(RefCell::new(Terrain::new(state, gen_cfg)?))),
         })
@@ -501,6 +503,76 @@ lua_type! {WatcherRef,
     }
 }
 
+pub struct LuaRng {
+    pub rng: Cell<FastRng>,
+}
+impl LuaRng {
+    pub fn seed(seed: u64) -> Self {
+        Self {
+            rng: FastRng::seed_from_u64(seed).into(),
+        }
+    }
+
+    pub fn new(rng: FastRng) -> Self {
+        Self {
+            rng: Cell::new(rng),
+        }
+    }
+
+    fn get(&self) -> FastRng {
+        self.rng.replace(unsafe { mem::zeroed() })
+    }
+    fn set(&self, rng: FastRng) {
+        self.rng.set(rng);
+    }
+}
+lua_type! {LuaRng,
+    // All uniform ranges are integer inclusive-exclusive (ie. `[l, r)`)
+    // integer(x) -> uniform(0, x)
+    // integer(l, r) -> uniform(l, r)
+    fn integer(lua, this, (a, b): (i64, Option<i64>)) {
+        let mut rng = this.get();
+        let (l, r) = match (a, b) {
+            (a, None) => (0, a),
+            (l, Some(r)) => (l, r),
+        };
+        let v = rng.gen_range(l..r);
+        this.set(rng);
+        v
+    }
+
+    // All uniform ranges are inclusive floats
+    // uniform() -> uniform(0, 1)
+    // uniform(r) -> uniform(0, r)
+    // uniform(l, r) -> uniform(l, r)
+    fn uniform(lua, this, (a, b): (Option<f64>, Option<f64>)) {
+        let mut rng = this.get();
+        let (l, r) = match (a, b) {
+            (Some(l), Some(r)) => (l, r),
+            (Some(r), _) => (0., r),
+            _ => (0., 1.),
+        };
+        let v = rng.gen_range(l..= r);
+        this.set(rng);
+        v
+    }
+
+    // normal() -> normal(1/2, 1/6) clamped to [0, 1]
+    // normal(x) -> normal(x/2, x/6) clamped to [0, x]
+    // normal(l, r) -> normal((l+r)/2, (r-l)/6) clamped to [l, r]
+    fn normal(lua, this, (a, b): (Option<f64>, Option<f64>)) {
+        let mut rng = this.get();
+        let (mu, sd) = match (a, b) {
+            (Some(l), Some(r)) => (0.5 * (l + r), 1./6. * (r - l)),
+            (Some(x), _) => (0.5, 1./6.*x),
+            (_, _) => (0.5, 1./6.),
+        };
+        let z = rng.sample::<f64, _>(StandardNormal).clamp(-3., 3.);
+        this.set(rng);
+        mu + sd * z
+    }
+}
+
 pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
     let os = lua.globals().get::<_, LuaTable>("os").unwrap();
     os.set(
@@ -521,10 +593,22 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
     let math = lua.globals().get::<_, LuaTable>("math").unwrap();
     math.set(
         "rng",
-        lua_func!(lua, state, fn(seed: LuaMultiValue) {
+        lua_func!(lua, state, fn(seed: Option<i64>) {
             use std::hash::{Hash, Hasher};
+            let seed = match seed {
+                Some(s) => s as u64,
+                None => rand::random(),
+            };
+            LuaRng::seed(seed)
+        }),
+    )
+    .unwrap();
+    math.set(
+        "hash",
+        lua_func!(lua, state, fn(vals: LuaMultiValue) {
+            use std::hash::Hasher;
             let mut hasher = fxhash::FxHasher64::default();
-            for val in seed {
+            for val in vals {
                 match val {
                     LuaValue::Nil => (0u8).hash(&mut hasher),
                     LuaValue::Boolean(b) => (1u8, b as u8).hash(&mut hasher),
@@ -532,15 +616,22 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
                     LuaValue::Number(num) => if num as i64 as f64 == num {
                         (2u8, num as i64).hash(&mut hasher)
                     }else{
-                        (3u8, num.to_bits()).hash(&mut hasher)
+                        if num == 0. {
+                            (4u8, 0u8).hash(&mut hasher)
+                        } else if num.is_nan() {
+                            (4u8, 1u8).hash(&mut hasher)
+                        } else {
+                            (3u8, num.to_bits()).hash(&mut hasher)
+                        }
                     }
                     LuaValue::String(s) => s.as_bytes().hash(&mut hasher),
+                    // TODO: Hash tables?
                     _ => {
                         Err(LuaError::RuntimeError(format!("cannot hash type {}", "unknown"/*val.type_name()*/)))?;
                     }
                 }
             }
-            LuaRng::seed(hasher.finish())
+            hasher.finish() as i64
         }),
     )
     .unwrap();
@@ -612,6 +703,19 @@ pub(crate) fn open_vec3_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
         .unwrap();
 }
 
+fn load_native_lib<'a>(lua: LuaContext<'a>, path: &str) -> Result<LuaValue<'a>> {
+    use libloading::{Library, Symbol};
+    let path = libloading::library_filename(path);
+    unsafe {
+        let lib = Library::new(path)?;
+        let open: Symbol<unsafe extern "C" fn(LuaContext, fn(&[u8]) -> usize) -> Result<LuaValue>> =
+            lib.get(b"lua_open\0")?;
+        let open = open.into_raw();
+        mem::forget(lib);
+        open(lua, crate::get_exported_function)
+    }
+}
+
 pub(crate) fn open_fs_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
     let state = ();
     lua.globals()
@@ -625,6 +729,11 @@ pub(crate) fn open_fs_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
                             Watcher::new(path.to_str()?, debounce).to_lua_err()?
                         )),
                     }
+                }
+
+                fn open_lib(path: LuaString) {
+                    let out = load_native_lib(lua, path.to_str()?).to_lua_err()?;
+                    out
                 }
             },
         )
@@ -640,12 +749,17 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                     MatrixStack::from(Mat4::identity())
                 }
 
-                fn terrain(cfg: LuaValue) {
-                    let cfg = match &cfg {
-                        LuaValue::String(s) => {
-                            s.as_bytes()
-                        },
-                        _ => return Err("expected string").to_lua_err()
+                fn terrain(args: LuaMultiValue) {
+                    let mut args = args.into_vec();
+                    lua_assert!(args.len() >= 1, "expected at least 1 argument");
+                    let lua_main = String::from_lua(args.remove(0), lua)?;
+                    let args = args
+                        .into_iter()
+                        .map(|arg| LuaValueStatic::from_lua(arg, lua))
+                        .collect::<LuaResult<Vec<_>>>()?;
+                    let cfg = GenConfig {
+                        lua_main,
+                        args,
                     };
                     TerrainRef::new(state, cfg).to_lua_err()?
                 }

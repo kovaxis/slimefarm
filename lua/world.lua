@@ -11,7 +11,8 @@ function World:new()
     self.tick_count = 0
     self.entities = {}
 
-    self.worldgen_watcher = fs.watch("worldgen.lua")
+    self.worldgen_path = "gen/main.lua"
+    self.worldgen_watcher = fs.watch(self.worldgen_path)
     self:load_terrain()
 
     self.shaders = {
@@ -179,12 +180,15 @@ function World:update()
 end
 
 function World:load_terrain()
-    local file = io.open("worldgen.lua", 'r')
-    local worldgen = file:read('a')
+    local file = io.open(self.worldgen_path, 'r')
+    local gen_main = file:read('a')
     file:close()
-    self.terrain = system.terrain(worldgen)
-    --self.terrain:set_view_distance(32*12, 32*14)
-    self.terrain:set_view_distance(32*6, 32*8)
+    self.terrain = system.terrain(gen_main, {
+        seed = 6813264,
+        kind = 'gen.plainsgen',
+    })
+    self.terrain:set_view_distance(32*12, 32*14)
+    --self.terrain:set_view_distance(32*6, 32*8)
 end
 
 local sky = {}

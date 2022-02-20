@@ -1,7 +1,8 @@
 
-[target.i686-pc-windows-msvc]
-rustflags = [ "-C", "link-args=/EXPORT:AmdPowerXpressRequestHighPerformance /EXPORT:NvOptimusEnablement"]
+#[target.i686-pc-windows-msvc]
+#rustflags = [ "-C", "link-args=/EXPORT:AmdPowerXpressRequestHighPerformance /EXPORT:NvOptimusEnablement"]
 
 [target.x86_64-pc-windows-msvc]
 #rustflags = [ "-C", "link-args=/EXPORT:AmdPowerXpressRequestHighPerformance /EXPORT:NvOptimusEnablement"]
-rustflags = [ "-C", "link-args=-Wl,-export-dynamic" ]
+#rustflags = [ "-C", "link-args=-Wl,-export-dynamic" ]
+#rustflags = [ "-C", "link-args=-rdynamic" ]

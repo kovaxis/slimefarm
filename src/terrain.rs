@@ -2,7 +2,7 @@ use std::f64::INFINITY;
 
 use crate::{
     chunkmesh::{MesherHandle, RawBufPackage},
-    gen::GenArea,
+    gen::{GenArea, GenConfig},
     prelude::*,
 };
 use common::terrain::GridKeeper4;
@@ -219,7 +219,11 @@ impl ChunkStorage {
 
     pub fn maybe_gc(&mut self) {
         if self.last_gc.elapsed() > self.gc_interval {
+            println!("doing gc on the chunks");
+            let old = self.chunks.map.len();
             self.gc();
+            let new = self.chunks.map.len();
+            println!("  removed {} chunks", old - new);
             self.last_gc = Instant::now();
         }
     }
@@ -260,7 +264,6 @@ pub(crate) struct Terrain {
     pub view_radius: f32,
     pub gen_radius: f32,
     pub last_min_viewdist: f32,
-    tmp_bufs: Vec<RefCell<DynBuffer3d>>,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
     tmp_seenbuf: RefCell<HashMap<ChunkPos, f32>>,
     tmp_seenbuf_simple: RefCell<HashSet<Int4>>,
@@ -268,7 +271,7 @@ pub(crate) struct Terrain {
     tmp_sortbuf: RefCell<Vec<(f32, Int4)>>,
 }
 impl Terrain {
-    pub fn new(state: &Rc<State>, gen_cfg: &[u8]) -> Result<Terrain> {
+    pub fn new(state: &Rc<State>, gen_cfg: GenConfig) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let generator = GeneratorHandle::new(gen_cfg, &state.global, chunks.clone())?;
         let tex = generator.take_block_textures()?;
@@ -277,12 +280,6 @@ impl Terrain {
             state: state.clone(),
             meshes: MeshKeeper::new(),
             mesher: MesherHandle::new(state, chunks.clone(), tex),
-            tmp_bufs: {
-                let max = 32;
-                (0..max)
-                    .map(|_| RefCell::new(DynBuffer3d::new(state)))
-                    .collect()
-            },
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
             tmp_seenbuf_simple: default(),

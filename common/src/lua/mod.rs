@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use rand_distr::StandardNormal;
 
 #[macro_export]
 macro_rules! lua_bail {
@@ -30,7 +29,7 @@ macro_rules! lua_type {
             let $this = this;
             Ok($fn_code)
         });
-        lua_type!(@$m $($rest)*);
+        $crate::lua_type!(@$m $($rest)*);
     }};
     (@$m:ident mut fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
         $m.add_method_mut(stringify!($fn_name), |lua, this, $($args)*| {
@@ -40,13 +39,13 @@ macro_rules! lua_type {
             let $this = this;
             Ok($fn_code)
         });
-        lua_type!(@$m $($rest)*);
+        $crate::lua_type!(@$m $($rest)*);
     }};
     (@$m:ident) => {};
     ($ty:ty, $($rest:tt)*) => {
         impl LuaUserData for $ty {
             fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(m: &mut M) {
-                lua_type!(@m $($rest)*);
+                $crate::lua_type!(@m $($rest)*);
             }
         }
     };
@@ -71,63 +70,53 @@ macro_rules! lua_lib {
     ($lua:ident, $state:ident, $( fn $fn_name:ident($($fn_args:tt)*) $fn_code:block )*) => {{
         let lib = $lua.create_table().unwrap();
         $(
-            lib.set(stringify!($fn_name), lua_func!($lua, $state, fn($($fn_args)*) $fn_code)).unwrap();
+            lib.set(stringify!($fn_name), $crate::lua_func!($lua, $state, fn($($fn_args)*) $fn_code)).unwrap();
         )*
         lib
     }};
 }
 
-pub struct LuaRng {
-    pub rng: Cell<FastRng>,
+#[derive(Serialize, Deserialize)]
+pub enum LuaValueStatic {
+    Nil,
+    Bool(bool),
+    LightUserData(usize),
+    Int(i64),
+    Float(f64),
+    String(Vec<u8>),
+    Table(Vec<(LuaValueStatic, LuaValueStatic)>),
 }
-impl LuaRng {
-    pub fn seed(seed: u64) -> Self {
-        Self {
-            rng: FastRng::seed_from_u64(seed).into(),
-        }
-    }
-
-    pub fn new(rng: FastRng) -> Self {
-        Self {
-            rng: Cell::new(rng),
-        }
-    }
-
-    fn get(&self) -> FastRng {
-        self.rng.replace(unsafe { mem::zeroed() })
-    }
-    fn set(&self, rng: FastRng) {
-        self.rng.set(rng);
+impl<'lua> FromLua<'lua> for LuaValueStatic {
+    fn from_lua(v: LuaValue<'lua>, lua: LuaContext<'lua>) -> LuaResult<Self> {
+        Ok(match v {
+            LuaValue::Nil => Self::Nil,
+            LuaValue::Boolean(b) => Self::Bool(b),
+            LuaValue::LightUserData(u) => Self::LightUserData(u.0 as usize),
+            LuaValue::Integer(i) => Self::Int(i),
+            LuaValue::Number(f) => Self::Float(f),
+            LuaValue::String(s) => Self::String(s.as_bytes().to_vec()),
+            LuaValue::Table(t) => Self::Table(
+                t.pairs()
+                    .map(|res| {
+                        let (k, v) = res?;
+                        Ok((Self::from_lua(k, lua)?, Self::from_lua(v, lua)?))
+                    })
+                    .collect::<LuaResult<_>>()?,
+            ),
+            _ => lua_bail!("cannot convert {:?} to a static lua value", v),
+        })
     }
 }
-lua_type! {LuaRng,
-    // uniform() -> uniform(0, 1)
-    // uniform(r) -> uniform(0, r)
-    // uniform(l, r) -> uniform(l, r)
-    fn uniform(lua, this, (a, b): (Option<f64>, Option<f64>)) {
-        let mut rng = this.get();
-        let (l, r) = match (a, b) {
-            (Some(l), Some(r)) => (l, r),
-            (Some(r), _) => (0., r),
-            _ => (0., 1.),
-        };
-        let v = rng.gen_range(l..= r);
-        this.set(rng);
-        v
-    }
-
-    // normal() -> normal(1/2, 1/6) clamped to [0, 1]
-    // normal(x) -> normal(x/2, x/6) clamped to [0, x]
-    // normal(l, r) -> normal((l+r)/2, (r-l)/6) clamped to [l, r]
-    fn normal(lua, this, (a, b): (Option<f64>, Option<f64>)) {
-        let mut rng = this.get();
-        let (mu, sd) = match (a, b) {
-            (Some(l), Some(r)) => (0.5 * (l + r), 1./6. * (r - l)),
-            (Some(x), _) => (0.5, 1./6.*x),
-            (_, _) => (0.5, 1./6.),
-        };
-        let z = rng.sample::<f64, _>(StandardNormal).clamp(-3., 3.);
-        this.set(rng);
-        mu + sd * z
+impl<'lua> ToLua<'lua> for LuaValueStatic {
+    fn to_lua(self, lua: LuaContext<'lua>) -> LuaResult<LuaValue<'lua>> {
+        Ok(match self {
+            Self::Nil => LuaValue::Nil,
+            Self::Bool(b) => LuaValue::Boolean(b),
+            Self::LightUserData(u) => LuaValue::LightUserData(LuaLightUserData(u as *mut _)),
+            Self::Int(i) => LuaValue::Integer(i),
+            Self::Float(f) => LuaValue::Number(f),
+            Self::String(s) => LuaValue::String(lua.create_string(&s)?),
+            Self::Table(pairs) => LuaValue::Table(lua.create_table_from(pairs.into_iter())?),
+        })
     }
 }

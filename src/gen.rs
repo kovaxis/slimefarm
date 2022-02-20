@@ -1,10 +1,7 @@
 use std::num::NonZeroU32;
 
 use crate::prelude::*;
-use common::{
-    terrain::GridKeeper4,
-    worldgen::{BlockIdAlloc, ChunkFiller, GenStore},
-};
+use common::{lua::LuaValueStatic, terrain::GridKeeper4};
 
 const AVERAGE_WEIGHT: f32 = 0.005;
 
@@ -15,7 +12,7 @@ pub struct GeneratorHandle {
 }
 impl GeneratorHandle {
     pub(crate) fn new(
-        cfg: &[u8],
+        cfg: GenConfig,
         global: &Arc<GlobalState>,
         chunks: Arc<RwLock<ChunkStorage>>,
     ) -> Result<Self> {
@@ -32,7 +29,6 @@ impl GeneratorHandle {
             avg_gen_time: 0f32.into(),
         });
         let (tex_send, tex_recv) = channel::bounded(0);
-        let cfg = cfg.to_vec();
         //let (colorizer_send, colorizer_recv) = channel::bounded(0);
         let join_handle = {
             let shared = shared.clone();
@@ -46,7 +42,7 @@ impl GeneratorHandle {
                         shared,
                         global,
                     };
-                    let res = gen_thread(state, tex_send, &cfg);
+                    let res = gen_thread(state, tex_send, cfg);
                     if let Err(err) = &res {
                         eprintln!("fatal error initializing gen thread: {:#}", err);
                     }
@@ -126,118 +122,16 @@ impl Drop for GeneratorHandle {
     }
 }
 
-#[derive(Default)]
-struct GenStoreConcrete {
-    capsules: RefCell<HashMap<Vec<u8>, ([usize; 2], unsafe fn([usize; 2]))>>,
-    events: RefCell<HashMap<Vec<u8>, Vec<Box<dyn FnMut(*const u8)>>>>,
-}
-impl GenStore for GenStoreConcrete {
-    fn register_raw(&self, name: &[u8], obj: [usize; 2], destroy: unsafe fn([usize; 2])) {
-        let mut caps = self.capsules.borrow_mut();
-        let old = caps.insert(name.to_vec(), (obj, destroy));
-        assert!(
-            old.is_none(),
-            "duplicate gen capsules with name `{}`",
-            String::from_utf8_lossy(name)
-        );
-    }
-
-    fn lookup_raw(&self, name: &[u8]) -> Option<[usize; 2]> {
-        let caps = self.capsules.borrow();
-        caps.get(name).map(|(obj, _destroy)| *obj)
-    }
-
-    fn listen_raw(&self, name: &[u8], listener: Box<dyn FnMut(*const u8)>) {
-        let mut evs = self.events.borrow_mut();
-        match evs.get_mut(name) {
-            Some(listeners) => {
-                listeners.push(listener);
-            }
-            None => {
-                evs.insert(name.to_vec(), vec![listener]);
-            }
-        }
-    }
-
-    unsafe fn trigger_raw(&self, name: &[u8], args: *const u8) {
-        let mut evs = self.events.borrow_mut();
-        if let Some(listeners) = evs.get_mut(name) {
-            for l in listeners {
-                l(args);
-            }
-        }
-    }
-}
-impl Drop for GenStoreConcrete {
-    fn drop(&mut self) {
-        eprintln!("destroying GenStore capsules");
-        for (cap, destroy) in self.capsules.borrow_mut().values() {
-            unsafe {
-                destroy(*cap);
-            }
-        }
-    }
-}
-
-struct BlockIdAllocConcrete {
-    adv: u8,
-    nxt: Cell<u8>,
-    nxt_seq: Cell<u8>,
-    map: RefCell<HashMap<u64, u8>>,
-}
-impl BlockIdAllocConcrete {
-    fn new() -> Self {
-        let rnd = fxhash::hash64(&Instant::now());
-        Self {
-            adv: (rnd >> 8) as u8 | 1,
-            nxt: (rnd as u8).into(),
-            nxt_seq: 0.into(),
-            map: default(),
-        }
-    }
-
-    #[track_caller]
-    fn alloc(&self) -> u8 {
-        if self.nxt_seq.get() == u8::MAX {
-            panic!("ran out of block ids!");
-        }
-        let id = self.nxt.get();
-        self.nxt.set(id.wrapping_add(self.adv));
-        self.nxt_seq.set(self.nxt_seq.get() + 1);
-        id
-    }
-
-    #[track_caller]
-    fn get_hash(&self, hash: u64) -> u8 {
-        let mut map = self.map.borrow_mut();
-        *map.entry(hash).or_insert_with(|| self.alloc())
-    }
-}
-
-impl BlockIdAlloc for BlockIdAllocConcrete {
-    #[track_caller]
-    fn get_hash(&self, hash: u64) -> BlockData {
-        BlockData {
-            data: self.get_hash(hash),
-        }
-    }
-}
-
-struct GenProvider {
-    fill: &'static dyn ChunkFiller,
-}
-impl GenProvider {
-    fn new(store: &'static dyn GenStore) -> GenProvider {
-        GenProvider {
-            fill: unsafe { store.lookup::<dyn ChunkFiller>("base.chunkfill") },
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct GenArea {
     pub center: BlockPos,
     pub gen_radius: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GenConfig {
+    pub lua_main: String,
+    pub args: Vec<LuaValueStatic>,
 }
 
 pub struct GenSharedState {
@@ -264,35 +158,58 @@ fn empty_chunk_buf(
     chunks.maybe_gc();
 }
 
-fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Result<()> {
-    let raw_store = Box::new(GenStoreConcrete::default());
-    let store: &'static dyn GenStore = unsafe { &*(&*raw_store as *const _) };
-
-    store.register(
-        "base.blockregister",
-        Box::new(BlockIdAllocConcrete::new()) as Box<dyn BlockIdAlloc>,
-    );
-    store.register("base.blocktextures", Box::new(BlockTextures::default()));
-
-    let lua = Rc::new(Lua::new());
-    lua.context(|lua| {
+fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) -> Result<()> {
+    // Load Lua state and get all gen-related functions from it
+    let lua = Lua::new();
+    let mut textures = None;
+    let mut gen_chunk = None;
+    let mut lua_gc = None;
+    lua.context(|lua| -> Result<()> {
         crate::lua::open_generic_libs(&gen.global, lua);
-        lua.load(&cfg)
+        lua.globals().set("gen", lua.create_table()?)?;
+        let args = cfg
+            .args
+            .into_iter()
+            .map(|arg| arg.to_lua(lua))
+            .collect::<LuaResult<Vec<_>>>()?;
+        lua.load(&cfg.lua_main)
             .set_name("worldgen.lua")
             .unwrap()
-            .exec()
-            .expect_lua("running worldgen.lua");
-    });
-    store.register("base.lua", Box::new(lua));
+            .call(LuaMultiValue::from_vec(args))?;
+        let luagen = lua.globals().get::<_, LuaTable>("gen")?;
+
+        let tex = BlockTextures::default();
+        let luatex = luagen
+            .get::<_, LuaFunction>("textures")?
+            .call::<_, LuaTable>(())?;
+        for res in luatex.pairs::<u8, LuaValue>() {
+            let (k, v) = res?;
+            let v = rlua_serde::from_value::<BlockTexture>(v)?;
+            tex.set(BlockData { data: k }, v);
+        }
+        textures = Some(tex);
+
+        let gchunk = luagen.get::<_, LuaFunction>("chunk")?;
+        let gchunk = lua.create_registry_value(gchunk)?;
+        gen_chunk = Some(gchunk);
+
+        let gc = luagen.get::<_, LuaFunction>("gc")?;
+        let gc = lua.create_registry_value(gc)?;
+        lua_gc = Some(gc);
+
+        Ok(())
+    })?;
+    let textures = textures.unwrap();
+    let gen_chunk = gen_chunk.unwrap();
+    let lua_gc = lua_gc.unwrap();
+
+    // Pass block textures back to the main game
+    let style = StyleTable::new(&textures);
+    tex_send
+        .send(textures)
+        .map_err(|_| Error::msg("failed to send block textures"))?;
 
     let mut last_stall_warning = Instant::now();
-    worldgen::new_generator(store)?;
-
-    let tex = unsafe { store.lookup::<BlockTextures>("base.blocktextures").clone() };
-    let style = StyleTable::new(&tex);
-    tex_send
-        .send(tex)
-        .map_err(|_| Error::msg("failed to send block textures"))?;
 
     const GEN_QUEUE: usize = 32;
     const READY_QUEUE: usize = 64;
@@ -302,16 +219,17 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
     let mut seenbuf = default();
     let mut gen_sortbuf = Vec::new();
 
-    let provider = GenProvider::new(store);
     let mut gen_queue = Vec::with_capacity(GEN_QUEUE);
     let mut ready_buf = Vec::with_capacity(READY_QUEUE);
     let mut unsent: HashSet<ChunkPos> = default();
     'outer: loop {
         //Collect unused data every once in a while
         if last_gc.elapsed() > gc_interval {
-            unsafe {
-                store.trigger("base.gc", &());
-            }
+            lua.context(|lua| -> Result<()> {
+                let gc = lua.registry_value::<LuaFunction>(&lua_gc)?;
+                gc.call(())?;
+                Ok(())
+            })?;
             last_gc = Instant::now();
         }
 
@@ -347,11 +265,22 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: &[u8]) -> Res
         for pos in gen_queue.drain(..) {
             let gen_start = Instant::now();
 
-            // Generate chunk from scratch
-            let mut chunk = match provider.fill.fill(pos) {
-                Some(chunk) => chunk,
-                None => {
-                    println!("failed to generate chunk at {:?}", pos);
+            // Fetch a new chunk from Lua
+            let chunk = lua.context(|lua| -> Result<ChunkBox> {
+                let gen = lua.registry_value::<LuaFunction>(&gen_chunk)?;
+                let chunk = gen.call::<_, LuaLightUserData>((
+                    pos.coords.x,
+                    pos.coords.y,
+                    pos.coords.z,
+                    pos.dim,
+                ))?;
+                let chunk = unsafe { mem::transmute::<_, Option<ChunkBox>>(chunk.0) };
+                Ok(chunk.ok_or(anyhow!("gen_chunk produced no chunk!"))?)
+            });
+            let mut chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    println!("failed to generate chunk at {:?}: {:#}", pos, err);
                     continue;
                 }
             };
