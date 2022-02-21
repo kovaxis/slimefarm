@@ -4,7 +4,7 @@ pub struct ActionBuf {
     origin: Int3,
     actions: Vec<(
         [Int3; 2],
-        Box<dyn Fn(Int3, [Int3; 2], ChunkBox) -> ChunkBox + Send>,
+        Box<dyn Fn(Int3, [Int3; 2], &mut ChunkBox) + Send>,
     )>,
 }
 impl ActionBuf {
@@ -15,16 +15,23 @@ impl ActionBuf {
         }
     }
 
-    /// Apply this action onto a chunk.
-    /// The coordinates given are the block coordinates of the chunk floor in action-local
+    /// Store an action for later application in a chunk.
+    /// The action consists of two parts: a bounding box and a chunk application function.
+    /// The bounding box is composed of a minimum and a maximum coordinate, in actionbuf-relative
     /// coordinates.
-    /// The bounding box given is in action-local coordinates, and is within the chunk, otherwise
-    /// `apply` will not be called.
+    /// The minimum coordinate is inclusive, the maximum coordinate is exclusive.
+    ///
+    /// The application function is called for every chunk that is in contact with the bounding box,
+    /// and is called with three arguments: position, bounding box and chunk box.
+    /// The position is the position of the chunk minimum corner _relative to the actionbuf origin_.
+    /// The bounding box is basically the same as the original bounding box, but clipped to fit
+    /// within the chunk. It is also relative to the actionbuf origin.
+    /// The chunk box is just a mutable reference the data for the chunk in question.
     pub fn act(
         &mut self,
         action: (
             [Int3; 2],
-            Box<dyn Fn(Int3, [Int3; 2], ChunkBox) -> ChunkBox + Send>,
+            Box<dyn Fn(Int3, [Int3; 2], &mut ChunkBox) + Send>,
         ),
     ) {
         self.actions.push(action);
@@ -42,9 +49,7 @@ impl ActionBuf {
                 && mn.z < chunk_mx.z
             {
                 let bbox = [mn.max(chunk_mn), mx.min(chunk_mx)];
-                let mut c = mem::replace(chunk, ChunkBox::new_homogeneous(BlockData { data: 0 }));
-                c = action(chunk_mn, bbox, c);
-                *chunk = c;
+                action(chunk_mn, bbox, chunk);
             }
         }
     }
@@ -63,28 +68,27 @@ trait Action {
         args: Self::Args,
     ) -> (
         [Int3; 2],
-        Box<dyn Fn(Int3, [Int3; 2], ChunkBox) -> ChunkBox + Send>,
+        Box<dyn Fn(Int3, [Int3; 2], &mut ChunkBox) + Send>,
     );
 }
 
 macro_rules! action {
     {
-        fn $name:ident($argpat:pat, $argty:ty) -> $bounds1:ident { $($code1:tt)* }
+        fn $name:ident(($($argpat:pat),*) : $argty:ty) -> $bounds1:ident { $($code1:tt)* }
         fn apply($pos:pat, $bounds2:pat, $chunk:pat) $code2:block
     } => {
         #[allow(non_camel_case_types)]
         pub struct $name;
         impl Action for $name {
             type Args = $argty;
-            fn make($argpat: $argty) -> ([Int3; 2], Box<dyn Fn(Int3, [Int3; 2], ChunkBox) -> ChunkBox + Send>) {
+            fn make(($($argpat),*): $argty) -> ([Int3; 2], Box<dyn Fn(Int3, [Int3; 2], &mut ChunkBox) + Send>) {
                 let $bounds1;
                 $($code1)*
-                ($bounds1, Box::new(move |pos: Int3, bounds: [Int3; 2], mut chunk: ChunkBox| {
+                ($bounds1, Box::new(move |pos: Int3, bounds: [Int3; 2], chunk: &mut ChunkBox| {
                     let $pos = pos;
                     let $bounds2 = bounds;
-                    let $chunk = &mut chunk;
+                    let $chunk = chunk;
                     $code2;
-                    chunk
                 }))
             }
         }
@@ -111,6 +115,9 @@ macro_rules! actionbuf_lua {
 }
 
 actionbuf_lua! {
+    portal,
     cube,
     sphere,
+    oval,
+    cylinder,
 }
