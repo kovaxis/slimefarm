@@ -49,7 +49,10 @@ pub mod prelude {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
-    pub use uv::{Bivec2, Bivec3, Lerp, Mat2, Mat3, Mat4, Rotor2, Rotor3, Vec2, Vec3, Vec4};
+    pub use uv::{
+        Bivec2, Bivec3, DVec2, DVec3, DVec4, Lerp, Mat2, Mat3, Mat4, Rotor2, Rotor3, Vec2, Vec3,
+        Vec4,
+    };
 
     /// Unsafe as fuck, but whatever.
     #[derive(Copy, Clone, Debug, Default)]
@@ -90,4 +93,5 @@ pub mod noise2d;
 pub mod noise3d;
 pub mod slotmap;
 pub mod spread2d;
+pub mod staticinit;
 pub mod terrain;

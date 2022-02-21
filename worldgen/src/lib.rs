@@ -20,15 +20,15 @@ mod blockbuf;
 struct LuaChunkBox {
     chunk: ChunkBox,
 }
-lua_type! {LuaChunkBox,
-    mut fn into_raw(lua, this, ()) {
+lua_type! {LuaChunkBox, lua, this,
+    mut fn into_raw() {
         let chunk = mem::replace(&mut this.chunk, ChunkBox::new_homogeneous(BlockData { data: 0 }));
         unsafe {
             mem::transmute::<ChunkBox, LuaLightUserData>(chunk)
         }
     }
 
-    mut fn fill(lua, this, block: u8) {
+    mut fn fill(block: u8) {
         this.chunk.make_homogeneous(BlockData { data: block });
     }
 }
@@ -71,7 +71,7 @@ impl BufGrid2 {
                 cellf64[0] + cellfrac[0] as f64,
                 cellf64[1] + cellfrac[1] as f64,
             ];
-            let tmpbuf = gen.call::<_, LuaAnyUserData>((realpos[0], realpos[1]))?;
+            let tmpbuf = gen.call::<_, LuaAnyUserData>((realpos[0], realpos[1], pos.x, pos.y))?;
             let mut tmpbuf = tmpbuf.borrow_mut::<ActionBuf>()?;
             Ok(tmpbuf.take())
         })?)
@@ -100,19 +100,18 @@ impl BufGrid2 {
         Ok(())
     }
 }
-lua_type! {BufGrid2,
-    mut fn fill_chunk(lua, this, (x, y, z, chunk, gen): (i32, i32, i32, LuaAnyUserData, LuaFunction)) {
+lua_type! {BufGrid2, lua, this,
+    mut fn fill_chunk((x, y, z, chunk, gen): (i32, i32, i32, LuaAnyUserData, LuaFunction)) {
         let pos = Int3::new([x, y, z]);
         let mut chunk = chunk.borrow_mut::<LuaChunkBox>()?;
         this.fill_chunk(&gen, pos, &mut chunk.chunk)?;
-
     }
 
-    fn cell_size(lua, this, ()) {
+    fn cell_size() {
         this.cellsize
     }
 
-    fn margin(lua, this, ()) {
+    fn margin() {
         this.margin
     }
 }
@@ -213,15 +212,15 @@ impl HeightMap {
         }
     }
 }
-lua_type! {HeightMap,
-    mut fn fill_chunk(lua, this, (x, y, z, chunk): (i32, i32, i32, LuaAnyUserData)) {
+lua_type! {HeightMap, lua, this,
+    mut fn fill_chunk((x, y, z, chunk): (i32, i32, i32, LuaAnyUserData)) {
         let pos = Int3::new([x, y, z]);
         let mut chunk = chunk.borrow_mut::<LuaChunkBox>()?;
         this.fill_chunk(pos, &mut chunk.chunk);
     }
 
     // The Z coordinate of the lowest air block in the given column.
-    mut fn height_at(lua, this, (x, y): (i32, i32)) {
+    mut fn height_at((x, y): (i32, i32)) {
         let pos = Int2::new([x, y]);
         this.height_at(pos)
     }
@@ -267,9 +266,9 @@ fn open_lib(lua: LuaContext) -> Result<LuaTable> {
 
 #[no_mangle]
 #[allow(improper_ctypes_definitions)]
-extern "C" fn lua_open(lua: LuaContext, getfunc: fn(&[u8]) -> usize) -> Result<LuaValue> {
+extern "C" fn lua_open(lua: LuaContext) -> Result<LuaValue> {
     unsafe {
-        common::arena::init_impl(getfunc);
+        common::staticinit::static_init();
     }
     let lualib = open_lib(lua)?;
     Ok(lualib.to_lua(lua)?)

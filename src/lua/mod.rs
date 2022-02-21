@@ -21,42 +21,42 @@ impl From<Mat4> for MatrixStack {
         }
     }
 }
-lua_type! {MatrixStack,
-    fn reset(lua, this, ()) {
+lua_type! {MatrixStack, lua, this,
+    fn reset() {
         let (stack, top) = &mut *this.stack.borrow_mut();
         stack.clear();
         *top = Mat4::identity();
     }
 
-    fn reset_from(lua, this, other: MatrixStack) {
+    fn reset_from(other: MatrixStack) {
         let (stack, top) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
         stack.clear();
         *top = *other;
     }
 
-    fn identity(lua, this, ()) {
+    fn identity() {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = Mat4::identity();
     }
 
-    fn mul_right(lua, this, other: MatrixStack) {
+    fn mul_right(other: MatrixStack) {
         let (_, this) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
         *this = *this * *other;
     }
-    fn mul_left(lua, this, other: MatrixStack) {
+    fn mul_left(other: MatrixStack) {
         let (_, this) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
         *this = *other * *this;
     }
 
-    fn push(lua, this, ()) {
+    fn push() {
         let (stack, top) = &mut *this.stack.borrow_mut();
         stack.push(top.clone());
     }
 
-    fn pop(lua, this, ()) {
+    fn pop() {
         let (stack, top) = &mut *this.stack.borrow_mut();
         if let Some(new_top) = stack.pop() {
             *top = new_top;
@@ -65,12 +65,12 @@ lua_type! {MatrixStack,
         }
     }
 
-    fn translate(lua, this, (x, y, z): (f32, f32, f32)) {
+    fn translate((x, y, z): (f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * Mat4::from_translation(Vec3::new(x, y, z));
     }
 
-    fn scale(lua, this, (x, y, z): (f32, Option<f32>, Option<f32>)) {
+    fn scale((x, y, z): (f32, Option<f32>, Option<f32>)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         match (y, z) {
             (Some(y), Some(z)) => {
@@ -83,50 +83,50 @@ lua_type! {MatrixStack,
         }
     }
 
-    fn rotate_x(lua, this, angle: f32) {
+    fn rotate_x(angle: f32) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * Mat4::from_rotation_x(angle);
     }
-    fn rotate_y(lua, this, angle: f32) {
+    fn rotate_y(angle: f32) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * Mat4::from_rotation_y(angle);
     }
-    fn rotate_z(lua, this, angle: f32) {
+    fn rotate_z(angle: f32) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * Mat4::from_rotation_z(angle);
     }
 
-    fn invert(lua, this, ()) {
+    fn invert() {
         let (_, top) = &mut *this.stack.borrow_mut();
         top.inverse();
     }
 
-    fn perspective(lua, this, (fov, aspect, near, far): (f32, f32, f32, f32)) {
+    fn perspective((fov, aspect, near, far): (f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * uv::projection::perspective_gl(fov, aspect, near, far) * Mat4::from_rotation_x(-f32::PI/2.);
     }
-    fn orthographic(lua, this, (xleft, xright, ydown, yup, znear, zfar): (f32, f32, f32, f32, f32, f32)) {
+    fn orthographic((xleft, xright, ydown, yup, znear, zfar): (f32, f32, f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * uv::projection::orthographic_gl(xleft, xright, ydown, yup, znear, zfar);
     }
 
-    fn transform_vec(lua, this, (x, y, z): (f32, f32, f32)) {
+    fn transform_vec((x, y, z): (f32, f32, f32)) {
         let (_, top) = &*this.stack.borrow();
         let (x, y, z) = top.transform_vec3(Vec3::new(x, y, z)).into();
         (x, y, z)
     }
-    fn transform_point(lua, this, (x, y, z): (f32, f32, f32)) {
+    fn transform_point((x, y, z): (f32, f32, f32)) {
         let (_, top) = &*this.stack.borrow();
         let (x, y, z) = top.transform_point3(Vec3::new(x, y, z)).into();
         (x, y, z)
     }
 
-    fn set_col(lua, this, (i, x, y, z, w): (usize, f32, f32, f32, f32)) {
+    fn set_col((i, x, y, z, w): (usize, f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         lua_assert!(i < 4, "invalid row index");
         top[i] = Vec4::new(x, y, z, w);
     }
-    fn set_row(lua, this, (i, x, y, z, w): (usize, f32, f32, f32, f32)) {
+    fn set_row((i, x, y, z, w): (usize, f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         lua_assert!(i < 4, "invalid row index");
         let mat = top.as_mut_slice();
@@ -149,8 +149,8 @@ impl LuaWorldPos {
         self.pos.set(pos);
     }
 }
-lua_type! {LuaWorldPos,
-    fn raw_difference(lua, this, other: LuaWorldPos) {
+lua_type! {LuaWorldPos, lua, this,
+    fn raw_difference(other: LuaWorldPos) {
         let lhs = this.get();
         let rhs = other.get();
         (
@@ -161,11 +161,11 @@ lua_type! {LuaWorldPos,
         )
     }
 
-    mut fn copy_from(lua, this, other: LuaWorldPos) {
+    mut fn copy_from(other: LuaWorldPos) {
         this.pos.set(other.get());
     }
 
-    mut fn r#move(lua, this, (terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
+    mut fn r#move((terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
         let terrain = terrain.rc.borrow();
         let mut pos = this.get();
         let (mv, crash) = if dx == 0. && dy == 0. {
@@ -182,7 +182,7 @@ lua_type! {LuaWorldPos,
         (mv, crash)
     }
 
-    mut fn move_box(lua, this, (terrain, dx, dy, dz, sx, sy, sz, slide): (TerrainRef, f64, f64, f64, f64, f64, f64, Option<bool>)) {
+    mut fn move_box((terrain, dx, dy, dz, sx, sy, sz, slide): (TerrainRef, f64, f64, f64, f64, f64, f64, Option<bool>)) {
         let terrain = terrain.rc.borrow();
         let mut pos = this.get();
         let (mv, crash) = terrain.boxcast(&mut pos, [dx, dy, dz], [sx, sy, sz], !slide.unwrap_or(false));
@@ -202,20 +202,20 @@ impl TerrainRef {
         })
     }
 }
-lua_type! {TerrainRef,
-    fn bookkeep(lua, this, pos: LuaWorldPos) {
+lua_type! {TerrainRef, lua, this,
+    fn bookkeep(pos: LuaWorldPos) {
         this.rc.borrow_mut().bookkeep(pos.pos.get().block_pos());
     }
 
-    fn set_view_distance(lua, this, (view, gen): (f32, f32)) {
+    fn set_view_distance((view, gen): (f32, f32)) {
         this.rc.borrow_mut().set_view_radius(view, gen)
     }
 
-    fn visible_radius(lua, this, ()) {
+    fn visible_radius() {
         this.rc.borrow().last_min_viewdist
     }
 
-    fn draw(lua, this, (
+    fn draw((
         shader,
         uniforms,
         offset_uniform,
@@ -255,7 +255,7 @@ lua_type! {TerrainRef,
         ).to_lua_err()?;
     }
 
-    fn get_draw_positions(lua, this, (entpos, sx, sy, sz, camstack, out): (LuaWorldPos, f64, f64, f64, LuaAnyUserData, LuaTable)) {
+    fn get_draw_positions((entpos, sx, sy, sz, camstack, out): (LuaWorldPos, f64, f64, f64, LuaAnyUserData, LuaTable)) {
         let this = this.rc.borrow();
         let entpos = entpos.get();
         let camstack = camstack.borrow::<CameraStack>()?;
@@ -282,13 +282,13 @@ lua_type! {TerrainRef,
         }
     }
 
-    fn chunk_gen_time(lua, this, ()) {
+    fn chunk_gen_time() {
         this.rc.borrow().generator.avg_gen_time.load()
     }
-    fn chunk_mesh_time(lua, this, ()) {
+    fn chunk_mesh_time() {
         this.rc.borrow().mesher.avg_mesh_time.load()
     }
-    fn chunk_mesh_upload_time(lua, this, ()) {
+    fn chunk_mesh_upload_time() {
         this.rc.borrow().mesher.avg_upload_time.load()
     }
 }
@@ -380,8 +380,8 @@ impl CameraStack {
         self.stack.borrow_mut().pop();
     }
 }
-lua_type! {CameraStack,
-    fn reset(lua, this, (origin, mvp, buf, offx, offy, offz): (LuaWorldPos, MatrixStack, Option<BufferRef>, f32, f32, f32)) {
+lua_type! {CameraStack, lua, this,
+    fn reset((origin, mvp, buf, offx, offy, offz): (LuaWorldPos, MatrixStack, Option<BufferRef>, f32, f32, f32)) {
         this.stack.borrow_mut().clear();
         let mvp = mvp.stack.borrow().1;
         let inv_mvp = mvp.inversed();
@@ -399,39 +399,39 @@ lua_type! {CameraStack,
         );
     }
 
-    fn set_origin(lua, this, pos: LuaWorldPos) {
+    fn set_origin(pos: LuaWorldPos) {
         this.stack.borrow_mut().last_mut().unwrap().origin = pos.get();
     }
 
-    fn set_framequad(lua, this, (i, x, y, z): (usize, f32, f32, f32)) {
+    fn set_framequad((i, x, y, z): (usize, f32, f32, f32)) {
         match this.stack.borrow_mut().last_mut().unwrap().framequad.get_mut(i) {
             Some(v) => *v = Vec3::new(x, y, z),
             None => lua_bail!("invalid framequad vertex index {}", i),
         }
     }
 
-    fn origin(lua, this, pos: LuaAnyUserData) {
+    fn origin(pos: LuaAnyUserData) {
         let pos = pos.borrow::<LuaWorldPos>()?;
         pos.set(this.origin());
     }
 
-    fn framequad(lua, this, i: usize) {
+    fn framequad(i: usize) {
         lua_assert!(i < 4, "invalid framequad vertex index");
         let v = this.framequad()[i];
         (v.x, v.y, v.z)
     }
 
-    fn geometry(lua, this, out: LuaAnyUserData) {
+    fn geometry(out: LuaAnyUserData) {
         let mut out = out.borrow_mut::<BufferRef>()?;
         *out = this.geometry();
     }
 
-    fn geometry_offset(lua, this, ()) {
+    fn geometry_offset() {
         let off = this.geometry_off();
         (off.x, off.y, off.z)
     }
 
-    fn clip_planes(lua, this, out: LuaTable) {
+    fn clip_planes(out: LuaTable) {
         let p = this.clip_planes();
         for i in 0..5 {
             for j in 0..4 {
@@ -440,7 +440,7 @@ lua_type! {CameraStack,
         }
     }
 
-    fn proper(lua, this, i: Option<usize>) {
+    fn proper(i: Option<usize>) {
         let proper = this.proper();
         match i {
             Some(i) if i < 4 => proper[i],
@@ -449,13 +449,13 @@ lua_type! {CameraStack,
         }
     }
 
-    fn can_view(lua, this, (x, y, z, r): (f32, f32, f32, f32)) {
+    fn can_view((x, y, z, r): (f32, f32, f32, f32)) {
         let u = Vec4::new(x, y, z, 1.);
         this.clip_planes().iter()
             .all(|p| p.dot(u) >= -r)
     }
 
-    fn depth(lua, this, ()) {
+    fn depth() {
         this.depth()
     }
 }
@@ -492,10 +492,10 @@ impl Watcher {
 struct WatcherRef {
     rc: AssertSync<Rc<Watcher>>,
 }
-lua_type! {WatcherRef,
+lua_type! {WatcherRef, lua, this,
     // Check whether the file being watched was changed between the last call to `check` and this
     // call.
-    fn changed(lua, this, ()) {
+    fn changed() {
         this.rc.tick();
         let modified = this.rc.modified > this.rc.checked;
         this.rc.checked.set(this.rc.modified.get());
@@ -504,7 +504,7 @@ lua_type! {WatcherRef,
 }
 
 pub struct LuaRng {
-    pub rng: Cell<FastRng>,
+    pub rng: FastRng,
 }
 impl LuaRng {
     pub fn seed(seed: u64) -> Self {
@@ -512,65 +512,166 @@ impl LuaRng {
             rng: FastRng::seed_from_u64(seed).into(),
         }
     }
-
-    pub fn new(rng: FastRng) -> Self {
-        Self {
-            rng: Cell::new(rng),
-        }
-    }
-
-    fn get(&self) -> FastRng {
-        self.rng.replace(unsafe { mem::zeroed() })
-    }
-    fn set(&self, rng: FastRng) {
-        self.rng.set(rng);
-    }
 }
-lua_type! {LuaRng,
+lua_type! {LuaRng, lua, this,
+    mut fn reseed(seed: i64) {
+        *this = LuaRng::seed(seed as u64);
+    }
+
     // All uniform ranges are integer inclusive-exclusive (ie. `[l, r)`)
     // integer(x) -> uniform(0, x)
     // integer(l, r) -> uniform(l, r)
-    fn integer(lua, this, (a, b): (i64, Option<i64>)) {
-        let mut rng = this.get();
+    mut fn integer((a, b): (i64, Option<i64>)) {
         let (l, r) = match (a, b) {
             (a, None) => (0, a),
             (l, Some(r)) => (l, r),
         };
-        let v = rng.gen_range(l..r);
-        this.set(rng);
-        v
+        this.rng.gen_range(l..r)
     }
 
     // All uniform ranges are inclusive floats
     // uniform() -> uniform(0, 1)
     // uniform(r) -> uniform(0, r)
     // uniform(l, r) -> uniform(l, r)
-    fn uniform(lua, this, (a, b): (Option<f64>, Option<f64>)) {
-        let mut rng = this.get();
+    mut fn uniform((a, b): (Option<f64>, Option<f64>)) {
         let (l, r) = match (a, b) {
             (Some(l), Some(r)) => (l, r),
             (Some(r), _) => (0., r),
             _ => (0., 1.),
         };
-        let v = rng.gen_range(l..= r);
-        this.set(rng);
-        v
+        this.rng.gen_range(l..= r)
     }
 
     // normal() -> normal(1/2, 1/6) clamped to [0, 1]
     // normal(x) -> normal(x/2, x/6) clamped to [0, x]
     // normal(l, r) -> normal((l+r)/2, (r-l)/6) clamped to [l, r]
-    fn normal(lua, this, (a, b): (Option<f64>, Option<f64>)) {
-        let mut rng = this.get();
+    mut fn normal((a, b): (Option<f64>, Option<f64>)) {
         let (mu, sd) = match (a, b) {
             (Some(l), Some(r)) => (0.5 * (l + r), 1./6. * (r - l)),
             (Some(x), _) => (0.5, 1./6.*x),
             (_, _) => (0.5, 1./6.),
         };
-        let z = rng.sample::<f64, _>(StandardNormal).clamp(-3., 3.);
-        this.set(rng);
+        let z = this.rng.sample::<f64, _>(StandardNormal).clamp(-3., 3.);
         mu + sd * z
     }
+}
+
+#[derive(Copy, Clone)]
+struct LuaVec3 {
+    u: DVec3,
+}
+lua_type! {LuaVec3, lua, this,
+    // Set `this` to either the value of another vec3 or to concrete coordinates.
+    mut fn set(args: LuaMultiValue) {
+        match args.len() {
+            1 => this.u = LuaVec3::from_lua_multi(args, lua)?.u,
+            3 => {
+                let (x, y, z) = FromLuaMulti::from_lua_multi(args, lua)?;
+                this.u = DVec3::new(x, y, z);
+            }
+            _ => lua_bail!("expected 1 or 3 arguments"),
+        }
+    }
+
+    // If called with 1 argument, adds it to this.
+    // If called with 2 arguments, adds lhs and rhs and sets this to the result.
+    mut fn add((lhs, rhs): (LuaVec3, Option<LuaVec3>)) {
+        match rhs {
+            Some(rhs) => this.u = lhs.u + rhs.u,
+            None => this.u += lhs.u,
+        }
+    }
+
+    // If called with 1 argument, subtract it from this.
+    // If called with 2 arguments, subtracts lhs and rhs and sets this to the result.
+    mut fn sub((lhs, rhs): (LuaVec3, Option<LuaVec3>)) {
+        match rhs {
+            Some(rhs) => this.u = lhs.u - rhs.u,
+            None => this.u -= lhs.u,
+        }
+    }
+
+    // Multiply this by a scalar.
+    mut fn mul(s: f64) {
+        this.u *= s;
+    }
+
+    // Divide this by a scalar.
+    mut fn div(s: f64) {
+        this.u *= s.recip();
+    }
+
+    // If called with 2 arguments, lerp this and lhs depending on s.
+    // If called with 3 arguments, lerp lhs and rhs depending on s.
+    // In any case, store the result in this.
+    mut fn lerp((s, lhs, rhs): (f64, LuaVec3, Option<LuaVec3>)) {
+        match rhs {
+            Some(rhs) => this.u = lhs.u + s * (rhs.u - lhs.u),
+            None => this.u = this.u + s * (lhs.u - this.u),
+        }
+    }
+
+    // Dot product with rhs, returning the resulting scalar.
+    fn dot(rhs: LuaVec3) {
+        this.u.dot(rhs.u)
+    }
+
+    // If called with 1 argument, compute this cross lhs.
+    // If called with 2 arguments, compute lhs cross rhs.
+    // In any case, store the result in this.
+    mut fn cross((lhs, rhs): (LuaVec3, Option<LuaVec3>)) {
+        match rhs {
+            Some(rhs) => this.u = lhs.u.cross(rhs.u),
+            None => this.u = this.u.cross(lhs.u),
+        }
+    }
+
+    // Compute the squared magnitude, returning the result.
+    fn magsq() {
+        this.u.mag_sq()
+    }
+
+    // Compute the magnitude, returning the result.
+    fn mag() {
+        this.u.mag()
+    }
+
+    // Normalize this.
+    mut fn normalize() {
+        this.u.normalize()
+    }
+
+    // If called with 2 arguments, rotate this by the angle and lhs as axis. The axis can be not
+    // normalized.
+    // If called with 3 arguments, rotate this by the angle in the plane given by lhs and rhs, in
+    // the direction from lhs to rhs.
+    mut fn rotate((angle, lhs, rhs): (f64, LuaVec3, Option<LuaVec3>)) {
+        let axis = match rhs {
+            Some(rhs) => lhs.u.cross(rhs.u).normalized(),
+            None => lhs.u.normalized(),
+        };
+        this.u.rotate_by(uv::DRotor3::from_angle_plane(angle, uv::DBivec3::from_normalized_axis(axis)))
+    }
+
+    mut fn rotate_x(angle: f64) {
+        this.u.rotate_by(uv::DRotor3::from_rotation_yz(angle))
+    }
+    mut fn rotate_y(angle: f64) {
+        this.u.rotate_by(uv::DRotor3::from_rotation_xz(angle))
+    }
+    mut fn rotate_z(angle: f64) {
+        this.u.rotate_by(uv::DRotor3::from_rotation_xy(angle))
+    }
+
+    fn x() { this.u.x }
+    fn y() { this.u.y }
+    fn z() { this.u.z }
+
+    fn xy() { (this.u.x, this.u.y) }
+    fn xz() { (this.u.x, this.u.z) }
+    fn yz() { (this.u.y, this.u.z) }
+
+    fn xyz() { (this.u.x, this.u.y, this.u.z) }
 }
 
 pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
@@ -635,72 +736,23 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
         }),
     )
     .unwrap();
-}
 
-pub(crate) fn open_vec3_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
-    let state = ();
-    lua.globals()
-        .set(
-            "vec3",
-            lua_lib! {lua, state,
-                // Dot product between two 3D vectors.
-                fn dot((x0, y0, z0, x1, y1, z1): (f64, f64, f64, f64, f64, f64)) {
-                    x0 * x1 + y0 * y1 + z0 * z1
-                }
-
-                // Cross product between two 3D vectors, resulting in a third vector.
-                fn cross((x0, y0, z0, x1, y1, z1): (f64, f64, f64, f64, f64, f64)) {
-                    (y0 * z1 -z0 * y1, z0 * x1 -x0 * z1, x0 * y1 - y0 * x1)
-                }
-
-                // The squared magnitude of a vector.
-                fn magsq((x, y, z): (f64, f64, f64)) {
-                    x * x + y * y + z * z
-                }
-
-                // The magnitude of a vector.
-                fn mag((x, y, z): (f64, f64, f64)) {
-                    (x * x + y * y + z * z).sqrt()
-                }
-
-                // Normalize a vector.
-                fn normalize((x, y, z): (f64, f64, f64)) {
-                    let f = (x * x + y * y + z * z).sqrt().recip();
-                    (x * f, y * f, z * f)
-                }
-
-                // Rotate a vector around an axis (normalized) given a certain angle.
-                fn rotate((angle, x, y, z): (f64, f64, f64, f64)) {
-                    let (sin, cos) = angle.sin_cos();
-                    let mul = 1. - cos;
-
-                    let x_sin = x * sin;
-                    let y_sin = y * sin;
-                    let z_sin = z * sin;
-
-                    let xy_mul = x * y * mul;
-                    let xz_mul = x * z * mul;
-                    let yz_mul = y * z * mul;
-
-                    let m00 = (x * x).mul_add(mul, cos);
-                    let m10 = xy_mul + z_sin;
-                    let m20 = xz_mul - y_sin;
-                    let m01 = xy_mul - z_sin;
-                    let m11 = (y * y).mul_add(mul, cos);
-                    let m21 = yz_mul + x_sin;
-                    let m02 = xz_mul + y_sin;
-                    let m12 = yz_mul - x_sin;
-                    let m22 = (z * z).mul_add(mul, cos);
-
-                    (
-                        m00 * x + m01 * y + m02 * z,
-                        m10 * x + m11 * y + m12 * z,
-                        m20 * x + m21 * y + m22 * z
-                    )
-                }
-            },
-        )
-        .unwrap();
+    math.set(
+        "vec3",
+        lua_func!(lua, state, fn(args: LuaMultiValue) {
+            LuaVec3 {
+                u: match args.len() {
+                    1 => LuaVec3::from_lua_multi(args, lua)?.u,
+                    3 => {
+                        let (x, y, z) = FromLuaMulti::from_lua_multi(args, lua)?;
+                        DVec3::new(x, y, z)
+                    }
+                    _ => lua_bail!("expected 1 or 3 arguments"),
+                },
+            }
+        }),
+    )
+    .unwrap();
 }
 
 fn load_native_lib<'a>(lua: LuaContext<'a>, path: &str) -> Result<LuaValue<'a>> {
@@ -708,11 +760,11 @@ fn load_native_lib<'a>(lua: LuaContext<'a>, path: &str) -> Result<LuaValue<'a>> 
     let path = libloading::library_filename(path);
     unsafe {
         let lib = Library::new(path)?;
-        let open: Symbol<unsafe extern "C" fn(LuaContext, fn(&[u8]) -> usize) -> Result<LuaValue>> =
+        let open: Symbol<unsafe extern "C" fn(LuaContext) -> Result<LuaValue>> =
             lib.get(b"lua_open\0")?;
         let open = open.into_raw();
         mem::forget(lib);
-        open(lua, crate::get_exported_function)
+        open(lua)
     }
 }
 
@@ -784,5 +836,4 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
 pub(crate) fn open_generic_libs(state: &Arc<GlobalState>, lua: LuaContext) {
     modify_std_lib(state, lua);
     open_fs_lib(state, lua);
-    open_vec3_lib(state, lua);
 }

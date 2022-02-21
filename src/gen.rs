@@ -280,7 +280,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
             let mut chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    println!("failed to generate chunk at {:?}: {:#}", pos, err);
+                    println!("failed to generate chunk at {:?}: {}", pos, err);
                     continue;
                 }
             };

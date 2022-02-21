@@ -10,8 +10,8 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
-common = { path = "../common", features = [] }
+common = { path = "../common" }
 serde = "1"
 fxhash = "0.2"
-rlua = "0.17"
-rlua_serde = "0.4"
+rlua = { path = "../rlua", version = "0.19" }
+rlua_serde = { path = "../rlua_serde", version = "0.4" }

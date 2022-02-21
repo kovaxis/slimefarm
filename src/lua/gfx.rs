@@ -50,15 +50,15 @@ impl Uniforms for UniformStorage {
         }
     }
 }
-lua_type! {UniformStorage,
-    fn add(lua, this, name: String) {
+lua_type! {UniformStorage, lua, this,
+    fn add(name: String) {
         let mut vars = this.vars.0.borrow_mut();
         let idx = vars.len();
         vars.push((name, UniformVal::Float(0.)));
         idx
     }
 
-    fn set_float(lua, this, (idx, val): (usize, f32)) {
+    fn set_float((idx, val): (usize, f32)) {
         let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
@@ -66,7 +66,7 @@ lua_type! {UniformStorage,
             .to_lua_err()?
             .1 = UniformVal::Float(val);
     }
-    fn set_vec2(lua, this, (idx, x, y): (usize, f32, f32)) {
+    fn set_vec2((idx, x, y): (usize, f32, f32)) {
         let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
@@ -74,7 +74,7 @@ lua_type! {UniformStorage,
             .to_lua_err()?
             .1 = UniformVal::Vec2([x, y]);
     }
-    fn set_vec3(lua, this, (idx, x, y, z): (usize, f32, f32, f32)) {
+    fn set_vec3((idx, x, y, z): (usize, f32, f32, f32)) {
         let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
@@ -82,7 +82,7 @@ lua_type! {UniformStorage,
             .to_lua_err()?
             .1 = UniformVal::Vec3([x, y, z]);
     }
-    fn set_vec4(lua, this, (idx, x, y, z, w): (usize, f32, f32, f32, f32)) {
+    fn set_vec4((idx, x, y, z, w): (usize, f32, f32, f32, f32)) {
         let mut vars = this.vars.borrow_mut();
         vars
             .get_mut(idx)
@@ -91,7 +91,7 @@ lua_type! {UniformStorage,
             .1 = UniformVal::Vec4([x, y, z, w]);
     }
 
-    fn set_matrix(lua, this, (idx, mat): (usize, MatrixStack)) {
+    fn set_matrix((idx, mat): (usize, MatrixStack)) {
         let (_, top) = *mat.stack.borrow();
         let mut vars = this.vars.borrow_mut();
         vars
@@ -101,7 +101,7 @@ lua_type! {UniformStorage,
             .1 = UniformVal::Mat4(top.into());
     }
 
-    fn set_texture(lua, this, (idx, tex): (usize, TextureRef)) {
+    fn set_texture((idx, tex): (usize, TextureRef)) {
         let mut vars = this.vars.borrow_mut();
         let sampling = tex.sampling;
         vars
@@ -154,8 +154,8 @@ impl Font {
 pub(crate) struct FontRef {
     pub rc: AssertSync<Rc<Font>>,
 }
-lua_type! {FontRef,
-    fn draw(lua, this, (text, mvp, draw_params, r, g, b, a): (LuaString, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
+lua_type! {FontRef, lua, this,
+    fn draw((text, mvp, draw_params, r, g, b, a): (LuaString, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
         let (_, mvp) = &*mvp.stack.borrow();
         this.rc.draw(text.to_str()?, *mvp, [r, g, b, a.unwrap_or(1.)], &draw_params.params);
     }
@@ -190,12 +190,12 @@ impl TextureRef {
         }
     }
 }
-lua_type! {TextureRef,
-    fn dimensions(lua, this, ()) {
+lua_type! {TextureRef, lua, this,
+    fn dimensions() {
         (this.tex.width(), this.tex.height())
     }
 
-    mut fn set_min(lua, this, filter: LuaString) {
+    mut fn set_min(filter: LuaString) {
         use glium::uniforms::MinifySamplerFilter::*;
         this.sampling.minify_filter = match filter.as_bytes() {
             b"linear" => Linear,
@@ -204,7 +204,7 @@ lua_type! {TextureRef,
         };
     }
 
-    mut fn set_mag(lua, this, filter: LuaString) {
+    mut fn set_mag(filter: LuaString) {
         use glium::uniforms::MagnifySamplerFilter::*;
         this.sampling.magnify_filter = match filter.as_bytes() {
             b"linear" => Linear,
@@ -213,7 +213,7 @@ lua_type! {TextureRef,
         };
     }
 
-    mut fn set_wrap(lua, this, wrap: LuaString) {
+    mut fn set_wrap(wrap: LuaString) {
         use glium::uniforms::SamplerWrapFunction::*;
         let func = match wrap.as_bytes() {
             b"repeat" => Repeat,
@@ -229,8 +229,8 @@ lua_type! {TextureRef,
 pub(crate) struct LuaDrawParams {
     pub params: AssertSync<DrawParameters<'static>>,
 }
-lua_type! {LuaDrawParams,
-    mut fn set_depth(lua, this, (test, write, clamp, near, far): (LuaString, bool, Option<LuaString>, Option<f32>, Option<f32>)) {
+lua_type! {LuaDrawParams, lua, this,
+    mut fn set_depth((test, write, clamp, near, far): (LuaString, bool, Option<LuaString>, Option<f32>, Option<f32>)) {
         use glium::draw_parameters::{DepthTest::*, DepthClamp::*, Depth};
         let test = match test.as_bytes() {
             b"always_fail" => Ignore,
@@ -259,7 +259,7 @@ lua_type! {LuaDrawParams,
         };
     }
 
-    mut fn set_color_mask(lua, this, (r, g, b, a): (bool, Option<bool>, Option<bool>, Option<bool>)) {
+    mut fn set_color_mask((r, g, b, a): (bool, Option<bool>, Option<bool>, Option<bool>)) {
         this.params.color_mask = match (r, g, b, a) {
             (d, None, None, None) => (d, d, d, d),
             (r, Some(g), Some(b), Some(a)) => (r, g, b, a),
@@ -267,7 +267,7 @@ lua_type! {LuaDrawParams,
         };
     }
 
-    mut fn set_color_blend(lua, this, (func, src, dst): (LuaString, LuaString, LuaString)) {
+    mut fn set_color_blend((func, src, dst): (LuaString, LuaString, LuaString)) {
         use glium::draw_parameters::{BlendingFunction::*, LinearBlendingFactor::{self, *}};
         fn map_factor(s: LuaString) -> LuaResult<LinearBlendingFactor> {
             Ok(match s.as_bytes() {
@@ -303,7 +303,7 @@ lua_type! {LuaDrawParams,
         this.params.blend.color = func;
     }
 
-    mut fn set_alpha_blend(lua, this, (func, src, dst): (LuaString, LuaString, LuaString)) {
+    mut fn set_alpha_blend((func, src, dst): (LuaString, LuaString, LuaString)) {
         use glium::draw_parameters::{BlendingFunction::*, LinearBlendingFactor::{self, *}};
         fn map_factor(s: LuaString) -> LuaResult<LinearBlendingFactor> {
             Ok(match s.as_bytes() {
@@ -339,7 +339,7 @@ lua_type! {LuaDrawParams,
         this.params.blend.alpha = func;
     }
 
-    mut fn set_cull(lua, this, winding: LuaString) {
+    mut fn set_cull(winding: LuaString) {
         use glium::draw_parameters::BackfaceCullingMode::*;
         let cull = match winding.as_bytes() {
             b"cw" => CullClockwise,
@@ -350,7 +350,7 @@ lua_type! {LuaDrawParams,
         this.params.backface_culling = cull;
     }
 
-    mut fn set_stencil(lua, this, (winding, test, refval, pass, fail, depthfail): (LuaString, LuaString, i32, Option<LuaString>, Option<LuaString>, Option<LuaString>)) {
+    mut fn set_stencil((winding, test, refval, pass, fail, depthfail): (LuaString, LuaString, i32, Option<LuaString>, Option<LuaString>, Option<LuaString>)) {
         use glium::draw_parameters::{StencilTest::*, StencilOperation::*};
         let p = &mut this.params.stencil;
         let (mtest, mrefval, mpass, mfail, mdepthfail) = match winding.as_bytes() {
@@ -405,23 +405,23 @@ lua_type! {LuaDrawParams,
         *mdepthfail = depthfail;
     }
 
-    mut fn set_stencil_ref(lua, this, refval: i32) {
+    mut fn set_stencil_ref(refval: i32) {
         this.params.stencil.reference_value_counter_clockwise = refval;
     }
 
-    mut fn set_clip_planes(lua, this, planes: u32) {
+    mut fn set_clip_planes(planes: u32) {
         this.params.clip_planes_bitmask = planes;
     }
 
-    mut fn set_multisampling(lua, this, enable: bool) {
+    mut fn set_multisampling(enable: bool) {
         this.params.multisampling = enable;
     }
 
-    mut fn set_dithering(lua, this, enable: bool) {
+    mut fn set_dithering(enable: bool) {
         this.params.dithering = enable;
     }
 
-    mut fn set_viewport(lua, this, (left, bottom, w, h): (Option<u32>, Option<u32>, Option<u32>, Option<u32>)) {
+    mut fn set_viewport((left, bottom, w, h): (Option<u32>, Option<u32>, Option<u32>, Option<u32>)) {
         this.params.viewport = match (left, bottom, w, h) {
             (None, None, None, None) => None,
             (Some(left), Some(bottom), Some(width), Some(height)) => Some(glium::Rect {
@@ -434,7 +434,7 @@ lua_type! {LuaDrawParams,
         };
     }
 
-    mut fn set_scissor(lua, this, (left, bottom, w, h): (Option<u32>, Option<u32>, Option<u32>, Option<u32>)) {
+    mut fn set_scissor((left, bottom, w, h): (Option<u32>, Option<u32>, Option<u32>, Option<u32>)) {
         this.params.scissor = match (left, bottom, w, h) {
             (None, None, None, None) => None,
             (Some(left), Some(bottom), Some(width), Some(height)) => Some(glium::Rect {
@@ -447,11 +447,11 @@ lua_type! {LuaDrawParams,
         };
     }
 
-    mut fn set_draw_primitives(lua, this, enable: bool) {
+    mut fn set_draw_primitives(enable: bool) {
         this.params.draw_primitives = enable;
     }
 
-    mut fn set_smooth(lua, this, smooth: Option<LuaString>) {
+    mut fn set_smooth(smooth: Option<LuaString>) {
         use glium::draw_parameters::Smooth::*;
         this.params.smooth = match smooth.as_ref().map(|s| s.as_bytes()) {
             Some(b"fastest") => Some(Fastest),
@@ -462,11 +462,11 @@ lua_type! {LuaDrawParams,
         };
     }
 
-    mut fn set_bounding_box(lua, this, (x0, x1, y0, y1, z0, z1, w0, w1): (f32, f32, f32, f32, f32, f32, f32, f32)) {
+    mut fn set_bounding_box((x0, x1, y0, y1, z0, z1, w0, w1): (f32, f32, f32, f32, f32, f32, f32, f32)) {
         this.params.primitive_bounding_box = (x0..x1, y0..y1, z0..z1, w0..w1);
     }
 
-    mut fn set_polygon_offset(lua, this, (enable, factor, units): (bool, f32, f32)) {
+    mut fn set_polygon_offset((enable, factor, units): (bool, f32, f32)) {
         use glium::draw_parameters::PolygonOffset;
         this.params.polygon_offset = PolygonOffset {
             factor,

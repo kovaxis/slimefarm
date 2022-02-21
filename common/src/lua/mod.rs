@@ -21,7 +21,17 @@ macro_rules! lua_assert {
 
 #[macro_export]
 macro_rules! lua_type {
-    (@$m:ident fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
+    (@$m:ident $lua:ident $this:ident fn $fn_name:ident () $fn_code:block $($rest:tt)*) => {{
+        $m.add_method(stringify!($fn_name), |lua, this, ()| {
+            #[allow(unused_variables)]
+            let $lua = lua;
+            #[allow(unused_variables)]
+            let $this = this;
+            Ok($fn_code)
+        });
+        $crate::lua_type!(@$m $lua $this $($rest)*);
+    }};
+    (@$m:ident $lua:ident $this:ident fn $fn_name:ident ($($args:tt)*) $fn_code:block $($rest:tt)*) => {{
         $m.add_method(stringify!($fn_name), |lua, this, $($args)*| {
             #[allow(unused_variables)]
             let $lua = lua;
@@ -29,9 +39,19 @@ macro_rules! lua_type {
             let $this = this;
             Ok($fn_code)
         });
-        $crate::lua_type!(@$m $($rest)*);
+        $crate::lua_type!(@$m $lua $this $($rest)*);
     }};
-    (@$m:ident mut fn $fn_name:ident ($lua:ident, $this:ident, $($args:tt)*) $fn_code:block $($rest:tt)*) => {{
+    (@$m:ident $lua:ident $this:ident mut fn $fn_name:ident () $fn_code:block $($rest:tt)*) => {{
+        $m.add_method_mut(stringify!($fn_name), |lua, this, ()| {
+            #[allow(unused_variables)]
+            let $lua = lua;
+            #[allow(unused_variables)]
+            let $this = this;
+            Ok($fn_code)
+        });
+        $crate::lua_type!(@$m $lua $this $($rest)*);
+    }};
+    (@$m:ident $lua:ident $this:ident mut fn $fn_name:ident ($($args:tt)*) $fn_code:block $($rest:tt)*) => {{
         $m.add_method_mut(stringify!($fn_name), |lua, this, $($args)*| {
             #[allow(unused_variables)]
             let $lua = lua;
@@ -39,13 +59,13 @@ macro_rules! lua_type {
             let $this = this;
             Ok($fn_code)
         });
-        $crate::lua_type!(@$m $($rest)*);
+        $crate::lua_type!(@$m $lua $this $($rest)*);
     }};
-    (@$m:ident) => {};
-    ($ty:ty, $($rest:tt)*) => {
+    (@$m:ident $lua:ident $this:ident) => {};
+    ($ty:ty, $lua:ident, $this:ident, $($rest:tt)*) => {
         impl LuaUserData for $ty {
             fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(m: &mut M) {
-                $crate::lua_type!(@m $($rest)*);
+                $crate::lua_type!(@m $lua $this $($rest)*);
             }
         }
     };

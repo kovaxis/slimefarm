@@ -7,6 +7,11 @@ pub struct ActionBuf {
         Box<dyn Fn(Int3, [Int3; 2], &mut ChunkBox) + Send>,
     )>,
 }
+impl fmt::Debug for ActionBuf {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ActionBuf")
+    }
+}
 impl ActionBuf {
     pub fn new(origin: Int3) -> Self {
         Self {
@@ -99,14 +104,14 @@ mod actions;
 
 macro_rules! actionbuf_lua {
     ($($name:ident,)*) => {
-        lua_type! {ActionBuf,
-            mut fn reset(lua, this, (x, y, z): (i32, i32, i32)) {
+        lua_type! {ActionBuf, lua, this,
+            mut fn reset((x, y, z): (i32, i32, i32)) {
                 this.origin = [x, y, z].into();
                 this.actions.clear();
             }
 
             $(
-                mut fn $name(lua, this, args: <actions::$name as Action>::Args) {
+                mut fn $name(args: <actions::$name as Action>::Args) {
                     this.act(actions::$name::make(args));
                 }
             )*

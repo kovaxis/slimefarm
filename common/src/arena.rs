@@ -1,55 +1,13 @@
 use crate::prelude::*;
+use commonmem_consts::{ALIGN_LOG2, MAX_SIZE_CLASS};
 use std::ptr::NonNull;
 
-/// What size of chunk to allocate in one go.
-/// 20 = 1MB
-/// 22 = 4MB
-/// 24 = 16MB
-/// 26 = 64MB
-const BLOCK_SIZE_LOG2: usize = 24;
+// OPTIMIZE: If allocation becomes a bottleneck, notice that the ownership pf recycled blocks of
+// data can be sent around at no cost.
+// Therefore, some sharding with shard balancing could be done.
 
-struct SizeClass {
-    available: Vec<AssertSync<*mut u8>>,
-}
-
-const fn class() -> Mutex<SizeClass> {
-    parking_lot::const_mutex(SizeClass {
-        available: Vec::new(),
-    })
-}
-
-const MAX_SIZE_CLASS: usize = 23;
-#[cfg(feature = "host")]
-static STATE: [Mutex<SizeClass>; MAX_SIZE_CLASS + 1] = [
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-    class(),
-];
-
-#[repr(align(16))]
-struct Unit([u8; 16]);
-const ALIGN_LOG2: usize = 4;
+pub static mut ARENA_ALLOC: Uninit<unsafe fn(usize) -> *mut u8> = Uninit::uninit();
+pub static mut ARENA_DEALLOC: Uninit<unsafe fn(usize, *mut u8)> = Uninit::uninit();
 
 const fn size_class_of<T>() -> usize {
     let raw_size = mem::size_of::<T>();
@@ -59,60 +17,6 @@ const fn size_class_of<T>() -> usize {
             .leading_zeros()
             .saturating_sub(ALIGN_LOG2 as u32)
             + ALIGN_LOG2 as u32) as usize
-}
-
-// OPTIMIZE: If allocation becomes a bottleneck, notice that the ownership pf recycled blocks of
-// data can be sent around at no cost.
-// Therefore, some sharding with shard balancing could be done.
-
-#[cfg(feature = "host")]
-pub unsafe fn alloc_impl(size_class: usize) -> *mut u8 {
-    let mut state = STATE[size_class].lock();
-    match state.available.pop() {
-        Some(b) => b.0,
-        None => {
-            //Allocate a new segment
-            let (first, count);
-            {
-                let alloc_size = 1 << (BLOCK_SIZE_LOG2.max(size_class) - ALIGN_LOG2);
-                let seg = Vec::<Unit>::with_capacity(alloc_size);
-                first = seg.as_ptr() as *mut u8;
-                count = 1usize << BLOCK_SIZE_LOG2.saturating_sub(size_class);
-                mem::forget(seg);
-            }
-            //Place the allocated slots in the available state
-            for i in 1..count {
-                state
-                    .available
-                    .push(AssertSync(first.offset((i << size_class) as isize)));
-            }
-            first
-        }
-    }
-}
-
-#[cfg(feature = "host")]
-pub unsafe fn dealloc_impl(size_class: usize, ptr: *mut u8) {
-    let mut state = STATE[size_class].lock();
-    state.available.push(AssertSync(ptr));
-}
-
-#[cfg(feature = "host")]
-pub static mut ALLOC_IMPL: Option<unsafe fn(usize) -> *mut u8> = Some(alloc_impl);
-#[cfg(feature = "host")]
-pub static mut DEALLOC_IMPL: Option<unsafe fn(usize, *mut u8)> = Some(dealloc_impl);
-
-#[cfg(not(feature = "host"))]
-pub static mut ALLOC_IMPL: Option<unsafe fn(usize) -> *mut u8> = None;
-#[cfg(not(feature = "host"))]
-pub static mut DEALLOC_IMPL: Option<unsafe fn(usize, *mut u8)> = None;
-
-/// Initialize the arena allocation functions from the executable symbols.
-/// THIS FUNCTION MUST BE CALLED BEFORE ANY ALLOCATION/DEALLOCATION HAPPENS!
-/// (Only on the non-host of course).
-pub unsafe fn init_impl(getfunc: fn(&[u8]) -> usize) {
-    ALLOC_IMPL = mem::transmute(getfunc(b"arena_alloc"));
-    DEALLOC_IMPL = mem::transmute(getfunc(b"arena_dealloc"));
 }
 
 pub fn alloc<T>() -> BoxUninit<T> {
@@ -132,11 +36,7 @@ pub fn alloc<T>() -> BoxUninit<T> {
         );
     }
     unsafe {
-        // OPTIMIZE: An easy optimization is to remove this `unwrap` at the cost of "safety"
-        // ("safety" because once set up correctly there is virtually no chance to invoke this
-        // unsafety, and even if it happens it is almost guaranteed to produce a crash, since
-        // it is a call to null)
-        let b = ALLOC_IMPL.unwrap()(size_class);
+        let b = ARENA_ALLOC.assume_init()(size_class);
         BoxUninit {
             ptr: NonNull::new_unchecked(b as *mut Uninit<T>),
         }
@@ -156,7 +56,7 @@ impl<T> Drop for BoxUninit<T> {
             // ("safety" because once set up correctly there is virtually no chance to invoke this
             // unsafety, and even if it happens it is almost guaranteed to produce a crash, since
             // it is a call to null)
-            DEALLOC_IMPL.unwrap()(size_class, self.ptr.as_ptr() as *mut u8);
+            ARENA_DEALLOC.assume_init()(size_class, self.ptr.as_ptr() as *mut u8);
         }
     }
 }

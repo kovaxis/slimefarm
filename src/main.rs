@@ -255,22 +255,11 @@ struct Buffer2d {
     index: IndexBuffer<VertIdx>,
 }
 
-fn get_exported_function(name: &[u8]) -> usize {
-    unsafe {
-        match name {
-            b"arena_alloc" => {
-                mem::transmute(common::arena::alloc_impl as unsafe fn(usize) -> *mut u8)
-            }
-            b"arena_dealloc" => {
-                mem::transmute(common::arena::dealloc_impl as unsafe fn(usize, *mut u8))
-            }
-            _ => 0,
-        }
-    }
-}
-
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
+    unsafe {
+        common::staticinit::static_init();
+    }
 
     //Initialize window
     let evloop = EventLoop::new();

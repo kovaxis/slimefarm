@@ -40,6 +40,19 @@ function util.pos_to_yaw(dx, dy)
     return math.atan(-dx, dy)
 end
 
+function util.dot(x0, y0, z0, x1, y1, z1)
+    return x0 * x1 + y0 * y1 + z0 * z1
+end
+
+function util.cross(x0, y0, z0, x1, y1, z1)
+    return y0 * z1 - y1 * z0, z0 * x1 - x0 * z1, x0 * y1 - x1 * y0
+end
+
+function util.normalize(x, y, z)
+    local inv = (x * x + y * y + z * z) ^ -0.5
+    return inv * x, inv * y, inv * z
+end
+
 function util.approach(cur, target, factor, linear, dt)
     dt = dt or 1
     local og_delta = cur - target

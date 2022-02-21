@@ -82,7 +82,6 @@ impl ChunkStorage {
             return;
         }
         //Get up to the first chunk whose distance to the center is larger than `radius`
-        println!("generating spherebuf");
         sphere.chunks.clear();
         let r_chunk = radius * (CHUNK_SIZE as f32).recip();
         let ir = r_chunk.ceil() as i32;

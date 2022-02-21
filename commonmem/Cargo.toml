@@ -1,0 +1,13 @@
+[package]
+name = "commonmem"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+parking_lot = "0.12"
+commonmem_consts = { path = "commonmem_consts" }

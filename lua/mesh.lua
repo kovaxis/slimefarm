@@ -1,5 +1,6 @@
 
 local class = require 'class'
+local util = require 'util'
 
 local Mesh = class{}
 
@@ -35,8 +36,8 @@ function Mesh:add_quad(x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, r, g, b, 
     local base = #self.vertices / 3
     local len = #i
 
-    local nx, ny, nz = vec3.cross(x1 - x0, y1 - y0, z1 - z0,   x3 - x0, y3 - y0, z3 - z0)
-    nx, ny, nz = vec3.normalize(nx, ny, nz)
+    local nx, ny, nz = util.cross(x1 - x0, y1 - y0, z1 - z0,   x3 - x0, y3 - y0, z3 - z0)
+    nx, ny, nz = util.normalize(nx, ny, nz)
 
     self:add_vertex(x0, y0, z0, nx, ny, nz, r, g, b, a)
     self:add_vertex(x1, y1, z1, nx, ny, nz, r, g, b, a)

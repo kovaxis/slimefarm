@@ -28,7 +28,14 @@ function gen.textures()
 end
 
 function gen.chunk(x, y, z, w)
-    return filler.generate(x, y, z, w)
+    local ok, res = pcall(filler.generate, x, y, z, w)
+    if ok then
+        return res
+    else
+        print("gen.chunk() errored with: "..tostring(res))
+        os.exit()
+    end
+    --return filler.generate(x, y, z, w)
 end
 
 function gen.gc()
