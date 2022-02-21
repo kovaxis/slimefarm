@@ -4,6 +4,8 @@ local use_built = true
 local require_build = true
 local use_debug = true
 
+local reclaim = require 'gen.reclaim'
+
 if build_rust then
     local release
     if use_debug then
@@ -30,5 +32,8 @@ else
     path = "gen/worldgen"
 end
 local native = fs.open_lib(path)
+
+reclaim.wrap(native, 'heightmap')
+reclaim.wrap(native, 'structure_grid_2d')
 
 return native

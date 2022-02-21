@@ -1,6 +1,7 @@
 
 local native = require 'gen.native'
 local blocks = require 'gen.blocks'
+local reclaim = require 'gen.reclaim'
 
 gen.k = ...
 gen.seed = assert(gen.k.seed, "no seed!")
@@ -32,5 +33,5 @@ function gen.chunk(x, y, z, w)
 end
 
 function gen.gc()
-
+    reclaim.reclaim()
 end

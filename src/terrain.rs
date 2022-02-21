@@ -218,11 +218,10 @@ impl ChunkStorage {
 
     pub fn maybe_gc(&mut self) {
         if self.last_gc.elapsed() > self.gc_interval {
-            println!("doing gc on the chunks");
             let old = self.chunks.map.len();
             self.gc();
             let new = self.chunks.map.len();
-            println!("  removed {} chunks", old - new);
+            println!("reclaimed {}/{} chunks", old - new, old);
             self.last_gc = Instant::now();
         }
     }
@@ -303,6 +302,8 @@ impl Terrain {
             center,
             gen_radius: self.gen_radius,
         });
+        //Reclaim old meshes
+        self.meshes.gc();
         //Lock communication buffer with chunk mesher
         let mut request = self.mesher.request().lock();
         //Receive buffers from mesher thread

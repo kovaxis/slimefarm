@@ -186,7 +186,6 @@ do
         bbuf:reset(bx, by, bz)
         rng:reseed(math.hash(gen.seed, "plains_tree", sx, sy))
         tree(math.vec3(fx, fy, 0))
-        print("generated tree at "..rx..", "..ry)
         return bbuf
     end
     structs = native.structure_grid_2d {

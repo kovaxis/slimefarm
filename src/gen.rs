@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use crate::prelude::*;
-use common::{lua::LuaValueStatic, terrain::GridKeeper4};
+use common::lua::LuaValueStatic;
 
 const AVERAGE_WEIGHT: f32 = 0.005;
 

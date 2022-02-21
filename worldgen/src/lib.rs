@@ -107,6 +107,10 @@ lua_type! {BufGrid2, lua, this,
         this.fill_chunk(&gen, pos, &mut chunk.chunk)?;
     }
 
+    mut fn gc() {
+        this.grid.gc();
+    }
+
     fn cell_size() {
         this.cellsize
     }
@@ -217,6 +221,10 @@ lua_type! {HeightMap, lua, this,
         let pos = Int3::new([x, y, z]);
         let mut chunk = chunk.borrow_mut::<LuaChunkBox>()?;
         this.fill_chunk(pos, &mut chunk.chunk);
+    }
+
+    mut fn gc() {
+        this.cols.gc();
     }
 
     // The Z coordinate of the lowest air block in the given column.
