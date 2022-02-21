@@ -467,10 +467,15 @@ struct Watcher {
     checked: Cell<Instant>,
 }
 impl Watcher {
-    fn new(path: &str, debounce: Duration) -> Result<Self> {
+    fn new(path: &str, recursive: bool, debounce: Duration) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut raw = notify::watcher(tx, debounce)?;
-        raw.watch(path, notify::RecursiveMode::NonRecursive)?;
+        let rmode = if recursive {
+            notify::RecursiveMode::Recursive
+        } else {
+            notify::RecursiveMode::NonRecursive
+        };
+        raw.watch(path, rmode)?;
         let now = Instant::now();
         Ok(Self {
             _raw: raw,
@@ -481,9 +486,16 @@ impl Watcher {
     }
 
     fn tick(&self) {
+        use notify::DebouncedEvent::*;
         let now = Instant::now();
-        for _ev in self.rx.try_iter() {
-            self.modified.set(now);
+        for ev in self.rx.try_iter() {
+            match ev {
+                NoticeWrite(..) => {}
+                NoticeRemove(..) => {}
+                Rescan => {}
+                Error(..) => {}
+                _ => self.modified.set(now),
+            }
         }
     }
 }
@@ -663,6 +675,12 @@ lua_type! {LuaVec3, lua, this,
         this.u.rotate_by(uv::DRotor3::from_rotation_xy(angle))
     }
 
+    // Get the smallest angle between two vectors.
+    fn angle(rhs: LuaVec3) {
+        let f = (this.u.mag_sq() * rhs.u.mag_sq()).sqrt().recip();
+        (this.u.dot(rhs.u) * f).clamp(-1., 1.).acos()
+    }
+
     fn x() { this.u.x }
     fn y() { this.u.y }
     fn z() { this.u.z }
@@ -742,12 +760,13 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
         lua_func!(lua, state, fn(args: LuaMultiValue) {
             LuaVec3 {
                 u: match args.len() {
+                    0 => DVec3::zero(),
                     1 => LuaVec3::from_lua_multi(args, lua)?.u,
                     3 => {
                         let (x, y, z) = FromLuaMulti::from_lua_multi(args, lua)?;
                         DVec3::new(x, y, z)
                     }
-                    _ => lua_bail!("expected 1 or 3 arguments"),
+                    _ => lua_bail!("expected 0, 1 or 3 arguments"),
                 },
             }
         }),
@@ -757,6 +776,7 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
 
 fn load_native_lib<'a>(lua: LuaContext<'a>, path: &str) -> Result<LuaValue<'a>> {
     use libloading::{Library, Symbol};
+    use std::ffi::OsString;
     let path = libloading::library_filename(path);
     unsafe {
         let lib = Library::new(path)?;
@@ -774,11 +794,12 @@ pub(crate) fn open_fs_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
         .set(
             "fs",
             lua_lib! {lua, state,
-                fn watch((path, debounce): (LuaString, Option<f64>)) {
+                fn watch((path, recursive, debounce): (LuaString, Option<bool>, Option<f64>)) {
+                    let recursive = recursive.unwrap_or(true);
                     let debounce = Duration::from_secs_f64(debounce.unwrap_or(1.));
                     WatcherRef {
                         rc: AssertSync(Rc::new(
-                            Watcher::new(path.to_str()?, debounce).to_lua_err()?
+                            Watcher::new(path.to_str()?, recursive, debounce).to_lua_err()?
                         )),
                     }
                 }

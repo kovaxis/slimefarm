@@ -1,41 +1,34 @@
 
 local native = require 'gen.native'
-local blockreg = require 'gen.blockreg'
+local blocks = require 'gen.blocks'
 
 gen.k = ...
 gen.seed = assert(gen.k.seed, "no seed!")
 
 local filler = require(gen.k.kind)
 
-blockreg.register {
+blocks.register {
     name = 'base.air',
     style = 'Clear',
 }
 
-blockreg.register {
+blocks.register {
     name = 'base.empty',
     style = 'Clear',
 }
 
-blockreg.register {
+blocks.register {
     name = 'base.portal',
     style = 'Portal',
 }
 
 function gen.textures()
-    blockreg.seal()
-    return blockreg.textures
+    blocks.seal()
+    return blocks.textures
 end
 
 function gen.chunk(x, y, z, w)
-    local ok, res = pcall(filler.generate, x, y, z, w)
-    if ok then
-        return res
-    else
-        print("gen.chunk() errored with: "..tostring(res))
-        os.exit()
-    end
-    --return filler.generate(x, y, z, w)
+    return filler.generate(x, y, z, w)
 end
 
 function gen.gc()

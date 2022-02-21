@@ -11,7 +11,8 @@ function World:new()
     self.tick_count = 0
     self.entities = {}
 
-    self.worldgen_path = "gen/main.lua"
+    self.worldgen_path = "gen"
+    self.worldgen_main = "gen/main.lua"
     self.worldgen_watcher = fs.watch(self.worldgen_path)
     self:load_terrain()
 
@@ -180,15 +181,15 @@ function World:update()
 end
 
 function World:load_terrain()
-    local file = io.open(self.worldgen_path, 'r')
+    local file = io.open(self.worldgen_main, 'r')
     local gen_main = file:read('a')
     file:close()
     self.terrain = system.terrain(gen_main, {
         seed = 6813264,
         kind = 'gen.plainsgen',
     })
-    --self.terrain:set_view_distance(32*12, 32*14)
-    self.terrain:set_view_distance(32*6, 32*8)
+    self.terrain:set_view_distance(32*12, 32*14)
+    --self.terrain:set_view_distance(32*6, 32*8)
 end
 
 local sky = {}
@@ -469,6 +470,7 @@ function World:draw()
             self.fog_poll_next = now + (self.fog_poll_interval - now % self.fog_poll_interval)
             --Poll fog
             local fog_now = self.terrain:visible_radius()
+            fog_now = 500 -- TODO: Remove or at least make configurable
             self.fog_min_idx = self.fog_min_idx + 1
             self.fog_last_minimums[self.fog_min_idx] = fog_now
             self.fog_min_idx = self.fog_min_idx % #self.fog_last_minimums

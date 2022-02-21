@@ -11,7 +11,7 @@ if build_rust then
     else
         release = "--release"
     end
-    local cmd = "cargo build --manifest-path ../worldgen/Cargo.toml --lib "..release
+    local cmd = "cargo build -p worldgen "..release
     print("building native worldgen lib using command \""..cmd.."\"")
     local ok = os.execute(cmd)
     if not ok and require_build then

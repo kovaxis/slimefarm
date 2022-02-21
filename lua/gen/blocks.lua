@@ -12,16 +12,9 @@ if advance % 2 == 0 then
 end
 
 local name2id = {}
-local id2name = {}
 local sealed = false
 
 blockreg.textures = {}
-blockreg.blocks = setmetatable({}, {
-    __index = function()
-        error("during initialization stage blocks must be queried/registered with lookup()", 2)
-    end,
-})
-blockreg.names = blockreg.blocks
 
 function blockreg.lookup(name)
     if sealed then
@@ -32,13 +25,15 @@ function blockreg.lookup(name)
         return name2id[name]
     end
 
+    if not name:find('%.') then
+        error("block names must be of the form <namespace>.<block>")
+    end
     if total >= max_ids then
         error("ran out of all "..max_ids.." block ids!")
     end
     local id = next_id
     next_id = (next_id + advance) % max_ids
     name2id[name] = id
-    id2name[id] = name
     return id
 end
 
@@ -50,8 +45,10 @@ end
 
 function blockreg.seal()
     sealed = true
-    blockreg.blocks = name2id
-    blockreg.names = id2name
+    for name, id in pairs(name2id) do
+        blockreg[name] = id
+        blockreg[id] = name
+    end
 end
 
 return blockreg

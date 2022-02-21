@@ -24,9 +24,24 @@ CARGO_ENCODED_RUSTFLAGS=$'-C\037link-args=/EXPORT:AmdPowerXpressRequestHighPerfo
 
 # Notes on building, v2
 
-Currently, setting RUSTFLAGS is such a pain (because it causes miscompilations), that everything is
+Currently, setting RUSTFLAGS is such a pain (because it causes recompilations), that everything is
 being done to avoid dynamic linking at binary load time.
 This means that normal `cargo run` and `cargo build` can be used `:D`.
+
+For archiving reasons, I learned that:
+- Dynamic linking with `extern` blocks is a pain, but it is not _too_ bad.
+- The rust compiler needs to be able to find a `<libname>.lib` file that promises it that the
+    symbols will actually be there at runtime. Doing this requires a `-l <libname>` rustflag.
+- This means that the `.lib` file must be somewhere that the linker searches for.
+- Even if the `.lib` file is placed somewhere visible for the main artifact, build scripts might
+    not see it. This leads to errors if the target is not specified (again, why are these two
+    orthogonal options linked???)
+- Every little change to RUSTFLAGS requires an entire project rebuild. At this point the game
+    takes at least a minute to full-recompile, so it's not something to take lightly.
+- Conclusion: just do true dynamic linking and avoid these issues.
+
+Therefore, the solution is to create one extra dynamic library, which holds all statics that need
+to be shared between the different modules.
 
 Note that although Lua may try to build `worldgen` automatically, the `commonmem` shared library
 still needs to be built manually before building the main game.

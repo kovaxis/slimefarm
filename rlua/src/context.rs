@@ -1151,12 +1151,13 @@ impl<'lua, T: 'static + UserData> StaticUserDataMethods<'lua, T> {
         let method = RefCell::new(method);
         Box::new(move |lua, mut args| {
             if let Some(front) = args.pop_front() {
+                let args = A::from_lua_multi(args, lua)?;
                 let userdata = AnyUserData::from_lua(front, lua)?;
                 let mut userdata = userdata.borrow_mut::<T>()?;
                 let mut method = method
                     .try_borrow_mut()
                     .map_err(|_| Error::RecursiveMutCallback)?;
-                (&mut *method)(lua, &mut userdata, A::from_lua_multi(args, lua)?)?.to_lua_multi(lua)
+                (&mut *method)(lua, &mut userdata, args)?.to_lua_multi(lua)
             } else {
                 Err(Error::FromLuaConversionError {
                     from: "missing argument",
