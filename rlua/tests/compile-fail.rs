@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 fn run_mode(mode: &'static str) {
     let mut config = compiletest_rs::Config::default();
 

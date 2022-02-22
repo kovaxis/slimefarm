@@ -130,21 +130,17 @@ impl ChunkStorage {
         seenbuf: &mut HashMap<ChunkPos, f32>,
         center: BlockPos,
         range: f32,
-        f: F,
+        mut f: F,
     ) -> Result<()>
     where
-        F: FnMut(ChunkPos, Option<ChunkRef>, f32) -> Result<()>,
+        F: FnMut(ChunkPos, f32) -> Result<()>,
     {
-        struct State<'a, F> {
+        struct State<'a> {
             chunks: &'a ChunkStorage,
             sphere: &'a mut SphereBuf,
             seen: &'a mut HashMap<ChunkPos, f32>,
-            f: F,
         }
-        fn explore<F>(s: &mut State<F>, center: BlockPos, range: f32, basedist: f32) -> Result<()>
-        where
-            F: FnMut(ChunkPos, Option<ChunkRef>, f32) -> Result<()>,
-        {
+        fn explore(s: &mut State, center: BlockPos, range: f32, basedist: f32) {
             use std::collections::hash_map::Entry;
             let epsilon = 4.;
             ChunkStorage::get_sphere(s.sphere, range);
@@ -174,7 +170,6 @@ impl ChunkStorage {
                     }
                 }
                 let chunk = s.chunks.chunk_at(chunk_pos);
-                (s.f)(chunk_pos, chunk, dist)?;
                 if let Some(data) = chunk.and_then(|c| c.blocks()) {
                     for portal in data.portals() {
                         let portal_center = portal.get_center();
@@ -194,25 +189,48 @@ impl ChunkStorage {
                             },
                             range - pdist,
                             basedist + pdist,
-                        )?;
+                        );
                     }
                 }
             }
-            Ok(())
         }
         Self::with_spherebuf(|sphere| {
             seenbuf.clear();
+            let start = Instant::now();
             explore(
                 &mut State {
                     chunks: self,
                     sphere,
                     seen: seenbuf,
-                    f,
                 },
                 center,
                 range,
                 0.,
-            )
+            );
+            for (&pos, &dist) in seenbuf.iter() {
+                f(pos, dist)?;
+            }
+            let f = Instant::now();
+
+            let k = seenbuf.len();
+            let v = (f - start).as_micros() as f64;
+            static STATS: Mutex<Vec<(f64, Instant)>> = parking_lot::const_mutex(vec![]);
+            let mut stats = STATS.lock();
+            if stats.len() <= k {
+                stats.resize(k + 1, (-1., Instant::now()));
+            }
+            let (stat, last) = &mut stats[k];
+            if *stat == -1. {
+                *stat = v;
+            } else {
+                let wotp = 0.99;
+                *stat = (*stat - v) * wotp + v;
+            }
+            if last.elapsed() > Duration::from_secs(1) {
+                *last = Instant::now();
+                println!("avg iteration over {} chunks: {}us", k, stat.round() as i64);
+            }
+            Ok(())
         })
     }
 
@@ -353,20 +371,20 @@ impl Terrain {
             let chunks = self.chunks.read();
             let mut visited = 0;
             let mut mindist = self.view_radius;
+            // OPTIMIZE: Move this out into its own thread.
+            // This chunkwalk alone is taking about 2.5ms
             chunks
                 .iter_nearby(
                     &mut *self.tmp_seenbuf.borrow_mut(),
                     center,
                     self.view_radius,
-                    |pos, chunk, dist| {
+                    |pos, dist| {
                         visited += 1;
                         if self.meshes.get(pos).is_none() {
                             if dist < mindist {
                                 mindist = dist;
                             }
-                            if chunk.is_some() {
-                                sortbuf.push((dist, pos));
-                            }
+                            sortbuf.push((dist, pos));
                         }
                         Ok(())
                     },

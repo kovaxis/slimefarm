@@ -242,8 +242,8 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
                 &mut seenbuf,
                 gen_area.center,
                 gen_area.gen_radius,
-                |pos, chunk, dist| {
-                    if chunk.is_none() && !unsent.contains(&pos) {
+                |pos, dist| {
+                    if chunks.get(pos).is_none() && !unsent.contains(&pos) {
                         gen_sortbuf.push((dist, pos));
                     }
                     Ok(())

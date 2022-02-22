@@ -403,10 +403,21 @@ impl Clone for ChunkArc {
 }
 
 /// An integer coordinate within the universe.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Int4 {
     pub coords: Int3,
     pub dim: u32,
+}
+impl Hash for Int4 {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_u128(
+            self.coords.x as u32 as u128
+                | ((self.coords.y as u32 as u128) << 32)
+                | ((self.coords.z as u32 as u128) << 64)
+                | ((self.dim as u128) << 96),
+        );
+    }
 }
 impl Int4 {
     pub fn block_to_chunk(&self) -> Int4 {

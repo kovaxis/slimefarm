@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Int2 {
     pub x: i32,
     pub y: i32,
@@ -9,6 +9,12 @@ pub struct Int2 {
 impl fmt::Debug for Int2 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[{}, {}]", self.x, self.y)
+    }
+}
+impl Hash for Int2 {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_u64(self.x as u32 as u64 | ((self.y as u32 as u64) << 32));
     }
 }
 impl ops::Deref for Int2 {
@@ -315,7 +321,7 @@ impl Int2 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Int3 {
     pub x: i32,
     pub y: i32,
@@ -324,6 +330,13 @@ pub struct Int3 {
 impl fmt::Debug for Int3 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[{}, {}, {}]", self.x, self.y, self.z)
+    }
+}
+impl Hash for Int3 {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_u64(self.x as u32 as u64 | ((self.y as u32 as u64) << 32));
+        h.write_u32(self.z as u32);
     }
 }
 impl ops::Deref for Int3 {

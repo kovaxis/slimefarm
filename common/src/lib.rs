@@ -21,7 +21,6 @@ pub mod prelude {
         channel::{self, Receiver, Sender},
         sync::{Parker, Unparker},
     };
-    pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
     pub use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
     pub use rand::{Rng, SeedableRng};
     pub use rand_xoshiro::Xoshiro128Plus as FastRng;
@@ -53,6 +52,77 @@ pub mod prelude {
         Bivec2, Bivec3, DVec2, DVec3, DVec4, Lerp, Mat2, Mat3, Mat4, Rotor2, Rotor3, Vec2, Vec3,
         Vec4,
     };
+
+    // Very simple fxhash implementation.
+    // About 20% faster than aHash, but definitely lower quality.
+    // The issue is that this is basically multiplication by a constant.
+    // This means that the lower bits of the hash are never affected by the higher bits.
+    // However, the highest bits are affected by most of the bits in the data.
+    // Because `hashbrown` uses the top bits of the hash, it's not too bad
+    use std::{
+        hash::{BuildHasherDefault, Hasher},
+        ops::BitXor,
+    };
+    pub struct CustomHasher {
+        hash: u64,
+    }
+    impl Default for CustomHasher {
+        #[inline]
+        fn default() -> Self {
+            Self { hash: 0 }
+        }
+    }
+    impl Hasher for CustomHasher {
+        #[inline]
+        fn write(&mut self, mut b: &[u8]) {
+            while b.len() >= 8 {
+                let mut n = [0; 8];
+                n.copy_from_slice(&b[..8]);
+                self.write_u64(u64::from_le_bytes(n));
+                b = &b[8..];
+            }
+            if !b.is_empty() {
+                let mut n = [0; 8];
+                n[..b.len()].copy_from_slice(b);
+                self.write_u64(u64::from_le_bytes(n));
+            }
+        }
+
+        #[inline]
+        fn finish(&self) -> u64 {
+            self.hash
+        }
+
+        #[inline]
+        fn write_u64(&mut self, x: u64) {
+            const ROTATE: u32 = 5;
+            const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+            self.hash = self.hash.rotate_left(ROTATE).bitxor(x).wrapping_mul(SEED);
+        }
+
+        #[inline]
+        fn write_u32(&mut self, x: u32) {
+            self.write_u64(x as u64);
+        }
+
+        #[inline]
+        fn write_u16(&mut self, x: u16) {
+            self.write_u64(x as u64);
+        }
+
+        #[inline]
+        fn write_u8(&mut self, x: u8) {
+            self.write_u64(x as u64);
+        }
+
+        #[inline]
+        fn write_u128(&mut self, x: u128) {
+            self.write_u64(x as u64);
+            self.write_u64((x >> 64) as u64);
+        }
+    }
+    pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<CustomHasher>>;
+    pub type HashSet<V> = std::collections::HashSet<V, BuildHasherDefault<CustomHasher>>;
 
     /// Unsafe as fuck, but whatever.
     #[derive(Copy, Clone, Debug, Default)]
