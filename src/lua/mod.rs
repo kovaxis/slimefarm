@@ -12,12 +12,12 @@ pub(crate) mod gfx;
 
 #[derive(Clone)]
 struct MatrixStack {
-    stack: AssertSync<Rc<RefCell<(Vec<Mat4>, Mat4)>>>,
+    stack: Rc<RefCell<(Vec<Mat4>, Mat4)>>,
 }
 impl From<Mat4> for MatrixStack {
     fn from(mat: Mat4) -> MatrixStack {
         MatrixStack {
-            stack: AssertSync(Rc::new(RefCell::new((Vec::new(), mat)))),
+            stack: Rc::new(RefCell::new((Vec::new(), mat))),
         }
     }
 }
@@ -193,12 +193,12 @@ lua_type! {LuaWorldPos, lua, this,
 
 #[derive(Clone)]
 pub struct TerrainRef {
-    rc: AssertSync<Rc<RefCell<Terrain>>>,
+    rc: Rc<RefCell<Terrain>>,
 }
 impl TerrainRef {
     pub(crate) fn new(state: &Rc<State>, gen_cfg: GenConfig) -> Result<TerrainRef> {
         Ok(TerrainRef {
-            rc: AssertSync(Rc::new(RefCell::new(Terrain::new(state, gen_cfg)?))),
+            rc: Rc::new(RefCell::new(Terrain::new(state, gen_cfg)?)),
         })
     }
 }
@@ -460,6 +460,85 @@ lua_type! {CameraStack, lua, this,
     }
 }
 
+struct LuaImage {
+    img: image::RgbaImage,
+}
+impl LuaImage {
+    fn new(path: &str) -> LuaResult<Self> {
+        let img = image::io::Reader::open(&path)
+            .with_context(|| format!("image file \"{}\" not found", path))
+            .to_lua_err()?
+            .decode()
+            .with_context(|| format!("image file \"{}\" invalid or corrupted", path))
+            .to_lua_err()?
+            .to_rgba8();
+        Ok(Self { img })
+    }
+}
+lua_type! {LuaImage, lua, this,
+    fn size() {
+        this.img.dimensions()
+    }
+
+    fn width() {
+        this.img.width()
+    }
+
+    fn height() {
+        this.img.height()
+    }
+
+    // Get the color at a fractional position, using bilinear interpolation.
+    // The center of the top-left pixel is at (0, 0).
+    // The center of the bottom-right pixel is at (w - 1, h - 1).
+    // Out of range pixels can either be clamped or wrapped depending on `wrap`.
+    fn sample((x, y, wrap): (f64, f64, Option<LuaString>)) {
+        let wrap = match wrap {
+            Some(s) => match s.as_bytes() {
+                b"wrap" => true,
+                b"clamp" => false,
+                _ => lua_bail!("invalid wrap function"),
+            },
+            None => false,
+        };
+        let (w, h) = this.img.dimensions();
+        let (x0, y0) = (x.floor(), y.floor());
+        let (x1, y1) = (x.ceil(), y.ceil());
+        let (sx, sy) = ((x - x0) as f32, (y - y0) as f32);
+        let (x0, y0, x1, y1) = if wrap {
+            (
+                (x0 as i32).rem_euclid(w as i32) as u32,
+                (y0 as i32).rem_euclid(h as i32) as u32,
+                (x1 as i32).rem_euclid(w as i32) as u32,
+                (y1 as i32).rem_euclid(h as i32) as u32,
+            )
+        }else{
+            (
+                (x0 as i32).clamp(0, w as i32 - 1) as u32,
+                (y0 as i32).clamp(0, h as i32 - 1) as u32,
+                (x1 as i32).clamp(0, w as i32 - 1) as u32,
+                (y1 as i32).clamp(0, h as i32 - 1) as u32,
+            )
+        };
+        let c1 = |i: u8| i as f32 * 255f32.recip();
+        let c4 = |x, y| {
+            let p = this.img.get_pixel(x, y);
+            Vec4::new(c1(p[0]), c1(p[1]), c1(p[2]), c1(p[3]))
+        };
+        let c00 = c4(x0, y0);
+        let c10 = c4(x1, y0);
+        let c01 = c4(x0, y1);
+        let c11 = c4(x1, y1);
+        let c = (c00 * (1. - sx) + c10 * sx) * (1. - sy) + (c01 * (1. - sx) + c11 * sx) * sy;
+        (c.x, c.y, c.z, c.w)
+    }
+
+    // Dump the raw RGBA bytes as a Lua string.
+    fn dump() {
+        lua.create_string(&*this.img)
+    }
+}
+
 struct Watcher {
     _raw: notify::RecommendedWatcher,
     rx: std::sync::mpsc::Receiver<WatcherEvent>,
@@ -502,7 +581,7 @@ impl Watcher {
 
 #[derive(Clone)]
 struct WatcherRef {
-    rc: AssertSync<Rc<Watcher>>,
+    rc: Rc<Watcher>,
 }
 lua_type! {WatcherRef, lua, this,
     // Check whether the file being watched was changed between the last call to `check` and this
@@ -798,9 +877,9 @@ pub(crate) fn open_fs_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
                     let recursive = recursive.unwrap_or(true);
                     let debounce = Duration::from_secs_f64(debounce.unwrap_or(1.));
                     WatcherRef {
-                        rc: AssertSync(Rc::new(
+                        rc: Rc::new(
                             Watcher::new(path.to_str()?, recursive, debounce).to_lua_err()?
-                        )),
+                        ),
                     }
                 }
 
@@ -848,6 +927,10 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                             dim: raw_dim.unwrap_or(0),
                         }.into(),
                     }
+                }
+
+                fn image(path: String) {
+                    LuaImage::new(&path)?
                 }
             },
         )

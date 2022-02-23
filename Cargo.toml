@@ -58,3 +58,8 @@ opt-level = 3
 
 [profile.dev.package.common]
 opt-level = 3
+
+[profile.dev]
+opt-level = 1
+lto = false
+incremental = true

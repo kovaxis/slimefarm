@@ -35,7 +35,7 @@ function World:new()
         skybox = util.Shader{
             vertex = 'skybox.vert',
             fragment = 'skybox.frag',
-            uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sunrise_dir'},
+            uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir'},
         },
     }
 
@@ -143,6 +143,7 @@ function World:tick()
 
     --Advance day cycle
     self.day_cycle = (self.day_cycle + 1 / (64*120)) % 1
+    --self.day_cycle = (self.day_cycle + 1 / (64*30)) % 1
     --DEBUG: Advance day cycle quicker when in nighttime
     if self.day_cycle < 0.3 or self.day_cycle > 0.6 then
         self.day_cycle = self.day_cycle + 1 / (64*5)
@@ -199,22 +200,22 @@ do
     sky.screen = Mesh{}:add_quad(-1, -1, 1,   1, -1, 1,   1, 1, 1,   -1, 1, 1):as_buffer()
     sky.portalscreen = gfx.buffer_empty()
 
-    dawn = {.14, .42, .77}
-    day = {.08, .52, .90}
-    eve = {.14, .42, .77}
-    night = {.00, .01, .02}
-    sky.base = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
-
     dawn = {.14, .72, .88}
     day = {.08, .78, .94}
     eve = {.14, .72, .88}
-    night = {.00, .00, .01}
+    night = {.002, .008, .018}
+    sky.base = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
+
+    dawn = {.14, .42, .77}
+    day = {.08, .52, .90}
+    eve = {.14, .42, .77}
+    night = {.001, .005, .008}
     sky.highest = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
 
     dawn = {.77, .62, .60}
     day = {.70, .75, .77}
     eve = {.77, .62, .60}
-    night = {.01, .02, .03}
+    night = {.001, .02, .03}
     sky.lowest = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
 
     dawn = {.68, .02, -.05}
@@ -231,6 +232,21 @@ do
 
     lo, hi = 0, 1
     sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
+    
+    local colors = {'base', 'highest', 'lowest', 'sunrise'}
+    local lighting = {'ambience', 'diffuse', 'specular'}
+    function sky.colors(shader, cycle)
+        for i = 1, #colors do
+            local r, g, b = sky[colors[i]]:at(cycle)
+            shader:set_vec3(colors[i], r, g, b)
+        end
+    end
+    function sky.lighting(shader, cycle)
+        for i = 1, #lighting do
+            local v = sky[lighting[i]]:at(cycle)
+            shader:set_vec3(lighting[i], v, v, v)
+        end
+    end
 end
 
 -- Set the `nclip` and `clip` shader uniforms to the clipping planes of the given camera
@@ -305,16 +321,13 @@ function World:subdraw()
         frame.mv_world:identity()
         frame.mv_world:rotate_z(frame.cam_yaw)
         frame.mv_world:rotate_x(frame.cam_pitch)
-        frame.mv_world:scale(math.tan(frame.hfov / 2), math.tan(frame.vfov / 2), 1)
+        frame.mv_world:scale(math.tan(frame.hfov / 2), 1, math.tan(frame.vfov / 2))
         self.shaders.skybox:set_matrix('view', frame.mv_world)
         frame.mv_world:pop()
 
         frame.params_sky:set_stencil_ref(depth)
-        self.shaders.skybox:set_vec3('base', sky.base:at(cycle))
-        self.shaders.skybox:set_vec3('highest', sky.highest:at(cycle))
-        self.shaders.skybox:set_vec3('lowest', sky.lowest:at(cycle))
-        self.shaders.skybox:set_vec3('sunrise', sky.sunrise:at(cycle))
-        self.shaders.skybox:set_vec3('sunrise_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
+        sky.colors(self.shaders.skybox, cycle)
+        self.shaders.skybox:set_vec3('sun_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
         self.shaders.skybox:draw(skybuf, frame.params_sky)
     end
     
@@ -330,9 +343,6 @@ function World:subdraw()
     --Draw terrain
     do
         local cycle = self.day_cycle
-        local ambience = sky.ambience:at(cycle)
-        local diffuse  = sky.diffuse:at(cycle)
-        local specular = sky.specular:at(cycle)
         local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), 0, -math.sin((cycle - 0.25) * 2 * math.pi)
         --ambience = 0
         --diffuse = 0.2
@@ -344,9 +354,7 @@ function World:subdraw()
         self.shaders.terrain:set_float('fog', self.fog_current)
         self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
         self.shaders.terrain:set_matrix('mv', frame.mv_world)
-        self.shaders.terrain:set_vec3('ambience', ambience, ambience, ambience)
-        self.shaders.terrain:set_vec3('diffuse', diffuse, diffuse, diffuse)
-        self.shaders.terrain:set_vec3('specular', specular, specular, specular)
+        sky.lighting(self.shaders.terrain, cycle)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
         self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end

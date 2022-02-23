@@ -376,7 +376,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
         S: ?Sized + AsRef<[u8]>,
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        M: 'static + Send + Fn(Context<'lua>, &T, A) -> Result<R>,
+        M: 'static + Fn(Context<'lua>, &T, A) -> Result<R>,
     {
         self.methods.push((
             name.as_ref().to_vec(),
@@ -391,7 +391,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
         S: ?Sized + AsRef<[u8]>,
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        M: 'static + Send + FnMut(Context<'lua>, &mut T, A) -> Result<R>,
+        M: 'static + FnMut(Context<'lua>, &mut T, A) -> Result<R>,
     {
         self.methods.push((
             name.as_ref().to_vec(),
@@ -406,7 +406,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
         S: ?Sized + AsRef<[u8]>,
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        F: 'static + Send + Fn(Context<'lua>, A) -> Result<R>,
+        F: 'static + Fn(Context<'lua>, A) -> Result<R>,
     {
         self.methods.push((
             name.as_ref().to_vec(),
@@ -421,7 +421,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
         S: ?Sized + AsRef<[u8]>,
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        F: 'static + Send + FnMut(Context<'lua>, A) -> Result<R>,
+        F: 'static + FnMut(Context<'lua>, A) -> Result<R>,
     {
         self.methods.push((
             name.as_ref().to_vec(),
@@ -435,7 +435,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
     where
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        M: 'static + Send + Fn(Context<'lua>, &T, A) -> Result<R>,
+        M: 'static + Fn(Context<'lua>, &T, A) -> Result<R>,
     {
         self.meta_methods.push((
             meta,
@@ -449,7 +449,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
     where
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        M: 'static + Send + FnMut(Context<'lua>, &mut T, A) -> Result<R>,
+        M: 'static + FnMut(Context<'lua>, &mut T, A) -> Result<R>,
     {
         self.meta_methods.push((
             meta,
@@ -463,7 +463,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
     where
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        F: 'static + Send + Fn(Context<'lua>, A) -> Result<R>,
+        F: 'static + Fn(Context<'lua>, A) -> Result<R>,
     {
         self.meta_methods.push((
             meta,
@@ -477,7 +477,7 @@ impl<'lua, T: UserData> UserDataMethods<'lua, T> for NonStaticUserDataMethods<'l
     where
         A: FromLuaMulti<'lua>,
         R: ToLuaMulti<'lua>,
-        F: 'static + Send + FnMut(Context<'lua>, A) -> Result<R>,
+        F: 'static + FnMut(Context<'lua>, A) -> Result<R>,
     {
         self.meta_methods.push((
             meta,

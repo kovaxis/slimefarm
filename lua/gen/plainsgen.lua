@@ -79,50 +79,69 @@ local structs, genstruct
 do
     local bbuf = native.action_buf()
     local rng = math.rng(0)
+    local leaves
 
     local s = 2
-    local spread = 80 * s
+    local spread = 40 * s
     local margin = 40 * s
     local max_lentotal = 100 * s
     local min_area = 1 * s * s
+    local max_depth = 100
     local initial_area = {35 * s * s, 40 * s * s}
     local initial_pitch = {0, math.rad(10)}
-    local branch_dist = {8 * s, 10 * s}
-    local half_dist = 45 * s
+    local branch_dist = {{14 * s, 16 * s}}
+    local half_dist = 13 * s
     local squiggle_dist = 4 * s
     local squiggle_angle = math.rad(40) / 10 * squiggle_dist / s
-    --local attract_angle = math.rad(20) / 10 * squiggle_dist / s
-    local attract_p = 0.4
+    local attract_p = 0.5
+    local attract_f = math.rad(10) / 10 * squiggle_dist / s
     local area_per_len = -0.1 / s / s
-    local off_angle = math.rad(60)
-    local off_attractor_angle = math.rad(35)
-    local off_area = {0.25, 0.3}
+    local off_angle = {math.rad(90), math.rad(60)}
+    local off_attractor_angle = {math.rad(50), math.rad(35)}
+    local off_area = {0.45, 0.55}
+    local main_bias = {0.5, 0.5}
+    local off_depth_incr = 1
+    local main_depth_incr = 1
     local main_rotate = math.rad(133)
-    local leaf_r = {5 * s, 7 * s}
-    local leaf_aspect = {1, 1.4}
+    local leaf_r = {4 * s, 7 * s}
+    local subleaf_r = {1.5 * s, 2.5 * s}
+    local subleaf_n = 30
+    local leaf_join = 1.5 * s
+    local function rand(param)
+        return rng:normal(param[1], param[2])
+    end
     local function branch(pos, up, norm, attractor, area, lentotal, depth)
-        if lentotal > max_lentotal or area < min_area then
+        if lentotal > max_lentotal or area < min_area or depth >= max_depth then
             --Paint a leaf
-            local r = rng:normal(leaf_r[1], leaf_r[2])
-            local aspect = rng:normal(leaf_aspect[1], leaf_aspect[2])
-            local rz = r / aspect
-            bbuf:oval(
+            local r = rand(leaf_r)
+            leaves[#leaves + 1] = pos:x()
+            leaves[#leaves + 1] = pos:y()
+            leaves[#leaves + 1] = pos:z()
+            leaves[#leaves + 1] = r
+            do return end
+            
+            local r = rand(leaf_r)
+            bbuf:cloud(
                 pos:x(), pos:y(), pos:z(),
-                r, r, rz,
-                blocks['base.leaf']
+                r,
+                subleaf_r[1], subleaf_r[2],
+                rng:integer(1000000),
+                blocks['base.leaf'],
+                subleaf_n
             )
             return
         end
 
-        local len = rng:normal(branch_dist[1], branch_dist[2]) * 0.5 ^ (lentotal / half_dist)
-        local off_a = rng:normal(off_area[1], off_area[2])
+        local trunk_idx = 1
+        local len = rand(branch_dist[trunk_idx]) * 0.5 ^ (lentotal / half_dist)
+        local off_a = rand(off_area)
         local virt_area = area + area_per_len * len
         local final_area = virt_area * math.max(off_a, 1 - off_a)
         local aperlen_adj = (final_area - area) / len
 
         local top = math.vec3(pos)
+        local rot = math.vec3()
         do
-            local rot = math.vec3()
             local acc = 0
             while acc < len do
                 --Advance top by a squiggle dist
@@ -145,7 +164,8 @@ do
                 --Squiggle the up and norm vectors
                 up:rotate(squiggle_angle, rot) norm:rotate(squiggle_angle, rot)
                 --Skew towards the attractor
-                local skew = attract_p * up:angle(attractor)
+                local skew = up:angle(attractor)
+                skew = math.min(attract_p * skew + attract_f, skew)
                 norm:rotate(skew, up, attractor) up:rotate(skew, up, attractor)
             end
         end
@@ -153,22 +173,34 @@ do
         
         norm:rotate(main_rotate, up)
 
-        if depth < 3 then
-            local subup = math.vec3(up)
-            subup:rotate(off_angle, up, norm)
-            
-            local subnorm = math.vec3(norm)
-            subnorm:rotate(off_angle, up, norm)
+        local off_idx = depth == 0 and 2 or 2
+        local bias = rand(main_bias)
 
-            local subattractor = math.vec3(attractor)
-            subattractor:rotate(off_attractor_angle, up, norm)
+        local o_angle = bias * off_angle[off_idx]
+        local m_angle = (bias - 1) * off_angle[off_idx]
+        local o_att = bias * off_attractor_angle[off_idx]
+        local m_att = (bias - 1) * off_attractor_angle[off_idx]
 
-            branch(top, subup, subnorm, subattractor, virt_area * off_a, lentotal + len, depth + 1)
-        end
+        rot:set(up) rot:cross(norm)
+
+        local subup = math.vec3(up)
+        subup:rotate(o_angle, rot)
+        up:rotate(m_angle, rot)
         
-        branch(pos, up, norm, attractor, virt_area * (1 - off_a), lentotal + len, depth)
+        local subnorm = math.vec3(norm)
+        subnorm:rotate(o_angle, rot)
+        norm:rotate(m_angle, rot)
+
+        local subattractor = math.vec3(attractor)
+        subattractor:rotate(o_att, rot)
+        attractor:rotate(m_att, rot)
+
+        branch(top, subup, subnorm, subattractor, virt_area * off_a, lentotal + len, depth + off_depth_incr)
+        branch(pos, up, norm, attractor, virt_area * (1 - off_a), lentotal + len, depth + main_depth_incr)
     end
     local function tree(pos)
+        leaves = {}
+
         local area = rng:normal(initial_area[1], initial_area[2])
         local up = math.vec3(0, 0, 1)
         local norm = math.vec3(0, 1, 0)
@@ -178,6 +210,8 @@ do
         up:rotate_x(pitch) up:rotate_z(yaw)
         norm:rotate_x(pitch) norm:rotate_z(yaw)
         branch(pos, up, norm, attractor, area, 0, 0)
+
+        bbuf:blobs(leaves, blocks['base.leaf'], leaf_join)
     end
     function genstruct(rx, ry, sx, sy)
         local bx, by = math.floor(rx), math.floor(ry)
@@ -190,8 +224,8 @@ do
     end
     structs = native.structure_grid_2d {
         seed = math.hash(gen.seed, "plains_structs"),
-        cell_size = spread,
-        margin = margin,
+        cell_size = math.floor(spread + .5),
+        margin = math.floor(margin + .5),
     }
 end
 

@@ -1,5 +1,5 @@
 use crate::{
-    lua::{CameraFrame, CameraStack, MatrixStack},
+    lua::{CameraFrame, CameraStack, LuaImage, MatrixStack},
     prelude::*,
 };
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
@@ -37,7 +37,7 @@ impl UniformVal {
 
 #[derive(Clone)]
 pub(crate) struct UniformStorage {
-    pub vars: AssertSync<Rc<RefCell<Vec<(String, UniformVal)>>>>,
+    pub vars: Rc<RefCell<Vec<(String, UniformVal)>>>,
 }
 impl Uniforms for UniformStorage {
     fn visit_values<'a, F: FnMut(&str, UniformValue<'a>)>(&self, mut visit: F) {
@@ -52,7 +52,7 @@ impl Uniforms for UniformStorage {
 }
 lua_type! {UniformStorage, lua, this,
     fn add(name: String) {
-        let mut vars = this.vars.0.borrow_mut();
+        let mut vars = this.vars.borrow_mut();
         let idx = vars.len();
         vars.push((name, UniformVal::Float(0.)));
         idx
@@ -152,7 +152,7 @@ impl Font {
 
 #[derive(Clone)]
 pub(crate) struct FontRef {
-    pub rc: AssertSync<Rc<Font>>,
+    pub rc: Rc<Font>,
 }
 lua_type! {FontRef, lua, this,
     fn draw((text, mvp, draw_params, r, g, b, a): (LuaString, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
@@ -162,20 +162,20 @@ lua_type! {FontRef, lua, this,
 }
 #[derive(Clone)]
 pub(crate) struct ShaderRef {
-    pub program: AssertSync<Rc<Program>>,
+    pub program: Rc<Program>,
 }
 impl LuaUserData for ShaderRef {}
 
 #[derive(Clone)]
 pub(crate) struct TextureRef {
-    pub tex: AssertSync<Rc<Texture2d>>,
+    pub tex: Rc<Texture2d>,
     pub sampling: SamplerBehavior,
 }
 impl TextureRef {
     fn new(tex: Texture2d) -> Self {
         use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter, SamplerWrapFunction};
         Self {
-            tex: AssertSync(Rc::new(tex)),
+            tex: Rc::new(tex),
             sampling: SamplerBehavior {
                 minify_filter: MinifySamplerFilter::Nearest,
                 magnify_filter: MagnifySamplerFilter::Nearest,
@@ -227,7 +227,7 @@ lua_type! {TextureRef, lua, this,
 
 #[derive(Clone, Default)]
 pub(crate) struct LuaDrawParams {
-    pub params: AssertSync<DrawParameters<'static>>,
+    pub params: DrawParameters<'static>,
 }
 lua_type! {LuaDrawParams, lua, this,
     mut fn set_depth((test, write, clamp, near, far): (LuaString, bool, Option<LuaString>, Option<f32>, Option<f32>)) {
@@ -490,7 +490,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                                 fragment: &*fragment,
                             }
                         }.to_lua_err()?;
-                        ShaderRef{program: AssertSync(Rc::new(shader))}
+                        ShaderRef{program: Rc::new(shader)}
                     }
 
                     fn buffer_empty(()) {
@@ -535,26 +535,21 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         CameraStack::new()
                     }
 
-                    fn texture(path: String) {
+                    fn texture(img: LuaAnyUserData) {
                         use glium::texture::RawImage2d;
 
-                        let img = image::io::Reader::open(&path)
-                            .with_context(|| format!("image file \"{}\" not found", path))
-                            .to_lua_err()?
-                            .decode()
-                            .with_context(|| format!("image file \"{}\" invalid or corrupted", path))
-                            .to_lua_err()?
-                            .to_rgba8();
+                        let img = img.borrow::<LuaImage>()?;
+                        let img = &img.img;
                         let (w, h) = img.dimensions();
                         let tex = Texture2d::new(
                             &state.display,
-                            RawImage2d::from_raw_rgba(img.into_vec(), (w, h))
+                            RawImage2d::from_raw_rgba(img.to_vec(), (w, h))
                         ).unwrap();
                         TextureRef::new(tex)
                     }
 
                     fn uniforms(()) {
-                        UniformStorage{vars: AssertSync(Rc::new(RefCell::new(Vec::new())))}
+                        UniformStorage{vars: Rc::new(RefCell::new(Vec::new()))}
                     }
 
                     fn draw_params(()) {
@@ -563,7 +558,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
 
                     fn font((font_data, size): (LuaString, u32)) {
                         FontRef{
-                            rc: AssertSync(Rc::new(Font::new(state, font_data.as_bytes(), size).to_lua_err()?)),
+                            rc: Rc::new(Font::new(state, font_data.as_bytes(), size).to_lua_err()?),
                         }
                     }
 

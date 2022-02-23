@@ -74,12 +74,12 @@ macro_rules! lua_type {
 #[macro_export]
 macro_rules! lua_func {
     ($lua:ident, $state:ident, fn($($fn_args:tt)*) $fn_code:block) => {{
-        let state = AssertSync($state.clone());
+        let state = $state.clone();
         $lua.create_function(move |ctx, $($fn_args)*| {
             #[allow(unused_variables)]
             let $lua = ctx;
             #[allow(unused_variables)]
-            let $state = &*state;
+            let $state = &state;
             Ok($fn_code)
         }).unwrap()
     }};

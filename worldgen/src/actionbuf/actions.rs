@@ -1,5 +1,5 @@
 use crate::{
-    actionbuf::{Action, ActionBuf},
+    actionbuf::{Action, ActionBuf, Painter},
     prelude::*,
 };
 
@@ -136,6 +136,156 @@ action! {
                     let r = r0 + (r1 - r0) * s;
                     let d2 = (n * s - p).mag_sq();
                     if d2 <= r * r {
+                        chunk.sub_set([x, y, z] - pos, b);
+                    }
+                }
+            }
+        }
+    }
+}
+
+action! {
+    // Generate a bunch of "blobs", or spheres with smooth joints between them.
+    // `bs`: positions and radii of each blob. these come in groups of 4: x, y, z and r
+    // `b`: the block to fill with.
+    // `j`: the "join distance", or how far should the surfaces of 2 blobs be to start joining.
+    //
+    // This blob mode is based on the sum of distances to the power of `-1`.
+    fn blobs((bs, b, j): (Vec<f32>, u8, f32)) {
+        type Data = Rc<RefCell<[f32; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize]>>;
+        fn invsqrt(x: f32) -> f32 {
+            // Taken from Wikipedia, which was taken from Quake, with the exact original comments
+            let i = x.to_bits();                        // evil floating point bit level hacking
+            let i  = 0x5f3759df - ( i >> 1 );           // what the fuck?
+            let x2 = x * 0.5;
+            let mut y  = f32::from_bits(i);
+            y = y * ( 1.5 - ( x2 * y * y ) );          // 1st iteration
+            //	y = y * ( 1.5 - ( x2 * y * y ) );      // 2nd iteration, this can be removed
+            y
+        }
+
+        lua_assert!(bs.len() % 4 == 0, "blob coordinate count must be a multiple of 4");
+        let b = block(b);
+        let data: Data =
+            Rc::new(RefCell::new([0.; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize]));
+    }
+    fn place() {
+        let mut mn_total = Int3::new([i32::MAX; 3]);
+        let mut mx_total = Int3::new([i32::MIN; 3]);
+        for bpos in bs.chunks_exact(4) {
+            let r = bpos[3];
+            let bpos = Vec3::new(bpos[0], bpos[1], bpos[2]);
+            let x = Int3::from_f32(bpos.map(|f| (f - r - j).floor()));
+            mn_total = mn_total.min(x);
+            let x = Int3::from_f32(bpos.map(|f| (f + r + j).floor()));
+            mx_total = mx_total.max(x);
+        }
+        mx_total += [1; 3];
+        open([mn_total, mx_total], data.clone());
+        for bpos in bs.chunks_exact(4) {
+            let r = bpos[3];
+            let u = Vec3::new(bpos[0], bpos[1], bpos[2]);
+            let p = r + j;
+            let mn = Int3::from_f32(u.map(|f| (f - p).floor()));
+            let mx = Int3::from_f32(u.map(|f| (f + p).floor())) + [1; 3];
+            let k = p * r / j;
+            let c = -r / j;
+            blob([mn, mx], data.clone(), u, k, c);
+        }
+        close([mn_total, mx_total], data);
+    }
+    fn open(pos, [mn, mx], _, data: Data) {
+        let mn = mn - pos;
+        let mx = mx - pos;
+        let mut data = data.borrow_mut();
+        for z in mn.z..mx.z {
+            for y in mn.y..mx.y {
+                for x in mn.x..mx.x {
+                    let idx = (((z << CHUNK_BITS) + y) << CHUNK_BITS) + x;
+                    data[idx as usize] = 0.;
+                }
+            }
+        }
+    }
+    fn blob(cpos, [mn, mx], _, data: Data, u, k, c) {
+        let mn = mn - cpos;
+        let mx = mx - cpos;
+        let u = u - cpos.to_f32();
+        let mut data = data.borrow_mut();
+        for z in mn.z..mx.z {
+            for y in mn.y..mx.y {
+                for x in mn.x..mx.x {
+                    let pos = Vec3::new(x as f32, y as f32, z as f32);
+                    let f = invsqrt((pos - u).mag_sq()).mul_add(k, c);
+                    if f > 0. {
+                        let idx = (((z << CHUNK_BITS) + y) << CHUNK_BITS) + x;
+                        data[idx as usize] += f;
+                    }
+                }
+            }
+        }
+    }
+    fn close(pos, [mn, mx], chunk, data: Data) {
+        let mn = mn - pos;
+        let mx = mx - pos;
+        let data = data.borrow_mut();
+        let chunk = chunk.blocks_mut();
+        for z in mn.z..mx.z {
+            for y in mn.y..mx.y {
+                for x in mn.x..mx.x {
+                    let idx = (((z << CHUNK_BITS) + y) << CHUNK_BITS) + x;
+                    if data[idx as usize] >= 1. {
+                        chunk.set_idx(idx as usize, b);
+                    }
+                }
+            }
+        }
+    }
+}
+
+action! {
+    // `x, y, z`: center of the cloudsphere
+    // `r`: radius of the cloudsphere
+    // `r0, r1`: range of radii of the subspheres
+    // `seed`: random seed for the subsphere sizes
+    // `b`: block to fill with
+    // `n`: number of subspheres
+    fn cloud((x, y, z, r, r0, r1, seed, b, n): (f32, f32, f32, f32, f32, f32, i64, u8, u32)) {
+        let u = Vec3::new(x, y, z);
+        let b = block(b);
+        let mut rng = FastRng::seed_from_u64(seed as u64);
+        let dr = r1 - r0;
+    }
+    fn place() {
+        let mut sph = |u: Vec3, r: f32| {
+            let mn = Int3::from_f32((u - Vec3::broadcast(r)).map(f32::floor));
+            let mx = Int3::from_f32((u + Vec3::broadcast(r)).map(f32::floor)) + [1; 3];
+            subsphere([mn, mx], u, r * r);
+        };
+
+        let phi = f32::PI * (3. - 5f32.sqrt());
+        let dz = 2. * r / (n - 1) as f32;
+        let mut theta = 0f32;
+        let mut z = -r;
+        sph(u, r);
+        for _ in 0..n {
+            let rxy = (r*r - z * z).sqrt();
+            let u = u + Vec3::new(theta.cos() * rxy, theta.sin() * rxy, z);
+            let r = r0 + rng.gen::<f32>() * dr;
+            sph(u, r);
+            theta += phi;
+            z += dz;
+        }
+    }
+    fn subsphere(pos, [mn, mx], chunk, u, r2) {
+        let chunk = chunk.blocks_mut();
+        for z in mn.z..mx.z {
+            for y in mn.y..mx.y {
+                // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
+                // end, and write all the row blocks in one go.
+                for x in mn.x..mx.x {
+                    let d = Vec3::new(x as f32, y as f32, z as f32) - u;
+                    if d.mag_sq() <= r2 {
                         chunk.sub_set([x, y, z] - pos, b);
                     }
                 }

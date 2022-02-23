@@ -124,23 +124,6 @@ pub mod prelude {
     pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<CustomHasher>>;
     pub type HashSet<V> = std::collections::HashSet<V, BuildHasherDefault<CustomHasher>>;
 
-    /// Unsafe as fuck, but whatever.
-    #[derive(Copy, Clone, Debug, Default)]
-    pub struct AssertSync<T>(pub T);
-    unsafe impl<T> Send for AssertSync<T> {}
-    unsafe impl<T> Sync for AssertSync<T> {}
-    impl<T> ops::Deref for AssertSync<T> {
-        type Target = T;
-        fn deref(&self) -> &T {
-            &self.0
-        }
-    }
-    impl<T> ops::DerefMut for AssertSync<T> {
-        fn deref_mut(&mut self) -> &mut T {
-            &mut self.0
-        }
-    }
-
     pub fn default<T>() -> T
     where
         T: Default,
