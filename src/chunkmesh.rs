@@ -372,6 +372,8 @@ struct Mesher {
     noise_buf: Box<[f32]>,
     /// Store the nature of all blocks.
     style: StyleTable,
+    /// Store which blocks have skylight.
+    skymap: [u8; Self::BLOCK_COUNT],
     /// Store the instructions to generate the color for every block type.
     block_textures: [BlockTexture; 256],
     /// The offset of the front block buffer within `block_buf`.
@@ -399,6 +401,7 @@ impl Mesher {
             vert_cache: vec![(0, 0); Self::VERT_ROW * 2].into_boxed_slice(),
             block_buf: vec![BlockData { data: 0 }; Self::BLOCK_COUNT * 2].into_boxed_slice(),
             noise_buf: vec![0.; Self::NOISE_COUNT].into_boxed_slice(),
+            skymap: [0; Self::BLOCK_COUNT],
             style: StyleTable::new(&textures),
             block_textures: {
                 let mut blocks: Uninit<[BlockTexture; 256]> = Uninit::uninit();
@@ -581,13 +584,30 @@ impl Mesher {
                 ])
             };
             let pos_3d = conv_2d_3d(pos);
-            let color_pos = if tex.smooth {
-                pos_3d
-            } else {
-                conv_2d_3d(blockpos)
-            };
-            lightness *= 255.;
+            let blockpos_3d = conv_2d_3d(blockpos);
+            let color_pos = if tex.smooth { pos_3d } else { blockpos_3d };
             let color = self.color_at(id, color_pos);
+            const NTABLE: [i32; 3] = [0, 1, -1];
+            let lightblock3d = blockpos_3d
+                + [
+                    NTABLE[(params.normal[0] as u8 >> 6) as usize],
+                    NTABLE[(params.normal[1] as u8 >> 6) as usize],
+                    NTABLE[(params.normal[2] as u8 >> 6) as usize],
+                ];
+            if self
+                .skymap
+                .get(
+                    ((Self::EXTRA_BLOCKS + lightblock3d.y) * Self::ADV_Y
+                        + lightblock3d.x
+                        + Self::EXTRA_BLOCKS) as usize,
+                )
+                .map(|&z| lightblock3d.z < z as i32)
+                .unwrap_or(true)
+            {
+                // In shadow
+                lightness *= 0.15;
+            }
+            lightness *= 255.;
             let q = |f| (f * lightness) as u8;
             let color = [q(color[0]), q(color[1]), q(color[2]), q(color[3])];
             //Apply transform
@@ -648,6 +668,17 @@ impl Mesher {
             let sub_pos = pos.lowbits(CHUNK_BITS);
             chunk_at(chunk_pos).sub_get(sub_pos)
         };
+        let skymap_at = |pos: Int2| {
+            let chunk_pos = pos >> CHUNK_BITS;
+            let sub_pos = pos.lowbits(CHUNK_BITS);
+            let z = chunk_at([chunk_pos.x, chunk_pos.y, 1].into()).sub_skymap(sub_pos);
+            if z == CHUNK_SIZE as u8 {
+                CHUNK_SIZE as u8
+                    + chunk_at([chunk_pos.x, chunk_pos.y, 2].into()).sub_skymap(sub_pos)
+            } else {
+                z
+            }
+        };
 
         // Special case empty chunks
         if chunk_at([1, 1, 1].into()).is_clear() {
@@ -687,6 +718,17 @@ impl Mesher {
             }
         }
 
+        // Fill skymap from chunk data
+        {
+            let mut sky_idx = 0;
+            for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
+                for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
+                    self.skymap[sky_idx] = skymap_at([x, y].into());
+                    sky_idx += 1;
+                }
+            }
+        }
+
         // X
         for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
             let mut idx = 0;
@@ -696,7 +738,7 @@ impl Mesher {
                     idx += 1;
                 }
             }
-            if x > CHUNK_SIZE {
+            if x > CHUNK_SIZE && x <= 2 * CHUNK_SIZE {
                 //Facing `+`
                 self.layer(&LayerParams {
                     x: [0, -1, 0],

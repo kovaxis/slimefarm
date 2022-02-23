@@ -233,6 +233,9 @@ function plainsgen.generate(x, y, z, w)
     local chunk = native.chunk(blocks['base.air'])
     heightmap:fill_chunk(x, y, z, chunk)
     structs:fill_chunk(x, y, z, chunk, genstruct)
+    if z >= 6 then
+        chunk:mark_shiny()
+    end
     return chunk:into_raw()
 end
 

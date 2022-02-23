@@ -7,7 +7,6 @@ use common::{lua::LuaValueStatic, lua_assert, lua_bail, lua_func, lua_lib, lua_t
 use notify::{DebouncedEvent as WatcherEvent, Watcher as _};
 use rand_distr::StandardNormal;
 
-pub(crate) mod gen;
 pub(crate) mod gfx;
 
 #[derive(Clone)]

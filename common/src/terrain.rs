@@ -18,8 +18,8 @@ pub const MAX_CHUNK_PORTALS: usize = 256;
 /// A 2D slice (or loaf) of an arbitrary type.
 pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>;
 
-/// Saves chunk tags on the last 2 bits of the chunk pointer.
-/// This is why `ChunkData` has an alignment of 4.
+/// Saves chunk tags on the last 4 bits of the chunk pointer.
+/// This is why `ChunkData` has an alignment of 16.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct ChunkRef<'a> {
@@ -30,25 +30,45 @@ unsafe impl Send for ChunkRef<'_> {}
 unsafe impl Sync for ChunkRef<'_> {}
 impl fmt::Debug for ChunkRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ChunkRef<")?;
+        write!(f, "ChunkRef")?;
+        let mut tags = 0;
+        macro_rules! tag {
+            ($name:literal) => {{
+                if tags == 0 {
+                    write!(f, "<")?;
+                } else {
+                    write!(f, ", ")?;
+                }
+                write!(f, $name)?;
+                tags += 1;
+            }};
+        }
         if self.is_solid() {
-            write!(f, "solid")?;
+            tag!("solid");
         }
         if self.is_clear() {
-            write!(f, "clear")?;
+            tag!("clear");
+        }
+        if self.is_shiny() {
+            tag!("shiny");
+        }
+        if tags != 0 {
+            write!(f, ">")?;
         }
         if let Some(block) = self.homogeneous_block() {
-            write!(f, ">::Homogeneous({:?})", block)
+            write!(f, "::Homogeneous({:?})", block)
         } else {
-            write!(f, ">({}KB)", mem::size_of::<ChunkData>() / 1024)
+            write!(f, "({}KB)", mem::size_of::<ChunkData>() / 1024)
         }
     }
 }
 impl<'a> ChunkRef<'a> {
-    const MASK: usize = 0b111;
-    const FLAG_HOMOGENEOUS: usize = 0b001;
-    const FLAG_CLEAR: usize = 0b010;
-    const FLAG_SOLID: usize = 0b100;
+    const MASK: usize = 0b1111;
+    const INFO_MASK: usize = 0b1110;
+    const FLAG_HOMOGENEOUS: usize = 0b0001;
+    const FLAG_CLEAR: usize = 0b0010;
+    const FLAG_SOLID: usize = 0b0100;
+    const FLAG_SHINY: usize = 0b1000;
 
     #[inline]
     fn raw(self) -> usize {
@@ -68,6 +88,11 @@ impl<'a> ChunkRef<'a> {
     #[inline]
     pub fn is_solid(self) -> bool {
         self.raw() & Self::FLAG_SOLID != 0
+    }
+
+    #[inline]
+    pub fn is_shiny(self) -> bool {
+        self.raw() & Self::FLAG_SHINY != 0
     }
 
     /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
@@ -120,6 +145,31 @@ impl<'a> ChunkRef<'a> {
         }
     }
 
+    #[inline]
+    pub fn sub_skymap_idx(self, idx: usize) -> u8 {
+        if let Some(data) = self.blocks() {
+            data.skymap[idx]
+        } else if self.is_shiny() {
+            0
+        } else {
+            CHUNK_SIZE as u8
+        }
+    }
+
+    #[inline]
+    pub fn sub_skymap(self, pos: Int2) -> u8 {
+        self.sub_skymap_idx(pos.to_index([CHUNK_BITS; 2].into()))
+    }
+
+    #[inline]
+    pub fn sub_has_skylight(self, pos: Int3) -> bool {
+        if let Some(data) = self.blocks() {
+            pos.z >= data.skymap[pos.xy().to_index([CHUNK_BITS; 2].into())] as i32
+        } else {
+            self.is_shiny()
+        }
+    }
+
     pub fn into_raw(self) -> *const ChunkData {
         self.ptr.as_ptr()
     }
@@ -153,7 +203,7 @@ impl<'a> ChunkRef<'a> {
 
 /// # `ChunkBox` pointer format
 ///
-/// Since `ChunkData` has an alignment of 8, the `blocks` pointer has 3 bits to store tags.
+/// Since `ChunkData` has an alignment of 16, the `blocks` pointer has 4 bits to store tags.
 /// If bit 0 is set, the chunk has no associated memory, and the entire chunk is made up of a
 /// single block type, which is stored in bits 8..16.
 /// If bit 1 is set, the chunk is made entirely out of clear blocks (although they
@@ -161,9 +211,20 @@ impl<'a> ChunkRef<'a> {
 /// If bit 2 is set, the chunk is made entirely out of solid blocks (although they might
 /// be different types of solid blocks). This flag is completely independent from bit 0, although it
 /// is mutually exclusive with bit 1.
+/// If bit 3 is set, the chunk emits skylight. Every dimension without a roof _must_ have shiny
+/// chunks at the top of the world. And not only a single layer, but all chunks above a certain
+/// height should be shiny. To compute shadows, the world generator will render chunks up to the
+/// sky level or until a roof is reached.
 ///
 /// Note that flags 1 and 2 are not hints. If they are set, the chunk **must** be made out of
 /// entirely solid or clear blocks, otherwise it is a logic error.
+///
+/// Also note that the pointer is never null. A chunk is in one of two states:
+/// - Homogeneous: The bit 0 is set, so the pointer is non-null.
+/// - Nonhomogeneous: The pointer (at least the top bits of it) point to a valid address, which
+///     cannot be null.
+/// Therefore there is always at least one bit set.
+/// This is why `NonNull` can be used.
 #[repr(transparent)]
 pub struct ChunkBox {
     ptr: NonNull<ChunkData>,
@@ -179,17 +240,35 @@ impl ops::Deref for ChunkBox {
 }
 impl fmt::Debug for ChunkBox {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ChunkBox<")?;
+        write!(f, "ChunkBox")?;
+        let mut tags = 0;
+        macro_rules! tag {
+            ($name:literal) => {{
+                if tags == 0 {
+                    write!(f, "<")?;
+                } else {
+                    write!(f, ", ")?;
+                }
+                write!(f, $name)?;
+                tags += 1;
+            }};
+        }
         if self.is_solid() {
-            write!(f, "solid")?;
+            tag!("solid");
         }
         if self.is_clear() {
-            write!(f, "clear")?;
+            tag!("clear");
+        }
+        if self.is_shiny() {
+            tag!("shiny");
+        }
+        if tags != 0 {
+            write!(f, ">")?;
         }
         if let Some(block) = self.homogeneous_block() {
-            write!(f, ">::Homogeneous({:?})", block)
+            write!(f, "::Homogeneous({:?})", block)
         } else {
-            write!(f, ">({}KB)", mem::size_of::<ChunkData>() / 1024)
+            write!(f, "({}KB)", mem::size_of::<ChunkData>() / 1024)
         }
     }
 }
@@ -236,6 +315,18 @@ impl ChunkBox {
         ChunkRef {
             ptr: self.ptr,
             marker: PhantomData,
+        }
+    }
+
+    /// Copy the informational tags from another chunk.
+    ///
+    /// This does not copy over the homogeneous tag since this could lead to memory unsafety.
+    /// However, care must still be taken to avoid logic errors.
+    #[inline]
+    pub fn copy_tags(&mut self, from: ChunkRef) {
+        unsafe {
+            let new_ptr = (self.raw() & !ChunkRef::INFO_MASK) | (from.raw() & ChunkRef::INFO_MASK);
+            self.ptr = NonNull::new_unchecked((new_ptr) as *mut _);
         }
     }
 
@@ -306,23 +397,13 @@ impl ChunkBox {
         }
     }
 
-    /// If the chunk is homogeneous, mark the appropiate solidity (solid/nonsolid) tags.
+    /// Mark the chunk as shiny.
+    /// That is, it emits skylight.
     #[inline]
-    pub fn mark_solidity(&mut self, style: &StyleTable) {
-        if let Some(block) = self.homogeneous_block() {
-            if block.is_solid(style) {
-                self.mark_solid();
-            } else if block.is_clear(style) {
-                self.mark_clear();
-            }
+    pub fn mark_shiny(&mut self) {
+        unsafe {
+            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_SHINY));
         }
-    }
-
-    /// After generating a chunk, apply final checkups to optimize everything.
-    pub fn consolidate(&mut self, style: &StyleTable) {
-        // Mark the solidity of the chunk
-        self.mark_solidity(style);
-        // TODO: Sort portals to optimize lookups
     }
 
     /// Check if all of the blocks are of the same type, and drop the data altogether and mark with
@@ -524,8 +605,8 @@ impl PortalData {
 }
 
 /// Holds the block and entity data for a chunk.
-/// Has an alignment of 8 in order for `ChunkBox` to store tags in the last 3 bits of the pointer.
-#[repr(align(8))]
+/// Has an alignment of 16 in order for `ChunkBox` to store tags in the last 4 bits of the pointer.
+#[repr(align(16))]
 pub struct ChunkData {
     /// All of the blocks in this chunk.
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
@@ -533,6 +614,8 @@ pub struct ChunkData {
     pub portals: [PortalData; MAX_CHUNK_PORTALS],
     /// The amount of portals in the portal buffer.
     pub portal_count: u32,
+    /// For each column, the Z coordinate of the lowest clear block that receives sunlight.
+    pub skymap: [u8; (CHUNK_SIZE * CHUNK_SIZE) as usize],
     /// A hidden reference count field for use in chunk reference counting.
     ref_count: AtomicCell<u32>,
 }
@@ -542,7 +625,8 @@ impl Clone for ChunkData {
             blocks: self.blocks,
             portals: self.portals,
             portal_count: self.portal_count,
-            ref_count: AtomicCell::new(self.ref_count.load()),
+            skymap: self.skymap,
+            ref_count: AtomicCell::new(0),
         }
     }
 }

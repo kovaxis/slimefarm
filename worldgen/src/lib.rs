@@ -30,6 +30,10 @@ lua_type! {LuaChunkBox, lua, this,
     mut fn fill(block: u8) {
         this.chunk.make_homogeneous(BlockData { data: block });
     }
+
+    mut fn mark_shiny() {
+        this.chunk.mark_shiny();
+    }
 }
 impl From<ChunkBox> for LuaChunkBox {
     fn from(chunk: ChunkBox) -> Self {

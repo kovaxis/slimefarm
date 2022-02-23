@@ -146,16 +146,127 @@ struct GenState {
     chunks: Arc<RwLock<ChunkStorage>>,
 }
 
-fn empty_chunk_buf(
-    chunks: &mut ChunkStorage,
-    buf: &mut Vec<(ChunkPos, ChunkArc)>,
-    unsent: &mut HashSet<ChunkPos>,
-) {
-    for (pos, chunk) in buf.drain(..) {
-        unsent.remove(&pos);
-        chunks.insert(pos, chunk);
+/// Transfer chunks from the local buffer to the game chunkstore.
+fn empty_chunk_buf(chunks: &mut ChunkStorage, unsent: &mut HashMap<ChunkPos, ChunkBox>) {
+    for (pos, chunk) in unsent.drain() {
+        chunks.insert(pos, ChunkArc::new(chunk));
     }
     chunks.maybe_gc();
+}
+
+fn process_lighting(
+    chunks: &ChunkStorage,
+    unsent: &mut HashMap<ChunkPos, ChunkBox>,
+    style: &StyleTable,
+) {
+    let full_light = |chunk: &mut ChunkBox| {
+        if let Some(data) = chunk.try_blocks_mut() {
+            data.skymap.fill(0);
+        }
+        chunk.mark_shiny();
+    };
+    let full_dark = |chunk: &mut ChunkBox| {
+        if !chunk.is_solid() {
+            let data = chunk.blocks_mut();
+            data.skymap.fill(CHUNK_SIZE as u8);
+        }
+    };
+    // Process chunk lighting from highest to lowest
+    let mut sortbuf = unsent.iter_mut().collect::<Vec<_>>();
+    sortbuf.sort_unstable_by_key(|(p, _c)| [p.coords.x, p.coords.y, -p.coords.z]);
+    let mut tmp_skymap = [0; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+    let mut last_above = None;
+    for (&pos, chunk) in sortbuf {
+        if chunk.is_shiny() {
+            // Shiny chunks are _the_ source of skylight
+            full_light(chunk);
+        } else if chunk.is_solid() {
+            // Full darkness
+        } else {
+            // Get the chunk above
+            let mut above_pos = pos;
+            above_pos.coords.z += 1;
+            let above = if let Some((abpos, above)) = last_above {
+                if above_pos == abpos {
+                    Some(above)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+            .or_else(|| chunks.chunk_at(above_pos));
+            let above = match above {
+                Some(above) => above,
+                None => {
+                    println!("could not find above-chunk for {:?}", pos);
+                    continue;
+                }
+            };
+            // Special case homogeneous chunks
+            if above.is_homogeneous() && !above.is_shiny() {
+                full_dark(chunk);
+            } else if chunk.is_clear() {
+                if let Some(abdata) = above.blocks() {
+                    for idx in 0..(CHUNK_SIZE * CHUNK_SIZE) as usize {
+                        tmp_skymap[idx] = if abdata.skymap[idx] == 0 {
+                            0
+                        } else {
+                            CHUNK_SIZE as u8
+                        };
+                    }
+                    if tmp_skymap.iter().all(|z| *z == 0) {
+                        // Fully lighted
+                        chunk.mark_shiny();
+                    } else if tmp_skymap.iter().all(|z| *z != 0) {
+                        // Fully shadowed
+                    } else {
+                        // Partial shadow
+                        // Sad
+                        let data = chunk.blocks_mut();
+                        data.skymap = tmp_skymap;
+                    }
+                } else {
+                    // The above-is-homogeneous-and-dark case was already handled
+                    // The only option left is for it to be shiny
+                    full_light(chunk);
+                }
+            } else {
+                // Compute lighting for each column
+                let data = chunk.blocks_mut();
+                let has_light = |idx2d| {
+                    above
+                        .blocks()
+                        .map(|abdata| abdata.skymap[idx2d] == 0)
+                        .unwrap_or(true)
+                };
+                let mut col_idx = 0;
+                let mut idx_3d;
+                for y in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        idx_3d = ((((CHUNK_SIZE - 1) << CHUNK_BITS) + y) << CHUNK_BITS) + x;
+                        data.skymap[col_idx] = if has_light(col_idx) {
+                            // TODO: Figure out portals
+                            let mut skyz = 0;
+                            for z in (0..CHUNK_SIZE as u8).rev() {
+                                if data.blocks[idx_3d as usize].is_solid(style) {
+                                    skyz = z;
+                                    break;
+                                }
+                                idx_3d -= CHUNK_SIZE * CHUNK_SIZE;
+                            }
+                            skyz
+                        } else {
+                            CHUNK_SIZE as u8
+                        };
+                        col_idx += 1;
+                    }
+                }
+            }
+        }
+        // Save this chunk as the above for the next chunk
+        last_above = Some((pos, chunk.as_ref()));
+    }
 }
 
 fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) -> Result<()> {
@@ -212,16 +323,16 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
     let mut last_stall_warning = Instant::now();
 
     const GEN_QUEUE: usize = 32;
-    const READY_QUEUE: usize = 64;
     let mut last_gc = Instant::now();
     let gc_interval = Duration::from_millis(2435);
+
+    let mut chunks = gen.chunks.read();
 
     let mut seenbuf = default();
     let mut gen_sortbuf = Vec::new();
 
     let mut gen_queue = Vec::with_capacity(GEN_QUEUE);
-    let mut ready_buf = Vec::with_capacity(READY_QUEUE);
-    let mut unsent: HashSet<ChunkPos> = default();
+    let mut unsent: HashMap<ChunkPos, ChunkBox> = default();
     'outer: loop {
         //Collect unused data every once in a while
         if last_gc.elapsed() > gc_interval {
@@ -236,20 +347,18 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
         //Gather a set of chunks to generate by scanning available chunks
         {
             let gen_area = gen.shared.gen_area.lock().clone();
-            let chunks = gen.chunks.read();
             gen_sortbuf.clear();
             chunks.iter_nearby(
                 &mut seenbuf,
                 gen_area.center,
                 gen_area.gen_radius,
                 |pos, dist| {
-                    if chunks.get(pos).is_none() && !unsent.contains(&pos) {
+                    if chunks.get(pos).is_none() && !unsent.contains_key(&pos) {
                         gen_sortbuf.push((dist, pos));
                     }
                     Ok(())
                 },
             )?;
-            drop(chunks);
             gen_queue.clear();
             gen_queue.extend(
                 gen_sortbuf
@@ -262,8 +371,13 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
 
         //Generate chunks from the request queue
         let mut gencount = 0;
-        for pos in gen_queue.drain(..) {
+        let mut queue_idx = 0;
+        while queue_idx < gen_queue.len() {
             let gen_start = Instant::now();
+
+            // Get the next chunk from the queue
+            let pos = gen_queue[queue_idx];
+            queue_idx += 1;
 
             // Fetch a new chunk from Lua
             let chunk = lua.context(|lua| -> Result<ChunkBox> {
@@ -284,13 +398,32 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
                     continue;
                 }
             };
-            chunk.consolidate(&style);
-            let chunk = ChunkArc::new(chunk);
-            unsent.insert(pos);
-            ready_buf.push((pos, chunk));
+
+            // If the chunk is homogeneous, mark the appropiate solidity (solid/nonsolid) tags.
+            if let Some(block) = chunk.homogeneous_block() {
+                if block.is_solid(&style) {
+                    chunk.mark_solid();
+                } else if block.is_clear(&style) {
+                    chunk.mark_clear();
+                }
+            }
+
+            // If the chunk is not shiny or solid, generate more chunks above it until the sky is
+            // reached, so shadows can be computed
+            if !chunk.is_shiny() && !chunk.is_solid() {
+                let mut above = pos;
+                above.coords.z += 1;
+                if gen.chunks.read().chunk_at(above).is_none() && !unsent.contains_key(&above) {
+                    gen_queue.push(above);
+                }
+            }
+
+            // Add chunk to the queue
+            // TODO: Sort portals and optimize lookups
+            unsent.insert(pos, chunk);
             gencount += 1;
 
-            //Keep chunkgen timing statistics
+            // Keep chunkgen timing statistics
             {
                 //Dont care about data races here, after all it's just stats
                 //Therefore, dont synchronize
@@ -300,22 +433,24 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
                 gen.shared.avg_gen_time.store(new_time);
             }
 
-            //Send chunks back to main thread
-            if let Some(mut chunks) = gen.chunks.try_write() {
-                empty_chunk_buf(&mut chunks, &mut ready_buf, &mut unsent);
-            }
-
             // Close quickly if requested
             if gen.shared.close.load() {
                 break 'outer;
             }
         }
 
-        //Try harder to send back chunks
-        if !ready_buf.is_empty() {
+        // Process sky lighting
+        process_lighting(&chunks, &mut unsent, &style);
+
+        // Try harder to send back chunks
+        if !unsent.is_empty() {
             let stall_start = Instant::now();
-            let mut chunks = gen.chunks.write();
-            empty_chunk_buf(&mut chunks, &mut ready_buf, &mut unsent);
+            drop(chunks);
+            {
+                let mut chunks_w = gen.chunks.write();
+                empty_chunk_buf(&mut chunks_w, &mut unsent);
+            }
+            chunks = gen.chunks.read();
             let now = Instant::now();
             if now - stall_start > Duration::from_millis(50)
                 && now - last_stall_warning > Duration::from_millis(1500)
