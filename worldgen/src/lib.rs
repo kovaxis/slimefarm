@@ -3,7 +3,7 @@
 use crate::prelude::*;
 
 mod prelude {
-    pub(crate) use crate::{actionbuf::ActionBuf, blockbuf::BlockBuf};
+    pub(crate) use crate::actionbuf::ActionBuf;
     pub(crate) use common::{
         lua_assert, lua_bail, lua_func, lua_lib, lua_type,
         noise2d::{Noise2d, NoiseScaler2d},
@@ -15,7 +15,6 @@ mod prelude {
 }
 
 mod actionbuf;
-mod blockbuf;
 
 struct LuaChunkBox {
     chunk: ChunkBox,
@@ -264,7 +263,7 @@ fn open_lib(lua: LuaContext) -> Result<LuaTable> {
             ActionBuf::new(Int3::zero())
         }
 
-        fn structure_grid_2d(cfg: LuaValue) {
+        fn gridbuf_2d(cfg: LuaValue) {
             let cfg = rlua_serde::from_value(cfg).to_lua_err()?;
             BufGrid2::new(cfg)
         }

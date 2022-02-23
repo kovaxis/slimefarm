@@ -222,7 +222,7 @@ do
         tree(math.vec3(fx, fy, 0))
         return bbuf
     end
-    structs = native.structure_grid_2d {
+    structs = native.gridbuf_2d {
         seed = math.hash(gen.seed, "plains_structs"),
         cell_size = math.floor(spread + .5),
         margin = math.floor(margin + .5),

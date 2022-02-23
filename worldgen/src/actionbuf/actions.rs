@@ -257,7 +257,7 @@ action! {
         let dr = r1 - r0;
     }
     fn place() {
-        let mut sph = |u: Vec3, r: f32| {
+        let sph = |u: Vec3, r: f32| {
             let mn = Int3::from_f32((u - Vec3::broadcast(r)).map(f32::floor));
             let mx = Int3::from_f32((u + Vec3::broadcast(r)).map(f32::floor)) + [1; 3];
             subsphere([mn, mx], u, r * r);

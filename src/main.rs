@@ -195,7 +195,7 @@ impl DynBuffer3d {
         }
     }
 
-    fn write(&mut self, state: &Rc<State>, vert: &mut Vec<SimpleVertex>, idx: &mut Vec<VertIdx>) {
+    fn write(&mut self, state: &Rc<State>, vert: &[SimpleVertex], idx: &[VertIdx]) {
         // Write vertex data
         if self.buf.vertex.len() < vert.len() {
             println!("reallocating vertex buffer");
@@ -203,13 +203,8 @@ impl DynBuffer3d {
                 VertexBuffer::empty_dynamic(&state.display, vert.len().next_power_of_two())
                     .unwrap();
         }
+        self.buf.vertex.slice(..vert.len()).unwrap().write(&vert);
         self.vert_len = vert.len();
-        vert.reserve(self.buf.vertex.len() - self.vert_len);
-        unsafe {
-            vert.set_len(self.buf.vertex.len());
-        }
-        self.buf.vertex.write(&vert);
-        vert.truncate(self.vert_len);
 
         // Write index data
         if self.buf.index.len() < idx.len() {
@@ -221,13 +216,8 @@ impl DynBuffer3d {
             )
             .unwrap();
         }
+        self.buf.index.slice(..idx.len()).unwrap().write(&idx);
         self.idx_len = idx.len();
-        idx.reserve(self.buf.index.len() - self.idx_len);
-        unsafe {
-            idx.set_len(self.buf.index.len());
-        }
-        self.buf.index.write(&idx);
-        idx.truncate(self.idx_len);
     }
 
     fn bufs(

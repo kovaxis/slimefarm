@@ -34,6 +34,6 @@ end
 local native = fs.open_lib(path)
 
 reclaim.wrap(native, 'heightmap')
-reclaim.wrap(native, 'structure_grid_2d')
+reclaim.wrap(native, 'gridbuf_2d')
 
 return native
