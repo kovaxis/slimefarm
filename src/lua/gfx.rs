@@ -7,14 +7,14 @@ use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
 #[derive(Clone)]
 pub(crate) enum BufferRef {
     NoBuf,
-    Buf2d(Rc<Buffer2d>),
-    Buf3d(Rc<Buffer3d>),
+    Buf2d(Rc<GpuBuffer<TexturedVertex>>),
+    Buf3d(Rc<GpuBuffer<SimpleVertex>>),
 }
 unsafe impl Send for BufferRef {}
 unsafe impl Sync for BufferRef {}
 impl LuaUserData for BufferRef {}
 
-pub(crate) enum UniformVal {
+pub(crate) enum StaticUniform {
     Float(f32),
     Vec2([f32; 2]),
     Vec3([f32; 3]),
@@ -22,7 +22,7 @@ pub(crate) enum UniformVal {
     Mat4([[f32; 4]; 4]),
     Texture2d(TextureRef, SamplerBehavior),
 }
-impl UniformVal {
+impl StaticUniform {
     fn as_uniform(&self) -> UniformValue {
         match self {
             &Self::Float(v) => UniformValue::Float(v),
@@ -35,80 +35,89 @@ impl UniformVal {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct UniformStorage {
-    pub vars: Rc<RefCell<Vec<(String, UniformVal)>>>,
+    pub vars: Vec<(String, StaticUniform)>,
 }
-impl Uniforms for UniformStorage {
-    fn visit_values<'a, F: FnMut(&str, UniformValue<'a>)>(&self, mut visit: F) {
-        for (name, val) in self.vars.borrow().iter() {
-            let as_uniform: UniformValue<'a> = unsafe {
-                let as_uniform: UniformValue = val.as_uniform();
-                mem::transmute(as_uniform)
-            };
-            visit(name, as_uniform);
-        }
-    }
-}
+
 lua_type! {UniformStorage, lua, this,
-    fn add(name: String) {
-        let mut vars = this.vars.borrow_mut();
-        let idx = vars.len();
-        vars.push((name, UniformVal::Float(0.)));
+    mut fn add(name: String) {
+        let idx = this.vars.len();
+        this.vars.push((name, StaticUniform::Float(0.)));
         idx
     }
 
-    fn set_float((idx, val): (usize, f32)) {
-        let mut vars = this.vars.borrow_mut();
-        vars
+    mut fn set_float((idx, val): (usize, f32)) {
+        this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformVal::Float(val);
+            .1 = StaticUniform::Float(val);
     }
-    fn set_vec2((idx, x, y): (usize, f32, f32)) {
-        let mut vars = this.vars.borrow_mut();
-        vars
+    mut fn set_vec2((idx, x, y): (usize, f32, f32)) {
+        this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformVal::Vec2([x, y]);
+            .1 = StaticUniform::Vec2([x, y]);
     }
-    fn set_vec3((idx, x, y, z): (usize, f32, f32, f32)) {
-        let mut vars = this.vars.borrow_mut();
-        vars
+    mut fn set_vec3((idx, x, y, z): (usize, f32, f32, f32)) {
+        this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformVal::Vec3([x, y, z]);
+            .1 = StaticUniform::Vec3([x, y, z]);
     }
-    fn set_vec4((idx, x, y, z, w): (usize, f32, f32, f32, f32)) {
-        let mut vars = this.vars.borrow_mut();
-        vars
+    mut fn set_vec4((idx, x, y, z, w): (usize, f32, f32, f32, f32)) {
+        this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformVal::Vec4([x, y, z, w]);
+            .1 = StaticUniform::Vec4([x, y, z, w]);
     }
 
-    fn set_matrix((idx, mat): (usize, MatrixStack)) {
+    mut fn set_matrix((idx, mat): (usize, MatrixStack)) {
         let (_, top) = *mat.stack.borrow();
-        let mut vars = this.vars.borrow_mut();
-        vars
+        this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformVal::Mat4(top.into());
+            .1 = StaticUniform::Mat4(top.into());
     }
 
-    fn set_texture((idx, tex): (usize, TextureRef)) {
-        let mut vars = this.vars.borrow_mut();
+    mut fn set_texture((idx, tex): (usize, TextureRef)) {
         let sampling = tex.sampling;
-        vars
+        this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = UniformVal::Texture2d(tex, sampling);
+            .1 = StaticUniform::Texture2d(tex, sampling);
+    }
+}
+impl Uniforms for UniformStorage {
+    fn visit_values<'a, F: FnMut(&str, UniformValue<'a>)>(&'a self, mut visit: F) {
+        for (name, val) in self.vars.iter() {
+            visit(name, val.as_uniform());
+        }
+    }
+}
+
+pub(crate) struct UniformsRef<'a> {
+    store: &'a UniformStorage,
+    extra: &'a [(&'a str, UniformValue<'a>)],
+}
+impl<'a> UniformsRef<'a> {
+    pub fn new(store: &'a UniformStorage, extra: &'a [(&'a str, UniformValue)]) -> Self {
+        Self { store, extra }
+    }
+}
+impl<'b> Uniforms for UniformsRef<'b> {
+    fn visit_values<'a, F: FnMut(&str, UniformValue<'a>)>(&'a self, mut visit: F) {
+        for (name, val) in self.store.vars.iter() {
+            visit(name, val.as_uniform());
+        }
+        for &(name, val) in self.extra.iter() {
+            visit(name, val);
+        }
     }
 }
 
@@ -504,7 +513,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         let vertices = pos.chunks_exact(2).zip(tex.chunks_exact(2)).map(|(pos, tex)| {
                             TexturedVertex {pos: [pos[0], pos[1]], tex: [tex[0], tex[1]]}
                         }).collect::<Vec<_>>();
-                        BufferRef::Buf2d(Rc::new(Buffer2d {
+                        BufferRef::Buf2d(Rc::new(GpuBuffer {
                             vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
                             index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
                         }))
@@ -525,7 +534,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                                 color: [qc(color[0]), qc(color[1]), qc(color[2]), qc(color[3])],
                             }
                         }).collect::<Vec<_>>();
-                        BufferRef::Buf3d(Rc::new(Buffer3d {
+                        BufferRef::Buf3d(Rc::new(GpuBuffer {
                             vertex: VertexBuffer::new(&state.display, &vertices[..]).unwrap(),
                             index: IndexBuffer::new(&state.display, PrimitiveType::TrianglesList, &indices[..]).unwrap(),
                         }))
@@ -549,7 +558,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                     }
 
                     fn uniforms(()) {
-                        UniformStorage{vars: Rc::new(RefCell::new(Vec::new()))}
+                        UniformStorage { vars: vec![] }
                     }
 
                     fn draw_params(()) {
@@ -580,15 +589,16 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         }
                     }
 
-                    fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, UniformStorage, LuaDrawParams)) {
+                    fn draw((buf, shader, uniforms, params): (BufferRef, ShaderRef, LuaAnyUserData, LuaDrawParams)) {
+                        let uniforms = uniforms.borrow::<UniformStorage>()?;
                         let mut frame = state.frame.borrow_mut();
                         match &buf {
                             BufferRef::NoBuf => Ok(()),
                             BufferRef::Buf2d(buf) => {
-                                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
+                                frame.draw(&buf.vertex, &buf.index, &shader.program, &*uniforms, &params.params)
                             },
                             BufferRef::Buf3d(buf) => {
-                                frame.draw(&buf.vertex, &buf.index, &shader.program, &uniforms, &params.params)
+                                frame.draw(&buf.vertex, &buf.index, &shader.program, &*uniforms, &params.params)
                             },
                         }.unwrap();
                     }

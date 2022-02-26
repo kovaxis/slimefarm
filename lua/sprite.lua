@@ -4,10 +4,10 @@ local util = require 'util'
 
 local Sprite = class{}
 
-local shader = util.Shader{
+Sprite.shader = util.Shader{
     vertex = 'textured.vert',
     fragment = 'textured.frag',
-    uniforms = {'mvp', 'tex'},
+    uniforms = {'mvp', 'tex', 'tint'},
 }
 
 function Sprite:new()
@@ -47,9 +47,10 @@ end
 
 function Sprite:draw(i, mvp, draw_params)
     local buf = self.buffers[i]
-    shader:set_matrix('mvp', mvp)
-    shader:set_texture('tex', self.texture)
-    shader:draw(buf, draw_params)
+    Sprite.shader:set_matrix('mvp', mvp)
+    Sprite.shader:set_texture('tex', self.texture)
+    Sprite.shader:set_vec4('tint', 1, 1, 1, 1)
+    Sprite.shader:draw(buf, draw_params)
 end
 
 return Sprite

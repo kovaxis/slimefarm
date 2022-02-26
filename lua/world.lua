@@ -20,7 +20,7 @@ function World:new()
         terrain = util.Shader{
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
-            uniforms = {'mvp', 'mv', 'nclip', 'clip', 'offset', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
+            uniforms = {'mvp', 'mv', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
         portal = util.Shader{
             vertex = 'portal.vert',
@@ -146,6 +146,7 @@ function World:tick()
     --self.day_cycle = (self.day_cycle + 1 / (64*30)) % 1
     --DEBUG: Advance day cycle quicker when in nighttime
     if self.day_cycle < 0.3 or self.day_cycle > 0.6 then
+    --if self.day_cycle > 0.2 and self.day_cycle < 0.8 then
         self.day_cycle = self.day_cycle + 1 / (64*5)
     end
 
@@ -356,7 +357,7 @@ function World:subdraw()
         self.shaders.terrain:set_matrix('mv', frame.mv_world)
         sky.lighting(self.shaders.terrain, cycle)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
-        self.shaders.terrain:draw_terrain(self.terrain, 'offset', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
+        self.shaders.terrain:draw_terrain(self.terrain, 'offset', 'atlas', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end
     
     --Draw entities
@@ -405,6 +406,7 @@ function World:subdraw()
 end
 
 local raw_origin = system.world_pos()
+local last_atlas
 function World:draw()
     local frame = self.frame
     local now = os.clock()
@@ -530,6 +532,40 @@ function World:draw()
     frame.mvp_hud:scale(self.mouse_icon.w, self.mouse_icon.h, 1)
     self.mouse_icon:draw(1, frame.mvp_hud, frame.params_hud)
     frame.mvp_hud:pop()
+
+    --DEBUG: Draw texture atlas of the current chunk
+    if true then
+        local atlas = nil--self.terrain:atlas_at(self.cam_pos)
+        if atlas then
+            atlas:set_mag('nearest')
+            last_atlas = atlas
+        end
+        if last_atlas then
+            local buf = gfx.buffer_2d({
+                0, 0,
+                1, 0,
+                1, 1,
+                0, 1,
+            }, {
+                0, 0,
+                1, 0,
+                1, 1,
+                0, 1,
+            }, {
+                0, 1, 2, 2, 3, 0
+            })
+            frame.mvp_hud:push()
+            frame.mvp_hud:translate(-frame.w * 0.75, -frame.h * 0.75, 0)
+            local tw, th = last_atlas:dimensions()
+            local pixelsize = frame.h / 100
+            frame.mvp_hud:scale(pixelsize * tw, pixelsize * th, 1)
+            Sprite.shader:set_matrix('mvp', frame.mvp_hud)
+            Sprite.shader:set_texture('tex', last_atlas)
+            Sprite.shader:set_vec4('tint', 1, 1, 1, 100)
+            Sprite.shader:draw(buf, frame.params_hud)
+            frame.mvp_hud:pop()
+        end
+    end
 end
 
 function World:mousemove(dx, dy)

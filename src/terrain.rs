@@ -1,12 +1,12 @@
 use std::f64::INFINITY;
 
 use crate::{
-    chunkmesh::{MesherHandle, RawBufPackage},
+    chunkmesh::MesherHandle,
     gen::{GenArea, GenConfig},
+    mesh::RawBufPackage,
     prelude::*,
 };
 use common::terrain::GridKeeper4;
-use glium::buffer::RawBufferPackage;
 
 #[derive(Default)]
 struct SphereBuf {
@@ -339,6 +339,11 @@ impl Terrain {
                         Some(raw.unpack(&self.state.display))
                     },
                 },
+                atlas: unsafe {
+                    buf_pkg
+                        .atlas
+                        .map(|raw| Texture2d::from_any(raw.unpack(&self.state.display)))
+                },
                 portals: {
                     buf_pkg
                         .portals
@@ -511,14 +516,21 @@ impl Terrain {
     pub fn draw(
         &self,
         shader: &Program,
-        uniforms: crate::lua::gfx::UniformStorage,
-        offset_uniform: u32,
+        uniforms: &crate::lua::gfx::UniformStorage,
+        offset_uniform: &str,
+        atlas_uniform: &str,
         origin: WorldPos,
         params: &DrawParameters,
         mvp: Mat4,
         framequad: [Vec3; 4],
         stencil: u8,
-        subdraw: &dyn Fn(&WorldPos, &[Vec3; 4], &Rc<Buffer3d>, Vec3, u8) -> Result<()>,
+        subdraw: &dyn Fn(
+            &WorldPos,
+            &[Vec3; 4],
+            &Rc<GpuBuffer<SimpleVertex>>,
+            Vec3,
+            u8,
+        ) -> Result<()>,
     ) -> Result<()> {
         let frame = &self.state.frame;
 
@@ -536,6 +548,11 @@ impl Terrain {
 
         // Draw all visible chunks
         {
+            use glium::uniforms::{
+                MagnifySamplerFilter as Magnify, MinifySamplerFilter as Minify, SamplerBehavior,
+                SamplerWrapFunction as Wrap,
+            };
+
             let mut frame = frame.borrow_mut();
             let mut drawn = 0;
             let mut bytes_v = 0;
@@ -552,20 +569,34 @@ impl Terrain {
                     Some(buf) => buf,
                     None => return Ok(()),
                 };
+                let atlas = match chunk.atlas.as_ref() {
+                    Some(atlas) => atlas,
+                    None => return Ok(()),
+                };
                 let offset = ((pos - center_chunk) << CHUNK_BITS).to_f32() + off_d;
-                uniforms
-                    .vars
-                    .borrow_mut()
-                    .get_mut(offset_uniform as usize)
-                    .ok_or(anyhow!("offset uniform out of range"))?
-                    .1 = crate::lua::gfx::UniformVal::Vec3(offset.into());
-                frame.draw(&buf.vertex, &buf.index, &shader, &uniforms, params)?;
+                let uniextra = [
+                    (offset_uniform, UniformValue::Vec3(offset.into())),
+                    (
+                        atlas_uniform,
+                        UniformValue::Texture2d(
+                            atlas,
+                            Some(SamplerBehavior {
+                                wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+                                minify_filter: Minify::Nearest,
+                                magnify_filter: Magnify::Nearest,
+                                ..default()
+                            }),
+                        ),
+                    ),
+                ];
+                let uniref = crate::lua::gfx::UniformsRef::new(uniforms, &uniextra);
+                frame.draw(&buf.vertex, &buf.index, &shader, &uniref, params)?;
                 drawn += 1;
                 bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
                 bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
                 Ok(())
             })?;
-            if false {
+            if true {
                 println!(
                     "drew {} chunks in {}KB of vertices and {}KB of indices",
                     drawn,
@@ -639,109 +670,6 @@ impl Terrain {
                         dim: portal.dim,
                     };
                     subdraw(&suborigin, &subfq_world, portal_mesh, offset, stencil + 1)?;
-
-                    /*
-                    // Get the portal shape into a buffer
-                    // Step 1: Figure out which parts of the portal are visible by drawing the
-                    // portal shape (with depth testing) into the stencil buffer.
-                    // TODO: Let Lua handle drawing the portal frame
-                    // OPTIMIZE: Use sample queries and conditional rendering to speed up occluded
-                    // portals.
-                    uniforms
-                        .vars
-                        .borrow_mut()
-                        .get_mut(offset_uniform as usize)
-                        .ok_or(anyhow!("offset uniform out of range"))?
-                        .1 = crate::lua::gfx::UniformVal::Vec3(offset.into());
-                    let (vert_buf, idx_buf) = portal_buf.bufs();
-                    frame.borrow_mut().draw(
-                        vert_buf,
-                        idx_buf,
-                        shader,
-                        &uniforms,
-                        &DrawParameters {
-                            depth: glium::draw_parameters::Depth {
-                                test: glium::draw_parameters::DepthTest::IfLess,
-                                clamp: if proper {
-                                    glium::draw_parameters::DepthClamp::NoClamp
-                                } else {
-                                    glium::draw_parameters::DepthClamp::Clamp
-                                },
-                                // It's not necessary to write to the depth buffer, since the next
-                                // step will immediately reset the depth buffer to the maximum
-                                // value.
-                                write: false,
-                                ..default()
-                            },
-                            stencil: glium::draw_parameters::Stencil {
-                                test_counter_clockwise:
-                                    glium::draw_parameters::StencilTest::IfEqual { mask: !0 },
-                                reference_value_counter_clockwise: stencil as i32,
-                                depth_pass_operation_counter_clockwise:
-                                    glium::draw_parameters::StencilOperation::IncrementWrap,
-                                ..default()
-                            },
-                            color_mask: (false, false, false, false),
-                            polygon_offset: glium::draw_parameters::PolygonOffset {
-                                factor: -1.,
-                                units: -2.,
-                                fill: true,
-                                ..default()
-                            },
-                            ..default()
-                        },
-                    )?;
-                    // Step 2: Draw what's on the other end of the portal.
-                    // This entails drawing the skybox again, resetting the depth buffer.
-                    let suborigin = WorldPos {
-                        coords: [
-                            origin.coords[0] + portal.jump[0],
-                            origin.coords[1] + portal.jump[1],
-                            origin.coords[2] + portal.jump[2],
-                        ],
-                        dim: portal.dim,
-                    };
-                    subdraw(&suborigin, &subfq_world, portal_mesh, offset, stencil + 1)?;
-                    // Step 3: Artificially replace the depth value for the portal shape.
-                    // This allows the portal to occlude objects that are behind it and be occluded
-                    // by objects in front.
-                    // Also reset the stencil buffer to its original value.
-                    uniforms
-                        .vars
-                        .borrow_mut()
-                        .get_mut(offset_uniform as usize)
-                        .ok_or(anyhow!("offset uniform out of range"))?
-                        .1 = crate::lua::gfx::UniformVal::Vec3(offset.into());
-                    let (vert_buf, idx_buf) = portal_buf.bufs();
-                    frame.borrow_mut().draw(
-                        vert_buf,
-                        idx_buf,
-                        shader,
-                        &uniforms,
-                        &DrawParameters {
-                            depth: glium::draw_parameters::Depth {
-                                test: glium::draw_parameters::DepthTest::Overwrite,
-                                clamp: if proper {
-                                    glium::draw_parameters::DepthClamp::NoClamp
-                                } else {
-                                    glium::draw_parameters::DepthClamp::Clamp
-                                },
-                                write: true,
-                                ..default()
-                            },
-                            stencil: glium::draw_parameters::Stencil {
-                                test_counter_clockwise:
-                                    glium::draw_parameters::StencilTest::IfEqual { mask: !0 },
-                                reference_value_counter_clockwise: (stencil + 1) as i32,
-                                depth_pass_operation_counter_clockwise:
-                                    glium::draw_parameters::StencilOperation::DecrementWrap,
-                                ..default()
-                            },
-                            color_mask: (false, false, false, false),
-                            ..default()
-                        },
-                    )?;
-                    */
                 }
             }
             Ok(())
@@ -1184,22 +1112,23 @@ impl ops::DerefMut for MeshKeeper {
 }
 
 pub(crate) struct ChunkMesh {
-    pub mesh: Mesh,
-    pub buf: Option<Buffer3d>,
+    pub mesh: Mesh<VoxelVertex>,
+    pub buf: Option<GpuBuffer<VoxelVertex>>,
+    pub atlas: Option<Texture2d>,
     pub portals: Vec<PortalMesh>,
 }
 
 pub(crate) struct PortalMesh {
-    pub mesh: Cell<Mesh>,
-    pub buf: Rc<Buffer3d>,
+    pub mesh: Cell<Mesh<SimpleVertex>>,
+    pub buf: Rc<GpuBuffer<SimpleVertex>>,
     pub bounds: [Vec3; 4],
     pub jump: [f64; 3],
     pub dim: u32,
 }
 
 pub(crate) struct RawPortalMesh {
-    pub mesh: Mesh,
-    pub buf: RawBufPackage,
+    pub mesh: Mesh<SimpleVertex>,
+    pub buf: RawBufPackage<SimpleVertex>,
     pub bounds: [Vec3; 4],
     pub jump: [f64; 3],
     pub dim: u32,

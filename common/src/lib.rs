@@ -28,6 +28,7 @@ pub mod prelude {
     pub use serde::{Deserialize, Serialize};
     pub use std::{
         any::Any,
+        borrow::Cow,
         cell::{Cell, RefCell},
         cmp,
         collections::VecDeque,

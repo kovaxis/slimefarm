@@ -1,6 +1,6 @@
 use crate::{
     gen::GenConfig,
-    lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, UniformStorage, UniformVal},
+    lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, StaticUniform, UniformStorage},
     prelude::*,
 };
 use common::{lua::LuaValueStatic, lua_assert, lua_bail, lua_func, lua_lib, lua_type};
@@ -214,18 +214,36 @@ lua_type! {TerrainRef, lua, this,
         this.rc.borrow().last_min_viewdist
     }
 
+    fn atlas_at(pos: LuaWorldPos) {
+        let pos = pos.get();
+        let chunkpos = pos.block_pos().block_to_chunk();
+        let mut this = this.rc.borrow_mut();
+        let this = &mut *this;
+        if let Some(chunk) = this.meshes.get_mut(chunkpos) {
+            let atlas = mem::replace(&mut chunk.atlas, None);
+            if let Some(atlas) = atlas {
+                Some(crate::lua::gfx::TextureRef {
+                    tex: Rc::new(atlas),
+                    sampling: default(),
+                })
+            }else{None}
+        }else{None}
+    }
+
     fn draw((
         shader,
         uniforms,
         offset_uniform,
+        atlas_uniform,
         params,
         mvp,
         camstack_raw,
         subdraw_callback
     ): (
         ShaderRef,
-        UniformStorage,
-        u32,
+        LuaAnyUserData,
+        LuaString,
+        LuaString,
         LuaDrawParams,
         MatrixStack,
         LuaAnyUserData,
@@ -233,8 +251,15 @@ lua_type! {TerrainRef, lua, this,
     )) {
         let this = this.rc.borrow();
         let mvp = mvp.stack.borrow().1;
+        let uniforms = uniforms.borrow::<UniformStorage>()?;
         let camstack = camstack_raw.borrow::<CameraStack>()?;
-        let subdraw = |origin: &WorldPos, framequad: &[Vec3; 4], buf: &Rc<Buffer3d>, buf_off: Vec3, depth: u8| -> Result<()> {
+        let subdraw = |
+            origin: &WorldPos,
+            framequad: &[Vec3; 4],
+            buf: &Rc<GpuBuffer<SimpleVertex>>,
+            buf_off: Vec3,
+            depth: u8
+        | -> Result<()> {
             camstack.push(&mvp, *origin, *framequad, BufferRef::Buf3d(buf.clone()), buf_off);
             ensure!(camstack.depth() == depth, "invalid CameraStack depth");
             subdraw_callback.call(camstack_raw.clone())?;
@@ -243,8 +268,9 @@ lua_type! {TerrainRef, lua, this,
         };
         this.draw(
             &shader.program,
-            uniforms,
-            offset_uniform,
+            &uniforms,
+            offset_uniform.to_str()?,
+            atlas_uniform.to_str()?,
             camstack.origin(),
             &params.params,
             mvp,

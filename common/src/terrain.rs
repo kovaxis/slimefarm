@@ -71,6 +71,18 @@ impl<'a> ChunkRef<'a> {
     const FLAG_SHINY: usize = 0b1000;
 
     #[inline]
+    pub fn new_homogeneous(block: BlockData) -> ChunkRef<'static> {
+        ChunkRef {
+            ptr: unsafe {
+                NonNull::new_unchecked(
+                    (((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS) as *mut ChunkData,
+                )
+            },
+            marker: PhantomData,
+        }
+    }
+
+    #[inline]
     fn raw(self) -> usize {
         self.ptr.as_ptr() as usize
     }
@@ -298,7 +310,9 @@ impl ChunkBox {
     /// Create a new chunk filled with the given block, without allocating any memory.
     #[inline]
     pub fn new_homogeneous(block: BlockData) -> Self {
-        unsafe { Self::new_raw(((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS) }
+        Self {
+            ptr: ChunkRef::new_homogeneous(block).ptr,
+        }
     }
 
     /// Create a new chunk box with unspecified but allocated contents.

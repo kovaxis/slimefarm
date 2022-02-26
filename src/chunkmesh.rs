@@ -1,36 +1,19 @@
-use crate::{prelude::*, terrain::RawPortalMesh};
+use crate::{mesh::RawBufPackage, prelude::*, terrain::RawPortalMesh};
+use rectpack::DensePacker;
 
-pub(crate) struct BufPackage {
+pub(crate) struct ChunkMeshPkg {
     pub pos: ChunkPos,
-    pub mesh: Mesh,
-    pub buf: Option<RawBufPackage>,
+    pub mesh: Mesh<VoxelVertex>,
+    pub buf: Option<RawBufPackage<VoxelVertex>>,
+    //pub atlas: usize,
+    pub atlas: Option<RawTexturePackage>,
     pub portals: Vec<RawPortalMesh>,
 }
 
-pub(crate) struct RawBufPackage<V = SimpleVertex, I: glium::index::Index = VertIdx> {
-    vert: RawVertexPackage<V>,
-    idx: RawIndexPackage<I>,
-}
-impl RawBufPackage {
-    pub(crate) fn pack(buf: Buffer3d) -> Self {
-        Self {
-            vert: buf.vertex.into_raw_package(),
-            idx: buf.index.into_raw_package(),
-        }
-    }
-
-    pub(crate) unsafe fn unpack(self, display: &Display) -> Buffer3d {
-        Buffer3d {
-            vertex: VertexBuffer::from_raw_package(display, self.vert),
-            index: IndexBuffer::from_raw_package(display, self.idx),
-        }
-    }
-}
-
-const AVERAGE_WEIGHT: f32 = 0.02;
-
 pub struct MesherHandle {
-    pub(crate) recv_bufs: Receiver<BufPackage>,
+    pub(crate) recv_bufs: Receiver<ChunkMeshPkg>,
+    //pub(crate) recv_atlas: Receiver<(usize, RawTexturePackage)>,
+    //pub(crate) send_atlas: Sender<(usize, RawTexturePackage)>,
     shared: Arc<SharedState>,
     thread: Option<JoinHandle<()>>,
 }
@@ -51,6 +34,8 @@ impl MesherHandle {
             .take()
             .expect("no secondary opengl context available for mesher");
         let (send_bufs, recv_bufs) = channel::bounded(512);
+        //let (send_atlas, recv_atlas) = channel::bounded(2);
+        //let (send_recycleatlas, recv_recycleatlas) = channel::bounded(2);
         let thread = {
             let shared = shared.clone();
             thread::spawn(move || {
@@ -61,13 +46,17 @@ impl MesherHandle {
                     chunks: Some(chunks),
                     gl_ctx,
                     send_bufs,
-                    mesher: Box::new(Mesher::new(textures)),
+                    //send_atlas: send_atlas,
+                    //recv_atlas: recv_recycleatlas,
+                    mesher: Box::new(Mesher2::new(textures)),
                 });
             })
         };
         Self {
             thread: Some(thread),
             recv_bufs,
+            //recv_atlas: recv_atlas,
+            //send_atlas: send_recycleatlas,
             shared,
         }
     }
@@ -104,10 +93,75 @@ struct MesherState {
     shared: Arc<SharedState>,
     chunks: Option<Arc<RwLock<ChunkStorage>>>,
     gl_ctx: Display,
-    mesher: Box<Mesher>,
-    send_bufs: Sender<BufPackage>,
+    /// Atlas chunks that have not yet been twice to the atlas texture.
+    ///
+    /// Because there are two atlas textures for each atlas index going around, each atlas chunk has
+    /// to be written twice into two different textures.
+    /// Therefore, whenever the alternative texture for an atlas is received, these atlas chunks are
+    /// written and then sent back to the pool.
+    //pending_atlas: Vec<Vec<AtlasChunk>>,
+    mesher: Box<Mesher2>,
+    send_bufs: Sender<ChunkMeshPkg>,
+    //send_atlas: Sender<(usize, RawTexturePackage)>,
+    //recv_atlas: Receiver<(usize, RawTexturePackage)>,
+}
+impl MesherState {
+    fn try_mesh<'a>(
+        &mut self,
+        pos: ChunkPos,
+        chunks: &'a RwLock<ChunkStorage>,
+        chunks_store: &mut Option<RwLockReadGuard<'a, ChunkStorage>>,
+    ) -> Option<ChunkMeshPkg> {
+        // Make mesh
+        time!(start mesh);
+        self.mesher.make_mesh(pos, chunks, chunks_store)?;
+        time!(store mesh self.shared.avg_mesh_time);
+
+        time!(start upload);
+        // Upload mesh to GPU
+        let mesh = mem::take(&mut self.mesher.mesh);
+        let buf_pkg = if mesh.indices.is_empty() {
+            None
+        } else {
+            let buf = mesh.make_buffer(&self.gl_ctx);
+            Some(RawBufPackage::pack(buf))
+        };
+
+        // Upload texture to GPU
+        let tex_pkg = if mesh.indices.is_empty() {
+            None
+        } else {
+            let (w, h) = (ATLAS_BIN, self.mesher.atlas_h);
+            let raw_img = RawImage2d {
+                data: Cow::Borrowed(&self.mesher.atlas[..(w * h) as usize]),
+                width: w as u32,
+                height: h as u32,
+                format: glium::texture::ClientFormat::U8U8U8U8,
+            };
+            let tex = Texture2d::with_mipmaps(
+                &self.gl_ctx,
+                raw_img,
+                glium::texture::MipmapsOption::NoMipmap,
+            )
+            .expect("failed to upload atlas texture for chunk");
+            let tex = RawTexturePackage::pack(tex.into_any());
+            Some(tex)
+        };
+        time!(store upload self.shared.avg_upload_time);
+
+        // Package it all up
+        Some(ChunkMeshPkg {
+            pos,
+            mesh,
+            buf: buf_pkg,
+            atlas: tex_pkg,
+            // TODO: Re-implement portals
+            portals: Vec::new(),
+        })
+    }
 }
 
+/*
 fn try_mesh<'a>(
     state: &mut MesherState,
     pos: ChunkPos,
@@ -207,6 +261,7 @@ fn try_mesh<'a>(
         portals,
     })
 }
+*/
 
 /// Organizes chunk requests between threads.
 /// Currently, coordinates:
@@ -264,10 +319,10 @@ impl RequestBuf {
 fn run_mesher(mut state: MesherState) {
     let mut last_stall_warning = Instant::now();
 
-    let chunks_raw = state.chunks.take().unwrap();
     const MESH_QUEUE: usize = 8;
     let mut mesh_queue = Vec::with_capacity(MESH_QUEUE);
     let mut fail_queue = Vec::with_capacity(MESH_QUEUE);
+    let chunks = state.chunks.take().unwrap();
     let mut chunks_store = None;
     loop {
         // Get a list of candidate chunks from the main thread
@@ -294,7 +349,7 @@ fn run_mesher(mut state: MesherState) {
         let mut meshed_count = 0;
         for pos in mesh_queue.drain(..) {
             // Attempt to make this mesh
-            let buf_pkg = match try_mesh(&mut state, pos, &chunks_raw, &mut chunks_store) {
+            let buf_pkg = match state.try_mesh(pos, &chunks, &mut chunks_store) {
                 Some(buf) => buf,
                 None => {
                     // Something failed
@@ -349,6 +404,486 @@ fn run_mesher(mut state: MesherState) {
     }
 }
 
+const ATLAS_SIZE: i32 = 1024;
+const ATLAS_BIN: i32 = 64;
+
+const MARGIN: i32 = 4;
+const BBUF_SIZE: i32 = 2 * MARGIN + CHUNK_SIZE;
+const BBUF_LEN: usize = (BBUF_SIZE * BBUF_SIZE * BBUF_SIZE) as usize;
+const ADVANCE: [i32; 3] = [1, BBUF_SIZE, BBUF_SIZE * BBUF_SIZE];
+
+const NOISE_SIZE: i32 = CHUNK_SIZE + 1;
+const NOISE_LEN: usize = (NOISE_SIZE * NOISE_SIZE * NOISE_SIZE) as usize;
+
+/// A primitive with the same bitwidth as the chunk size.
+type ChunkSizePrim = u32;
+
+fn mask(w: u8) -> ChunkSizePrim {
+    if w >= CHUNK_SIZE as u8 {
+        !0
+    } else {
+        ((1 as ChunkSizePrim) << w).wrapping_sub(1)
+    }
+}
+
+struct SurfaceBits {
+    bits: [ChunkSizePrim; CHUNK_SIZE as usize],
+}
+impl SurfaceBits {
+    fn new() -> Self {
+        assert_eq!(mem::size_of::<ChunkSizePrim>() * 8, CHUNK_SIZE as usize);
+        Self {
+            bits: [0; CHUNK_SIZE as usize],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.bits = [0; CHUNK_SIZE as usize];
+    }
+
+    fn get(&self, x: u8, y: u8) -> bool {
+        (self.bits[y as usize] >> (x as usize)) & 1 != 0
+    }
+
+    fn set(&mut self, x: u8, y: u8) {
+        self.bits[y as usize] |= 1 << x;
+    }
+
+    /// Returns the x position of the first unset bit to the right of `(x, y)`.
+    fn march_right(&self, x: u8, y: u8) -> u8 {
+        let mut row = self.bits[y as usize];
+        row |= ((1 as ChunkSizePrim) << x).wrapping_sub(1);
+        row.trailing_ones() as u8
+    }
+
+    /// The y position of the first row above `y` such that there is at least 1 bit unset from
+    /// `(x, y)` to `(x+w, y)` (inclusive-exclusive range).
+    fn march_up(&self, x: u8, mut y: u8, w: u8) -> u8 {
+        let mask = mask(w) << x;
+        y += 1;
+        while y < CHUNK_SIZE as u8 {
+            if mask & self.bits[y as usize] != mask {
+                return y;
+            }
+            y += 1;
+        }
+        return CHUNK_SIZE as u8;
+    }
+
+    fn unset_rect(&mut self, x: u8, y: u8, w: u8, h: u8) {
+        let mask = !(mask(w) << x);
+        for y in y..y + h {
+            self.bits[y as usize] &= mask;
+        }
+    }
+}
+
+struct AtlasChunk {
+    /// To which atlas should this atlas chunk go.
+    atlas_id: usize,
+    data: Vec<(u8, u8, u8, u8)>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+impl AtlasChunk {
+    fn new() -> Self {
+        Self {
+            atlas_id: 0,
+            data: vec![(0, 0, 0, 0); (ATLAS_BIN * ATLAS_SIZE) as usize],
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        }
+    }
+}
+
+struct Mesher2 {
+    block_buf: [BlockData; BBUF_LEN],
+    corner_queue: Vec<(u8, u8)>,
+    style: StyleTable,
+    block_textures: [BlockTexture; 256],
+    noise_buf: [f32; NOISE_LEN],
+    mesh: Mesh<VoxelVertex>,
+    //atlas: AtlasChunk,
+    /// Garbage atlas chunks that can be reused.
+    //free_atlas_pool: Vec<AtlasChunk>,
+    packer: DensePacker,
+    atlas: Vec<(u8, u8, u8, u8)>,
+    atlas_h: i32,
+}
+impl Mesher2 {
+    fn new(textures: BlockTextures) -> Self {
+        Self {
+            block_buf: [BlockData { data: 0 }; BBUF_LEN],
+            corner_queue: Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize),
+            style: StyleTable::new(&textures),
+            block_textures: {
+                let mut blocks: Uninit<[BlockTexture; 256]> = Uninit::uninit();
+                for (src, dst) in textures.blocks.iter().zip(0..256) {
+                    unsafe {
+                        (blocks.as_mut_ptr() as *mut BlockTexture)
+                            .offset(dst)
+                            .write(src.take());
+                    }
+                }
+                unsafe { blocks.assume_init() }
+            },
+            noise_buf: [0.; NOISE_LEN],
+            mesh: default(),
+            atlas: vec![(0, 0, 0, 0); (ATLAS_BIN * ATLAS_SIZE) as usize],
+            atlas_h: 1,
+            //atlas: AtlasChunk::new(),
+            //free_atlas_pool: vec![],
+            packer: DensePacker::new(1, 1),
+        }
+    }
+
+    fn is_solid(&self, idx: i32) -> bool {
+        self.block_buf[idx as usize].is_solid(&self.style)
+    }
+    fn is_clear(&self, idx: i32) -> bool {
+        self.block_buf[idx as usize].is_clear(&self.style)
+    }
+
+    fn vertex(&mut self, pos: Vec3, uv: Vec2) -> VertIdx {
+        self.mesh.add_vertex(VoxelVertex {
+            pos: pos.into(),
+            uv: uv.into(),
+        })
+    }
+
+    fn color(&mut self, block: BlockData, blockpos: Int3, airpos: Int3) -> [u8; 4] {
+        // Get the noise value at a particular location
+        let noise_at = |pos: [i32; 3]| {
+            self.noise_buf
+                [(pos[0] + NOISE_SIZE * pos[1] + NOISE_SIZE * NOISE_SIZE * pos[2]) as usize]
+        };
+        // Snap to the nearest grid-aligned integer points
+        let snap = |x: i32, i: usize| {
+            let mask = (!0) << i;
+            (x & mask, (x & mask) + (1 << i))
+        };
+        // Texture parameters for this block
+        let tex = &self.block_textures[block.data as usize];
+        // Color accumulator, starting with the base color
+        let mut color = Vec4::from(tex.base);
+        // Add the first layer of noise, which can be computed using a single noise lookup
+        color += Vec4::from(tex.noise[0]) * noise_at(*blockpos);
+        // Go through all noise layers
+        for i in 1..BlockTexture::NOISE_LEVELS {
+            // Get the 8 noise points
+            let (x0, x1) = snap(blockpos.x, i);
+            let (y0, y1) = snap(blockpos.y, i);
+            let (z0, z1) = snap(blockpos.z, i);
+            // Interpolate these 8 points using bilinear interpolation
+            let f = blockpos.lowbits(i as i32).to_f32() * (1. / (1 << i) as f32);
+            let s = Lerp::lerp(
+                &Lerp::lerp(
+                    &Lerp::lerp(&noise_at([x0, y0, z0]), noise_at([x1, y0, z0]), f.x),
+                    Lerp::lerp(&noise_at([x0, y1, z0]), noise_at([x1, y1, z0]), f.x),
+                    f.y,
+                ),
+                Lerp::lerp(
+                    &Lerp::lerp(&noise_at([x0, y0, z1]), noise_at([x1, y0, z1]), f.x),
+                    Lerp::lerp(&noise_at([x0, y1, z1]), noise_at([x1, y1, z1]), f.x),
+                    f.y,
+                ),
+                f.z,
+            );
+            // Add the color offset
+            color += Vec4::from(tex.noise[i]) * s;
+        }
+        // Quantize the color
+        let q = |f: f32| (f * 255.) as u8;
+        [q(color.x), q(color.y), q(color.z), q(color.w)]
+    }
+
+    fn quad(&mut self, blockpos: Int3, positive: i32, axes: [usize; 3], w: i32, h: i32) {
+        // Allocate space in the terrain atlas
+        let rect = loop {
+            match self.packer.pack(w, h, true) {
+                Some(rect) => break rect,
+                None => {
+                    // TODO: Grow atlas bin in this case
+                    println!("ran out of atlas space for chunk!");
+                    return;
+                }
+            }
+        };
+        self.atlas_h = self.atlas_h.max(rect.y + rect.height);
+
+        // Figure out the mapping to block buffer indices
+        let mut bidx1 = MARGIN * (ADVANCE[0] + ADVANCE[1] + ADVANCE[2])
+            + blockpos.x * ADVANCE[0]
+            + blockpos.y * ADVANCE[1]
+            + blockpos.z * ADVANCE[2];
+        let badv_x = ADVANCE[axes[0]];
+        let badv_y = ADVANCE[axes[1]];
+
+        // Figure out mapping to atlas texture indices
+        let mut aidx1 = rect.x + rect.y * ATLAS_BIN;
+        let (mut aadv_x, mut aadv_y) = (1, ATLAS_BIN);
+        if rect.width != w {
+            mem::swap(&mut aadv_x, &mut aadv_y);
+        }
+
+        // Actually write the terrain atlas
+        let mut front_off = Int3::zero();
+        front_off[axes[2]] = positive * 2 - 1;
+        for y in 0..h {
+            let mut bidx0 = bidx1;
+            let mut aidx0 = aidx1;
+            for x in 0..w {
+                let mut bpos = blockpos;
+                bpos[axes[0]] += x;
+                bpos[axes[1]] += y;
+                let color = self.color(self.block_buf[bidx0 as usize], bpos, bpos + front_off);
+                self.atlas[aidx0 as usize] = (color[0], color[1], color[2], color[3]);
+                bidx0 += badv_x;
+                aidx0 += aadv_x;
+            }
+            bidx1 += badv_y;
+            aidx1 += aadv_y;
+        }
+
+        // Figure out uv coordinates
+        let uv00 = Vec2::new(rect.x as f32, rect.y as f32);
+        let uv11 = Vec2::new((rect.x + rect.width) as f32, (rect.y + rect.height) as f32);
+
+        let (mut uv10, mut uv01) = (Vec2::new(uv11.x, uv00.y), Vec2::new(uv00.x, uv11.y));
+        if rect.width != w {
+            mem::swap(&mut uv10, &mut uv01);
+        }
+
+        // Push the geometry out
+        let mut p00 = blockpos;
+        p00[axes[2]] += positive;
+        let mut p10 = p00;
+        p10[axes[0]] += w;
+        let mut p01 = p00;
+        p01[axes[1]] += h;
+        let mut p11 = p10;
+        p11[axes[1]] += h;
+
+        let v = [
+            self.vertex(p00.to_f32(), uv00),
+            self.vertex(p10.to_f32(), uv10),
+            self.vertex(p11.to_f32(), uv11),
+            self.vertex(p01.to_f32(), uv01),
+        ];
+        self.mesh.add_face(v[0], v[1], v[2]);
+        self.mesh.add_face(v[2], v[3], v[0]);
+    }
+
+    fn layer(&mut self, z: i32, dir: i32, axes: [usize; 3]) {
+        // Stores which quads need meshing
+        let mut pending = SurfaceBits::new();
+        // Stores the potential coordinates for quad corners
+        let mut corner_queue = mem::take(&mut self.corner_queue);
+        corner_queue.clear();
+
+        // Moves from the back block to the front block in index space
+        let front = dir * ADVANCE[axes[2]];
+        // 1 if pointing positively, 0 if negatively
+        let positive = (dir + 1) / 2;
+
+        // Get a flat 2d quadmap from this layer
+        //let mut idx1 = (MARGIN + z) * ADVANCE[axes[2]] + MARGIN * ADVANCE[axes[1]] + MARGIN * ADVANCE[axes[0]];
+        let mut idx1 = z * ADVANCE[axes[2]] + MARGIN * (ADVANCE[0] + ADVANCE[1] + ADVANCE[2]);
+        for y in 0..CHUNK_SIZE as u8 {
+            let mut idx0 = idx1;
+            for x in 0..CHUNK_SIZE as u8 {
+                if self.is_solid(idx0) && self.is_clear(idx0 + front) {
+                    corner_queue.push((x, y));
+                    pending.set(x, y);
+                }
+                idx0 += ADVANCE[axes[0]];
+            }
+            idx1 += ADVANCE[axes[1]];
+        }
+
+        // Mesh greedily
+        for &(x0, y0) in corner_queue.iter() {
+            if !pending.get(x0, y0) {
+                // This block is contained in a previous quad
+                continue;
+            }
+            // Greedily determine width then height
+            let w = pending.march_right(x0, y0) - x0;
+            let h = pending.march_up(x0, y0, w) - y0;
+            pending.unset_rect(x0, y0, w, h);
+            // Now build quad
+            let posvirt = [x0 as i32, y0 as i32, z];
+            let mut pos3d = Int3::zero();
+            pos3d[axes[0]] = posvirt[0];
+            pos3d[axes[1]] = posvirt[1];
+            pos3d[axes[2]] = posvirt[2];
+            self.quad(pos3d, positive, axes, w as i32, h as i32);
+        }
+
+        self.corner_queue = corner_queue;
+    }
+
+    fn visit_layers(&mut self) {
+        // X+
+        for x in 0..CHUNK_SIZE {
+            self.layer(x, 1, [1, 2, 0]);
+        }
+        // X-
+        for x in 0..CHUNK_SIZE {
+            self.layer(x, -1, [2, 1, 0]);
+        }
+        // Y+
+        for y in 0..CHUNK_SIZE {
+            self.layer(y, 1, [2, 0, 1]);
+        }
+        // Y-
+        for y in 0..CHUNK_SIZE {
+            self.layer(y, -1, [0, 2, 1]);
+        }
+        // Z+
+        for z in 0..CHUNK_SIZE {
+            self.layer(z, 1, [0, 1, 2]);
+        }
+        // Z-
+        for z in 0..CHUNK_SIZE {
+            self.layer(z, -1, [1, 0, 2]);
+        }
+    }
+
+    unsafe fn fetch_chunk(&mut self, chunk: ChunkRef, from: Int3, to: Int3, size: Int3) {
+        let mut to_idx = ((to.z * BBUF_SIZE) + to.y) * BBUF_SIZE + to.x;
+        if let Some(chunk) = chunk.blocks() {
+            let mut from_idx = (((from.z << CHUNK_BITS) | from.y) << CHUNK_BITS) | from.x;
+            for _z in 0..size.z {
+                for _y in 0..size.y {
+                    for _x in 0..size.x {
+                        self.block_buf[to_idx as usize] = chunk.blocks[from_idx as usize];
+                        from_idx += 1;
+                        to_idx += 1;
+                    }
+                    from_idx += CHUNK_SIZE - size.x;
+                    to_idx += BBUF_SIZE - size.x;
+                }
+                from_idx += CHUNK_SIZE * CHUNK_SIZE - CHUNK_SIZE * size.y;
+                to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
+            }
+        } else {
+            let b = chunk.homogeneous_block_unchecked();
+            for _z in 0..size.z {
+                for _y in 0..size.y {
+                    for _x in 0..size.x {
+                        self.block_buf[to_idx as usize] = b;
+                        to_idx += 1;
+                    }
+                    to_idx += BBUF_SIZE - size.x;
+                }
+                to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
+            }
+        }
+    }
+
+    /// Fetch relevant chunk data and place it in a flat buffer.
+    fn gather_chunks<'a>(&mut self, chunk_pos: ChunkPos, chunks: &ChunkStorage) -> Option<()> {
+        let mut near_chunks = [ChunkRef::new_homogeneous(BlockData { data: 0 }); 27];
+        {
+            let mut idx = 0;
+            for z in -1..=1 {
+                for y in -1..=1 {
+                    for x in -1..=1 {
+                        let mut pos = chunk_pos;
+                        pos.coords += [x, y, z];
+                        near_chunks[idx] = chunks.chunk_at(pos)?;
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        unsafe {
+            let mut idx = 0;
+            for z in 0..3 {
+                for y in 0..3 {
+                    for x in 0..3 {
+                        const FROM: [i32; 3] = [CHUNK_SIZE - MARGIN, 0, 0];
+                        const TO: [i32; 3] = [0, MARGIN, MARGIN + CHUNK_SIZE];
+                        const SIZE: [i32; 3] = [MARGIN, CHUNK_SIZE, MARGIN];
+                        self.fetch_chunk(
+                            near_chunks[idx],
+                            [FROM[x], FROM[y], FROM[z]].into(),
+                            [TO[x], TO[y], TO[z]].into(),
+                            [SIZE[x], SIZE[y], SIZE[z]].into(),
+                        );
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// Generate texture noise.
+    fn texture_noise(&mut self, chunk_pos: ChunkPos) {
+        // OPTIMIZE: Generate noise rows by hashing hashes
+        let mut idx = 0;
+        let base_pos = chunk_pos.coords << CHUNK_BITS;
+        for z in 0..=CHUNK_SIZE {
+            for y in 0..=CHUNK_SIZE {
+                for x in 0..=CHUNK_SIZE {
+                    let rnd = fxhash::hash32(&(base_pos + [x, y, z]));
+                    let val = 0x3f800000 | (rnd >> 9);
+                    let val = f32::from_bits(val) * 2. - 3.;
+                    self.noise_buf[idx] = val;
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    fn adjust_uv(&mut self) {
+        self.atlas_h = (self.atlas_h as u32).next_power_of_two() as i32;
+        let (w, h) = (ATLAS_BIN, self.atlas_h);
+        let (adj_u, adj_v) = ((w as f32).recip(), (h as f32).recip());
+        for v in self.mesh.vertices.iter_mut() {
+            v.uv[0] *= adj_u;
+            v.uv[1] *= adj_v;
+        }
+    }
+
+    fn make_mesh<'a>(
+        &mut self,
+        chunk_pos: ChunkPos,
+        chunks_raw: &'a RwLock<ChunkStorage>,
+        chunks_store: &mut Option<RwLockReadGuard<'a, ChunkStorage>>,
+    ) -> Option<()> {
+        // Make sure the necessary chunks are available
+        self.gather_chunks(
+            chunk_pos,
+            chunks_store.get_or_insert_with(|| chunks_raw.read()),
+        )?;
+        chunks_store.take();
+
+        // Reset the atlas packer
+        self.packer.reset(ATLAS_BIN, ATLAS_SIZE);
+        //self.atlas.reset();
+        self.atlas_h = 1;
+        self.atlas.fill((0, 0, 0, 255));
+
+        // Generate block texture noise
+        self.texture_noise(chunk_pos);
+
+        // Turn voxels into triangular meshes
+        self.visit_layers();
+
+        // Adjust uv coordinates to final texture size
+        self.adjust_uv();
+
+        Some(())
+    }
+}
+
 struct LayerParams {
     x: [i32; 3],
     y: [i32; 3],
@@ -383,7 +918,7 @@ struct Mesher {
     /// The current position of the chunk being meshed.
     chunk_pos: ChunkPos,
     /// A temporary mesh buffer, storing vertex and index data.
-    mesh: Mesh,
+    mesh: Mesh<SimpleVertex>,
 }
 impl Mesher {
     const EXTRA_BLOCKS: i32 = 1;
@@ -612,7 +1147,7 @@ impl Mesher {
             let color = [q(color[0]), q(color[1]), q(color[2]), q(color[3])];
             //Apply transform
             let vert = Vec3::new(pos_3d[0] as f32, pos_3d[1] as f32, pos_3d[2] as f32);
-            cached = (id, self.mesh.add_vertex(vert, params.normal, color));
+            cached = (id, self.mesh.add_vertex_simple(vert, params.normal, color));
             self.vert_cache[cache_idx] = cached;
         }
         cached.1
@@ -661,7 +1196,11 @@ impl Mesher {
         }
     }
 
-    pub fn make_mesh(&mut self, chunk_pos: ChunkPos, chunks: &[ChunkArc; 3 * 3 * 3]) -> Mesh {
+    pub fn make_mesh(
+        &mut self,
+        chunk_pos: ChunkPos,
+        chunks: &[ChunkArc; 3 * 3 * 3],
+    ) -> Mesh<SimpleVertex> {
         let chunk_at = |pos: Int3| &chunks[(pos[0] + pos[1] * 3 + pos[2] * (3 * 3)) as usize];
         let block_at = |pos: Int3| {
             let chunk_pos = pos >> CHUNK_BITS;
@@ -730,7 +1269,9 @@ impl Mesher {
         }
 
         // X
+        time!(start xpass);
         for x in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
+            time!(start gather);
             let mut idx = 0;
             for z in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
                 for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
@@ -738,6 +1279,8 @@ impl Mesher {
                     idx += 1;
                 }
             }
+            time!(show gather);
+            time!(start plus);
             if x > CHUNK_SIZE && x <= 2 * CHUNK_SIZE {
                 //Facing `+`
                 self.layer(&LayerParams {
@@ -748,6 +1291,8 @@ impl Mesher {
                     normal: [i8::MAX, 0, 0],
                 });
             }
+            time!(show plus);
+            time!(start minus);
             self.flip_bufs();
             if x >= CHUNK_SIZE && x < 2 * CHUNK_SIZE {
                 //Facing `-`
@@ -759,7 +1304,9 @@ impl Mesher {
                     normal: [i8::MIN, 0, 0],
                 });
             }
+            time!(show minus);
         }
+        time!(show xpass);
 
         // Y
         for y in CHUNK_SIZE - Self::EXTRA_BLOCKS..2 * CHUNK_SIZE + Self::EXTRA_BLOCKS {
@@ -876,10 +1423,10 @@ impl Mesher {
 
                     // Make portal mesh
                     let mut mesh = Mesh::with_capacity(4, 2);
-                    mesh.add_vertex(v00.to_f32(), [0; 3], [0; 4]);
-                    mesh.add_vertex(v10.to_f32(), [0; 3], [0; 4]);
-                    mesh.add_vertex(v11.to_f32(), [0; 3], [0; 4]);
-                    mesh.add_vertex(v01.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex_simple(v00.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex_simple(v10.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex_simple(v11.to_f32(), [0; 3], [0; 4]);
+                    mesh.add_vertex_simple(v01.to_f32(), [0; 3], [0; 4]);
                     mesh.add_face(0, 1, 2);
                     mesh.add_face(0, 2, 3);
 

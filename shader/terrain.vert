@@ -2,21 +2,21 @@
 
 uniform vec3 offset;
 uniform mat4 mvp;
+/*
 uniform mat4 mv;
 uniform vec3 l_dir;
 uniform mat4 clip;
 uniform vec4 nclip;
+*/
 
 in vec3 pos;
-in vec4 normal;
-in vec4 color;
+in vec2 uv;
 
-out vec4 v_color;
-out vec3 v_light_dir;
-out float v_diffuse;
-out vec3 v_pos;
+//out vec3 v_pos;
+out vec2 v_uv;
 
 void main() {
+    /*
     //Compute real normal using modelview matrix
     vec3 real_normal = vec3(mv * normal);
 
@@ -29,9 +29,9 @@ void main() {
 
     //Send color
     v_color = color;
-
-    vec4 posh = vec4(pos + offset, 1);
-
+*/
+    vec4 posh = vec4(vec3(pos) + offset, 1);
+/*
     //Send the view position of the vertex
     v_pos = vec3(mv * posh);
 
@@ -42,6 +42,9 @@ void main() {
     gl_ClipDistance[2] = clip_dists.y;
     gl_ClipDistance[3] = clip_dists.z;
     gl_ClipDistance[4] = clip_dists.w;
+    */
+
+    v_uv = uv;
 
     //Send the projected position of the vertex
     gl_Position = mvp * posh;

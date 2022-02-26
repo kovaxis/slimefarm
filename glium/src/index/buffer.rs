@@ -72,32 +72,30 @@ pub struct RawIndexPackage<T: Index> {
     buffer: RawBufferPackage<[T]>,
     primitives: PrimitiveType,
 }
-
-impl<T> IndexBuffer<T>
-where
-    T: Index,
-{
+impl<T: Index> RawIndexPackage<T> {
     /// Pack up.
     #[inline]
-    pub fn into_raw_package(self) -> RawIndexPackage<T> {
+    pub fn pack(buf: IndexBuffer<T>) -> RawIndexPackage<T> {
         RawIndexPackage {
-            buffer: self.buffer.into_raw_package(),
-            primitives: self.primitives,
+            buffer: RawBufferPackage::pack(buf.buffer),
+            primitives: buf.primitives,
         }
     }
 
     /// Unpack down.
     #[inline]
-    pub unsafe fn from_raw_package<F: ?Sized + Facade>(
-        facade: &F,
-        pkg: RawIndexPackage<T>,
-    ) -> Self {
-        Self {
-            buffer: Buffer::from_raw_package(facade, pkg.buffer),
-            primitives: pkg.primitives,
+    pub unsafe fn unpack<F: ?Sized + Facade>(self, facade: &F) -> IndexBuffer<T> {
+        IndexBuffer {
+            buffer: self.buffer.unpack(facade),
+            primitives: self.primitives,
         }
     }
+}
 
+impl<T> IndexBuffer<T>
+where
+    T: Index,
+{
     /// Builds a new index buffer from a list of indices and a primitive type.
     #[inline]
     pub fn new<F: ?Sized>(

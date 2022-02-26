@@ -114,26 +114,22 @@ pub struct RawVertexPackage<T> {
     buffer: RawBufferPackage<[T]>,
     bindings: VertexFormat,
 }
-
-impl<T: Copy> VertexBuffer<T> {
+impl<T: Vertex> RawVertexPackage<T> {
     /// Package it up.
     #[inline]
-    pub fn into_raw_package(self) -> RawVertexPackage<T> {
+    pub fn pack(buf: VertexBuffer<T>) -> RawVertexPackage<T> {
         RawVertexPackage {
-            buffer: self.buffer.into_raw_package(),
-            bindings: self.bindings,
+            buffer: RawBufferPackage::pack(buf.buffer),
+            bindings: buf.bindings,
         }
     }
 
     /// Package it down.
     #[inline]
-    pub unsafe fn from_raw_package<F: ?Sized + Facade>(
-        facade: &F,
-        pkg: RawVertexPackage<T>,
-    ) -> Self {
-        Self {
-            buffer: Buffer::from_raw_package(facade, pkg.buffer),
-            bindings: pkg.bindings,
+    pub unsafe fn unpack<F: ?Sized + Facade>(self, facade: &F) -> VertexBuffer<T> {
+        VertexBuffer {
+            buffer: self.buffer.unpack(facade),
+            bindings: self.bindings,
         }
     }
 }

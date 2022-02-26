@@ -20,7 +20,7 @@ pub mod prelude {
         gen::GeneratorHandle,
         mesh::Mesh,
         terrain::{ChunkStorage, Terrain},
-        Buffer2d, Buffer3d, DynBuffer3d, GlobalState, SimpleVertex, State, TexturedVertex,
+        GlobalState, GpuBuffer, SimpleVertex, State, TexturedVertex, VoxelVertex,
     };
     pub use common::prelude::*;
     pub use glium::{
@@ -34,6 +34,7 @@ pub mod prelude {
         implement_vertex,
         index::{PrimitiveType, RawIndexPackage},
         program,
+        texture::{RawImage2d, RawTexturePackage},
         uniforms::{
             MagnifySamplerFilter, MinifySamplerFilter, SamplerBehavior, UniformValue, Uniforms,
         },
@@ -78,20 +79,56 @@ pub mod prelude {
     impl Eq for Sortf32 {}
 
     #[allow(unused_macros)]
-    macro_rules! measure_time {
-        (@start $now:ident $name:ident) => {
-            let $name = $now;
-        };
-        (@end $now:ident $name:ident) => {{
-            let elapsed: Duration = $now - $name;
-            eprintln!("{}: {}ms", stringify!($name), (elapsed.as_micros() as f32/100.).round() / 10.);
+    macro_rules! time {
+        (@print $name:ident $time:expr) => {{
+            let time = $time;
+            let (scale, rnd, unit) = {
+                if time < 0.002 {
+                    (1e-6, 1., "us")
+                }else if time < 0.020 {
+                    (1e-3, 0.01, "ms")
+                }else if time < 0.200 {
+                    (1e-3, 0.1, "ms")
+                }else if time < 2. {
+                    (1e-3, 1., "ms")
+                }else if time < 20. {
+                    (1., 0.01, "s")
+                }else{
+                    (1., 0.1, "s")
+                }
+            };
+            println!(concat!(stringify!($name), ": {}{}"), (time / (scale * rnd)).round() * rnd, unit);
         }};
-        ($($method:ident $name:ident),*) => {
-            let now = Instant::now();
-            $(
-                measure_time!(@$method now $name);
-            )*
+        (start $name:ident) => {
+            let $name = Instant::now();
         };
+        (store $name:ident $place:expr) => {{
+            const AVERAGE_WEIGHT: f32 = 0.01;
+            let time = $name.elapsed().as_secs_f32();
+            let old_time = $place.load();
+            let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
+            $place.store(new_time);
+        }};
+        (show $name:ident) => {{
+            const AVERAGE_WEIGHT: f32 = 0.01;
+            static AVG: Mutex<Option<(f32, Instant)>> = parking_lot::const_mutex(None);
+            let mut avg = AVG.lock();
+            let time = $name.elapsed().as_secs_f32();
+            match &mut *avg {
+                Some((avg, last)) => {
+                    let new_avg = *avg + (time - *avg) * AVERAGE_WEIGHT;
+                    *avg = new_avg;
+                    if last.elapsed() > Duration::from_secs(2) {
+                        time!(@print $name *avg);
+                        *last = Instant::now();
+                    }
+                },
+                None => *avg = Some((time, Instant::now())),
+            }
+        }};
+        (show_now $name:ident) => {{
+            time!(@print $name $name.elapsed().as_secs_f32());
+        }};
     }
 
     pub trait ResultExt {
@@ -165,6 +202,13 @@ impl Drop for State {
 }
 
 #[derive(Copy, Clone, Debug)]
+struct VoxelVertex {
+    pos: [f32; 3],
+    uv: [f32; 2],
+}
+implement_vertex!(VoxelVertex, pos normalize(false), uv normalize(false));
+
+#[derive(Copy, Clone, Debug)]
 struct SimpleVertex {
     pos: [f32; 3],
     normal: [i8; 4],
@@ -172,13 +216,14 @@ struct SimpleVertex {
 }
 implement_vertex!(SimpleVertex, pos normalize(false), normal normalize(true), color normalize(true));
 
-struct Buffer3d {
-    vertex: VertexBuffer<SimpleVertex>,
-    index: IndexBuffer<VertIdx>,
+struct GpuBuffer<V: Copy, I: glium::index::Index = VertIdx> {
+    vertex: VertexBuffer<V>,
+    index: IndexBuffer<I>,
 }
 
+/*
 struct DynBuffer3d {
-    buf: Buffer3d,
+    buf: Buffer3d<SimpleVertex>,
     vert_len: usize,
     idx_len: usize,
 }
@@ -232,6 +277,7 @@ impl DynBuffer3d {
         )
     }
 }
+*/
 
 #[derive(Copy, Clone, Debug)]
 struct TexturedVertex {
@@ -239,11 +285,6 @@ struct TexturedVertex {
     tex: [f32; 2],
 }
 implement_vertex!(TexturedVertex, pos, tex);
-
-struct Buffer2d {
-    vertex: VertexBuffer<TexturedVertex>,
-    index: IndexBuffer<VertIdx>,
-}
 
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");

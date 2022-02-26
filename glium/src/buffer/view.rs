@@ -63,35 +63,36 @@ pub struct RawBufferPackage<T: ?Sized> {
     marker: PhantomData<T>,
 }
 unsafe impl<T: ?Sized + Send + Sync + 'static> Send for RawBufferPackage<T> {}
-
-impl<T: ?Sized> Buffer<T>
-where
-    T: Content,
-{
+impl<T: ?Sized + Content> RawBufferPackage<T> {
     /// Package buffer into a `Send`able type.
-    pub fn into_raw_package(mut self) -> RawBufferPackage<T> {
+    pub fn pack(mut buf: Buffer<T>) -> RawBufferPackage<T> {
         RawBufferPackage {
-            alloc: self.alloc.take().map(|alloc| alloc.into_raw_package()),
-            fence: self.fence.take(),
-            marker: self.marker,
+            alloc: buf.alloc.take().map(|alloc| alloc.into_raw_package()),
+            fence: buf.fence.take(),
+            marker: buf.marker,
         }
     }
 
     /// Restore a buffer from its `Send`able type.
     /// Display lists must be shared with the originating context.
-    pub unsafe fn from_raw_package<F: ?Sized>(facade: &F, pkg: RawBufferPackage<T>) -> Buffer<T>
+    pub unsafe fn unpack<F: ?Sized>(self, facade: &F) -> Buffer<T>
     where
         F: Facade,
     {
-        Self {
-            alloc: pkg
+        Buffer {
+            alloc: self
                 .alloc
                 .map(|alloc| Alloc::from_raw_package(facade, alloc)),
-            fence: pkg.fence,
-            marker: pkg.marker,
+            fence: self.fence,
+            marker: self.marker,
         }
     }
+}
 
+impl<T: ?Sized> Buffer<T>
+where
+    T: Content,
+{
     /// Builds a new buffer containing the given data. The size of the buffer is equal to the size
     /// of the data.
     pub fn new<F: ?Sized>(
