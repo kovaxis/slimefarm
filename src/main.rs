@@ -203,10 +203,11 @@ impl Drop for State {
 
 #[derive(Copy, Clone, Debug)]
 struct VoxelVertex {
-    pos: [f32; 3],
-    uv: [f32; 2],
+    pos: [u8; 4],
+    cuv: [f32; 2],
+    luv: [f32; 2],
 }
-implement_vertex!(VoxelVertex, pos normalize(false), uv normalize(false));
+implement_vertex!(VoxelVertex, pos normalize(false), cuv normalize(false), luv normalize(false));
 
 #[derive(Copy, Clone, Debug)]
 struct SimpleVertex {

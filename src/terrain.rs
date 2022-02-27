@@ -518,7 +518,8 @@ impl Terrain {
         shader: &Program,
         uniforms: &crate::lua::gfx::UniformStorage,
         offset_uniform: &str,
-        atlas_uniform: &str,
+        color_uniform: &str,
+        light_uniform: &str,
         origin: WorldPos,
         params: &DrawParameters,
         mvp: Mat4,
@@ -557,6 +558,7 @@ impl Terrain {
             let mut drawn = 0;
             let mut bytes_v = 0;
             let mut bytes_i = 0;
+            let mut bytes_c = 0;
             self.iter_visible(origin.coords, &clip_planes, self.view_radius, |pos| {
                 let chunk = match self.meshes.get(ChunkPos {
                     coords: pos,
@@ -577,7 +579,7 @@ impl Terrain {
                 let uniextra = [
                     (offset_uniform, UniformValue::Vec3(offset.into())),
                     (
-                        atlas_uniform,
+                        color_uniform,
                         UniformValue::Texture2d(
                             atlas,
                             Some(SamplerBehavior {
@@ -588,20 +590,34 @@ impl Terrain {
                             }),
                         ),
                     ),
+                    (
+                        light_uniform,
+                        UniformValue::Texture2d(
+                            atlas,
+                            Some(SamplerBehavior {
+                                wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+                                minify_filter: Minify::Linear,
+                                magnify_filter: Magnify::Linear,
+                                ..default()
+                            }),
+                        ),
+                    ),
                 ];
                 let uniref = crate::lua::gfx::UniformsRef::new(uniforms, &uniextra);
                 frame.draw(&buf.vertex, &buf.index, &shader, &uniref, params)?;
                 drawn += 1;
                 bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
                 bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
+                bytes_c += atlas.width() * atlas.height() * 4;
                 Ok(())
             })?;
             if true {
                 println!(
-                    "drew {} chunks in {}KB of vertices and {}KB of indices",
+                    "drew {} chunks: {}KB of vertices, {}KB of indices, {}KB of color",
                     drawn,
                     bytes_v / 1024,
-                    bytes_i / 1024
+                    bytes_i / 1024,
+                    bytes_c / 1024,
                 );
             }
         }

@@ -357,7 +357,7 @@ function World:subdraw()
         self.shaders.terrain:set_matrix('mv', frame.mv_world)
         sky.lighting(self.shaders.terrain, cycle)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
-        self.shaders.terrain:draw_terrain(self.terrain, 'offset', 'atlas', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
+        self.shaders.terrain:draw_terrain(self.terrain, 'offset', 'color', 'light', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end
     
     --Draw entities
@@ -535,7 +535,8 @@ function World:draw()
 
     --DEBUG: Draw texture atlas of the current chunk
     if true then
-        local atlas = nil--self.terrain:atlas_at(self.cam_pos)
+        local atlas
+        --atlas = self.terrain:atlas_at(self.cam_pos)
         if atlas then
             atlas:set_mag('nearest')
             last_atlas = atlas

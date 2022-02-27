@@ -230,8 +230,8 @@ function util.Shader:draw(buf, draw_params)
     gfx.draw(buf, self.program, self.raw_uniforms, draw_params)
 end
 
-function util.Shader:draw_terrain(terr, offset, atlas, draw_params, mvp, locate, subdraw)
-    terr:draw(self.program, self.raw_uniforms, offset, atlas, draw_params, mvp, locate, subdraw)
+function util.Shader:draw_terrain(terr, offset, color, light, draw_params, mvp, locate, subdraw)
+    terr:draw(self.program, self.raw_uniforms, offset, color, light, draw_params, mvp, locate, subdraw)
 end
 
 return util

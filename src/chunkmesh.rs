@@ -131,9 +131,9 @@ impl MesherState {
         let tex_pkg = if mesh.indices.is_empty() {
             None
         } else {
-            let (w, h) = (ATLAS_BIN, self.mesher.atlas_h);
+            let [w, h] = self.mesher.atlas.size;
             let raw_img = RawImage2d {
-                data: Cow::Borrowed(&self.mesher.atlas[..(w * h) as usize]),
+                data: Cow::Borrowed(&self.mesher.atlas.data[..(w * h) as usize]),
                 width: w as u32,
                 height: h as u32,
                 format: glium::texture::ClientFormat::U8U8U8U8,
@@ -160,108 +160,6 @@ impl MesherState {
         })
     }
 }
-
-/*
-fn try_mesh<'a>(
-    state: &mut MesherState,
-    pos: ChunkPos,
-    chunks_raw: &'a RwLock<ChunkStorage>,
-    chunks_store: &mut Option<RwLockReadGuard<'a, ChunkStorage>>,
-) -> Option<BufPackage> {
-    let mesh_start = Instant::now();
-    let chunks = chunks_store.get_or_insert_with(|| chunks_raw.read());
-
-    //Gather all of the adjacent chunk neighbors
-    //TODO: Figure out occlusion with portals
-    macro_rules! build_neighbors {
-        (@$x:expr, $y:expr, $z:expr) => {{
-            let mut subpos = pos;
-            subpos.coords += [$x-1, $y-1, $z-1];
-            chunks.chunk_arc_at(subpos)?
-        }};
-        ($($x:tt, $y:tt, $z:tt;)*) => {{
-            [$(
-                build_neighbors!(@$x, $y, $z),
-            )*]
-        }};
-    }
-    let neighbors = build_neighbors![
-        0, 0, 0;
-        1, 0, 0;
-        2, 0, 0;
-        0, 1, 0;
-        1, 1, 0;
-        2, 1, 0;
-        0, 2, 0;
-        1, 2, 0;
-        2, 2, 0;
-
-        0, 0, 1;
-        1, 0, 1;
-        2, 0, 1;
-        0, 1, 1;
-        1, 1, 1;
-        2, 1, 1;
-        0, 2, 1;
-        1, 2, 1;
-        2, 2, 1;
-
-        0, 0, 2;
-        1, 0, 2;
-        2, 0, 2;
-        0, 1, 2;
-        1, 1, 2;
-        2, 1, 2;
-        0, 2, 2;
-        1, 2, 2;
-        2, 2, 2;
-    ];
-
-    // Release the chunk storage lock
-    drop(chunks);
-    chunks_store.take();
-
-    //Mesh the chunk
-    let mesh = state.mesher.make_mesh(pos, &neighbors);
-
-    //Figure out portals
-    let portals = state.mesher.mesh_portals(&neighbors[13], &state.gl_ctx);
-
-    //Keep meshing statistics
-    {
-        //Dont care about data races here, after all it's just stats
-        //Therefore, dont synchronize
-        let time = mesh_start.elapsed().as_secs_f32();
-        let old_time = state.shared.avg_mesh_time.load();
-        let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
-        state.shared.avg_mesh_time.store(new_time);
-    }
-
-    //Upload the chunk buffer to GPU
-    let buf_pkg = if mesh.indices.is_empty() {
-        None
-    } else {
-        let upload_start = Instant::now();
-        let buf = mesh.make_buffer(&state.gl_ctx);
-        //Keep upload statistics
-        //Dont care about data races here, after all it's just stats
-        //Therefore, dont synchronize
-        let time = upload_start.elapsed().as_secs_f32();
-        let old_time = state.shared.avg_upload_time.load();
-        let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
-        state.shared.avg_upload_time.store(new_time);
-        Some(RawBufPackage::pack(buf))
-    };
-
-    //Package it all up
-    Some(BufPackage {
-        pos,
-        mesh,
-        buf: buf_pkg,
-        portals,
-    })
-}
-*/
 
 /// Organizes chunk requests between threads.
 /// Currently, coordinates:
@@ -485,33 +383,39 @@ impl SurfaceBits {
     }
 }
 
+/// The atlas data for a single chunk.
 struct AtlasChunk {
-    /// To which atlas should this atlas chunk go.
-    atlas_id: usize,
     data: Vec<(u8, u8, u8, u8)>,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
+    size: [i32; 2],
 }
 impl AtlasChunk {
     fn new() -> Self {
         Self {
-            atlas_id: 0,
             data: vec![(0, 0, 0, 0); (ATLAS_BIN * ATLAS_SIZE) as usize],
-            x: 0,
-            y: 0,
-            w: 0,
-            h: 0,
+            size: [0; 2],
         }
+    }
+
+    fn reset(&mut self) {
+        // DEBUG: Fill with black so that wasted space can be easily seen on the atlas texture
+        // Not necessary for production
+        self.data.fill((0, 0, 0, 255));
+
+        self.size = [ATLAS_BIN, 1];
+    }
+
+    fn round_size(&mut self) {
+        self.size[0] = (self.size[0] as u32).next_power_of_two() as i32;
+        self.size[1] = (self.size[1] as u32).next_power_of_two() as i32;
     }
 }
 
 struct PendingQuad {
-    uv: [u16; 2],
+    cuv: [u16; 2],
+    luv: [u16; 2],
     pos: [u8; 3],
-    size: [u8; 2],
     axes: u8,
+    size: [u8; 2],
 }
 
 struct Vertset {
@@ -595,13 +499,10 @@ struct Mesher2 {
     mesh: Mesh<VoxelVertex>,
     quad_queue: Vec<PendingQuad>,
     vertex_set: Vertset,
-    //atlas: AtlasChunk,
     /// Garbage atlas chunks that can be reused.
     //free_atlas_pool: Vec<AtlasChunk>,
     packer: DensePacker,
-    atlas: Vec<(u8, u8, u8, u8)>,
-    atlas_h: i32,
-    uv_scale: Vec2,
+    atlas: AtlasChunk,
 }
 impl Mesher2 {
     fn new(textures: BlockTextures) -> Self {
@@ -624,12 +525,8 @@ impl Mesher2 {
             vertex_set: Vertset::new(),
             noise_buf: [0.; NOISE_LEN],
             mesh: default(),
-            atlas: vec![(0, 0, 0, 0); (ATLAS_BIN * ATLAS_SIZE) as usize],
-            atlas_h: 1,
-            //atlas: AtlasChunk::new(),
-            //free_atlas_pool: vec![],
+            atlas: AtlasChunk::new(),
             packer: DensePacker::new(1, 1),
-            uv_scale: Vec2::new(0., 0.),
         }
     }
 
@@ -686,61 +583,122 @@ impl Mesher2 {
         [q(color.x), q(color.y), q(color.z), q(color.w)]
     }
 
+    fn light(&mut self, _vertpos: Int3, blockidx: i32, axes: [usize; 3], positive: i32) -> [u8; 4] {
+        // Index offsets to get from `blockidx` to the front and the back block
+        let (front, back) = ((2 * positive - 1) * ADVANCE[axes[2]], 0);
+
+        // Gather occlusion data for nearby blocks
+        const EXPOSURE_TABLE: [i8; 4] = [6, 0, -70, -70];
+        let mut exposure = 255u8 - EXPOSURE_TABLE[0] as u8 * 3;
+        // 0 = front clear, back clear
+        // 1 = back solid, front clear
+        // 2 = back clear, front solid
+        // 3 = back solid, front solid
+        for y in -1..=0 {
+            for x in -1..=0 {
+                let b =
+                    self.is_solid(blockidx + back + x * ADVANCE[axes[0]] + y * ADVANCE[axes[1]]);
+                let f =
+                    self.is_solid(blockidx + front + x * ADVANCE[axes[0]] + y * ADVANCE[axes[1]]);
+                let occ = (b as usize) | ((f as usize) << 1);
+                exposure = exposure.wrapping_add(EXPOSURE_TABLE[occ] as u8);
+            }
+        }
+
+        [exposure, 0, 0, 255]
+    }
+
     fn quad(&mut self, blockpos: Int3, positive: i32, axes: [usize; 3], w: i32, h: i32) {
-        // Allocate space in the terrain atlas
-        let rect = loop {
+        // Allocate space in the atlas' color texture
+        let crect = loop {
             match self.packer.pack(w, h, true) {
                 Some(rect) => break rect,
                 None => {
                     // TODO: Grow atlas bin in this case
-                    println!("ran out of atlas space for chunk!");
+                    println!("ran out of color atlas space for chunk!");
                     return;
                 }
             }
         };
-        self.atlas_h = self.atlas_h.max(rect.y + rect.height);
+        self.atlas.size[1] = self.atlas.size[1].max(crect.y + crect.height);
+
+        // Allocate space in the atlas' light texture
+        let lrect = loop {
+            match self.packer.pack(w + 1, h + 1, true) {
+                Some(rect) => break rect,
+                None => {
+                    // TODO: Grow atlas bin in this case
+                    println!("ran out of light atlas space for chunk!");
+                    return;
+                }
+            }
+        };
+        self.atlas.size[1] = self.atlas.size[1].max(lrect.y + lrect.height);
 
         // Figure out the mapping to block buffer indices
-        let mut bidx1 = MARGIN * (ADVANCE[0] + ADVANCE[1] + ADVANCE[2])
+        let bidx_base = MARGIN * (ADVANCE[0] + ADVANCE[1] + ADVANCE[2])
             + blockpos.x * ADVANCE[0]
             + blockpos.y * ADVANCE[1]
             + blockpos.z * ADVANCE[2];
         let badv_x = ADVANCE[axes[0]];
         let badv_y = ADVANCE[axes[1]];
 
-        // Figure out mapping to atlas texture indices
-        let mut aidx1 = rect.x + rect.y * ATLAS_BIN;
-        let (mut aadv_x, mut aadv_y) = (1, ATLAS_BIN);
-        if rect.width != w {
-            mem::swap(&mut aadv_x, &mut aadv_y);
+        // Figure out mapping to color atlas texture indices
+        let mut cidx1 = crect.x + crect.y * ATLAS_BIN;
+        let (mut cadv_x, mut cadv_y) = (1, ATLAS_BIN);
+        if crect.width != w {
+            mem::swap(&mut cadv_x, &mut cadv_y);
         }
 
-        // Actually write the terrain atlas
-        let mut front_off = Int3::zero();
-        front_off[axes[2]] = positive * 2 - 1;
-        for y in 0..h {
-            let mut bidx0 = bidx1;
-            let mut aidx0 = aidx1;
-            for x in 0..w {
-                let mut bpos = blockpos;
-                bpos[axes[0]] += x;
-                bpos[axes[1]] += y;
-                let color = self.color(self.block_buf[bidx0 as usize], bpos, bpos + front_off);
-                self.atlas[aidx0 as usize] = (color[0], color[1], color[2], color[3]);
-                bidx0 += badv_x;
-                aidx0 += aadv_x;
+        // Figure out mapping to light atlas texture indices
+        let mut lidx1 = lrect.x + lrect.y * ATLAS_BIN;
+        let (mut ladv_x, mut ladv_y) = (1, ATLAS_BIN);
+        if lrect.width != w + 1 {
+            mem::swap(&mut ladv_x, &mut ladv_y);
+        }
+
+        // Write the color atlas
+        {
+            let mut bidx1 = bidx_base;
+            let mut front_off = Int3::zero();
+            front_off[axes[2]] = positive * 2 - 1;
+            for y in 0..h {
+                let mut bidx0 = bidx1;
+                let mut cidx0 = cidx1;
+                for x in 0..w {
+                    let mut bpos = blockpos;
+                    bpos[axes[0]] += x;
+                    bpos[axes[1]] += y;
+                    let color = self.color(self.block_buf[bidx0 as usize], bpos, bpos + front_off);
+                    self.atlas.data[cidx0 as usize] = (color[0], color[1], color[2], color[3]);
+                    bidx0 += badv_x;
+                    cidx0 += cadv_x;
+                }
+                bidx1 += badv_y;
+                cidx1 += cadv_y;
             }
-            bidx1 += badv_y;
-            aidx1 += aadv_y;
         }
 
-        // Figure out uv coordinates
-        let uv00 = Vec2::new(rect.x as f32, rect.y as f32);
-        let uv11 = Vec2::new((rect.x + rect.width) as f32, (rect.y + rect.height) as f32);
-
-        let (mut uv10, mut uv01) = (Vec2::new(uv11.x, uv00.y), Vec2::new(uv00.x, uv11.y));
-        if rect.width != w {
-            mem::swap(&mut uv10, &mut uv01);
+        // Write the light atlas
+        {
+            let mut bidx1 = bidx_base;
+            let mut vpos_base = blockpos;
+            vpos_base[axes[2]] += positive;
+            for y in 0..=h {
+                let mut bidx0 = bidx1;
+                let mut lidx0 = lidx1;
+                for x in 0..=w {
+                    let mut vpos = vpos_base;
+                    vpos[axes[0]] += x;
+                    vpos[axes[1]] += y;
+                    let light = self.light(vpos, bidx0, axes, positive);
+                    self.atlas.data[lidx0 as usize] = (light[0], light[1], light[2], light[3]);
+                    bidx0 += badv_x;
+                    lidx0 += ladv_x;
+                }
+                bidx1 += badv_y;
+                lidx1 += ladv_y;
+            }
         }
 
         // Queue the geometry
@@ -748,12 +706,15 @@ impl Mesher2 {
         // We'll have to add vertices to the quads depending on which vertices are in use
         let mut quadpos = blockpos;
         quadpos[axes[2]] += positive;
-        let quadaxes = axes[0] as u8 | ((axes[1] as u8) << 2) | (((rect.width != w) as u8) << 4);
+        let cflip = ((crect.width != w) as u16) << 15;
+        let lflip = ((lrect.width != w + 1) as u16) << 15;
+        let quadaxes = axes[0] as u8 | ((axes[1] as u8) << 2);
         self.quad_queue.push(PendingQuad {
-            uv: [rect.x as u16, rect.y as u16],
+            cuv: [crect.x as u16 | cflip, crect.y as u16],
+            luv: [lrect.x as u16 | lflip, lrect.y as u16],
             pos: [quadpos.x as u8, quadpos.y as u8, quadpos.z as u8],
-            size: [w as u8, h as u8],
             axes: quadaxes,
+            size: [w as u8, h as u8],
         });
 
         // Mark that these vertices have quads relying on them
@@ -929,20 +890,15 @@ impl Mesher2 {
         }
     }
 
-    fn vertex(&mut self, pos: Int3, uv: Int2) -> VertIdx {
-        self.mesh.add_vertex(VoxelVertex {
-            pos: pos.to_f32().into(),
-            uv: (uv.to_f32() * self.uv_scale).into(),
-            //uv: rand::random(),
-        })
-    }
-
     /// Generate triangles from the quad queue, avoiding T-junctions.
     fn produce_triangles(&mut self) {
         // Figure out atlas size to determine the proper UV coordinates of vertices
-        self.atlas_h = (self.atlas_h as u32).next_power_of_two() as i32;
-        let (atlas_w, atlas_h) = (ATLAS_BIN, self.atlas_h);
-        self.uv_scale = Vec2::new((atlas_w as f32).recip(), (atlas_h as f32).recip());
+        self.atlas.round_size();
+        let uv_scale = Vec2::new(
+            (self.atlas.size[0] as f32).recip(),
+            (self.atlas.size[1] as f32).recip(),
+        );
+        let luv_offset = uv_scale * 0.5;
 
         // Go through all quads, generating the necessary triangles to not only cover the quads,
         // but also to make sure there are no T-junctions, ie. vertex to edge joints
@@ -961,32 +917,57 @@ impl Mesher2 {
         for quad in quad_queue.iter() {
             #[derive(Copy, Clone)]
             struct Vert {
-                pos: Int3,
-                uv: Int2,
+                off: Int2,
                 idx: i32,
             }
 
-            // Extract data from tiny `quad` struct
+            // Extract data from the tiny `quad` struct
             let qpos = Int3::new([quad.pos[0] as i32, quad.pos[1] as i32, quad.pos[2] as i32]);
             let qvert = Vert {
-                pos: qpos,
-                uv: Int2::new([quad.uv[0] as i32, quad.uv[1] as i32]),
+                off: Int2::zero(),
                 idx: Vertset::to_idx(qpos),
             };
             let axes = [
                 (quad.axes & 0b11) as usize,
                 ((quad.axes >> 2) & 0b11) as usize,
             ];
-            let flip_uv = (quad.axes >> 4) != 0;
-            let uv_axes = if flip_uv { [1, 0] } else { [0, 1] };
+            let qcuv = Int2::new([(quad.cuv[0] & (u16::MAX >> 1)) as i32, quad.cuv[1] as i32]);
+            let cuv_axes = if quad.cuv[0] >> 15 == 0 {
+                [0, 1]
+            } else {
+                [1, 0]
+            };
+            let qluv = Int2::new([(quad.luv[0] & (u16::MAX >> 1)) as i32, quad.luv[1] as i32]);
+            let luv_axes = if quad.luv[0] >> 15 == 0 {
+                [0, 1]
+            } else {
+                [1, 0]
+            };
 
             macro_rules! adv {
                 ($vert:ident, $axis:expr, $dir:expr) => {{
-                    $vert.pos[axes[$axis]] += $dir;
-                    $vert.uv[uv_axes[$axis]] += $dir;
+                    $vert.off[$axis] += $dir;
                     $vert.idx += $dir * VERTSET_ADV[axes[$axis]];
                 }};
             }
+
+            let vertex = |this: &mut Self, vert: Vert| {
+                let mut pos = qpos;
+                pos[axes[0]] += vert.off.x;
+                pos[axes[1]] += vert.off.y;
+                let mut cuv = qcuv;
+                cuv[cuv_axes[0]] += vert.off.x;
+                cuv[cuv_axes[1]] += vert.off.y;
+                let mut luv = qluv;
+                luv[luv_axes[0]] += vert.off.x;
+                luv[luv_axes[1]] += vert.off.y;
+                this.mesh.add_vertex(VoxelVertex {
+                    pos: [pos.x as u8, pos.y as u8, pos.z as u8, 1],
+                    cuv: (cuv.to_f32() * uv_scale).into(),
+                    luv: (luv.to_f32() * uv_scale + luv_offset).into(),
+                    //uv: rand::random(),
+                })
+            };
 
             // Find first vertex along the first/bottom edge
             let (mut vbase0, mut xbase0) = (0, 0);
@@ -996,7 +977,7 @@ impl Mesher2 {
                     adv!(vert, 0, 1);
                     if self.vertex_set.get_idx(vert.idx) {
                         xbase0 = x;
-                        vbase0 = self.vertex(vert.pos, vert.uv);
+                        vbase0 = vertex(self, vert);
                         break;
                     }
                 }
@@ -1012,7 +993,7 @@ impl Mesher2 {
                     adv!(vert, 0, -1);
                     if self.vertex_set.get_idx(vert.idx) {
                         xbase1 = x;
-                        vbase1 = self.vertex(vert.pos, vert.uv);
+                        vbase1 = vertex(self, vert);
                         break;
                     }
                 }
@@ -1022,12 +1003,12 @@ impl Mesher2 {
             {
                 let mut vert = qvert;
                 let mut vidx = 0;
-                self.vertex(vert.pos, vert.uv);
+                vertex(self, vert);
                 // Iterate along the fourth/left edge
                 for _y in 1..=quad.size[1] {
                     adv!(vert, 1, 1);
                     if self.vertex_set.get_idx(vert.idx) {
-                        vidx = self.vertex(vert.pos, vert.uv);
+                        vidx = vertex(self, vert);
                         self.mesh.add_face(vbase0, vidx, vidx - 1);
                     }
                 }
@@ -1035,7 +1016,7 @@ impl Mesher2 {
                 for _x in 1..xbase1 {
                     adv!(vert, 0, 1);
                     if self.vertex_set.get_idx(vert.idx) {
-                        vidx = self.vertex(vert.pos, vert.uv);
+                        vidx = vertex(self, vert);
                         self.mesh.add_face(vbase0, vidx, vidx - 1);
                     }
                 }
@@ -1049,12 +1030,12 @@ impl Mesher2 {
                 adv!(vert, 0, quad.size[0] as i32);
                 adv!(vert, 1, quad.size[1] as i32);
                 let mut vidx = 0;
-                self.vertex(vert.pos, vert.uv);
+                vertex(self, vert);
                 // Iterate along the second/right edge
                 for _y in (0..quad.size[1]).rev() {
                     adv!(vert, 1, -1);
                     if self.vertex_set.get_idx(vert.idx) {
-                        vidx = self.vertex(vert.pos, vert.uv);
+                        vidx = vertex(self, vert);
                         self.mesh.add_face(vbase1, vidx, vidx - 1);
                     }
                 }
@@ -1062,7 +1043,7 @@ impl Mesher2 {
                 for _x in (xbase0..quad.size[0]).rev() {
                     adv!(vert, 0, -1);
                     if self.vertex_set.get_idx(vert.idx) {
-                        vidx = self.vertex(vert.pos, vert.uv);
+                        vidx = vertex(self, vert);
                         self.mesh.add_face(vbase1, vidx, vidx - 1);
                     }
                 }
@@ -1090,8 +1071,7 @@ impl Mesher2 {
         // Reset everything
         //self.atlas.reset();
         self.packer.reset(ATLAS_BIN, ATLAS_SIZE);
-        self.atlas_h = 1;
-        self.atlas.fill((0, 0, 0, 255));
+        self.atlas.reset();
         self.quad_queue.clear();
         self.vertex_set.clear();
 
