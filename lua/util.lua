@@ -222,8 +222,8 @@ end
 function util.Shader:set_matrix(name, mat4)
     self.raw_uniforms:set_matrix(self.uniforms[name], mat4)
 end
-function util.Shader:set_texture(name, tex)
-    self.raw_uniforms:set_texture(self.uniforms[name], tex)
+function util.Shader:set_texture_2d(name, tex)
+    self.raw_uniforms:set_texture_2d(self.uniforms[name], tex)
 end
 
 function util.Shader:draw(buf, draw_params)

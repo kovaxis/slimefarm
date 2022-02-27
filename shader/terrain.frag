@@ -30,7 +30,7 @@ void main() {
     float f_specular = max(pow(dot(v_pos * inv_dist, v_light_dir), 3), 0);
     out_color = vec4((ambience + f_specular * v_color.a * specular + f_diffuse * diffuse) * v_color.xyz, alpha);
     */
-    //out_color = vec4(texture2D(atlas, v_uv).rgb, 1);
-    out_color = vec4(v_uv.xy, 0, 1);
+    out_color = vec4(texture2D(atlas, v_uv).rgb, 1);
+    //out_color = vec4(v_uv.xy, 0, 1);
     //out_color = vec4(1, 1, 0, 1);
 }

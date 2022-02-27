@@ -48,7 +48,7 @@ end
 function Sprite:draw(i, mvp, draw_params)
     local buf = self.buffers[i]
     Sprite.shader:set_matrix('mvp', mvp)
-    Sprite.shader:set_texture('tex', self.texture)
+    Sprite.shader:set_texture_2d('tex', self.texture)
     Sprite.shader:set_vec4('tint', 1, 1, 1, 1)
     Sprite.shader:draw(buf, draw_params)
 end

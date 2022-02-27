@@ -404,6 +404,8 @@ fn run_mesher(mut state: MesherState) {
     }
 }
 
+const WORD_BITS: usize = mem::size_of::<usize>() * 8;
+
 const ATLAS_SIZE: i32 = 1024;
 const ATLAS_BIN: i32 = 64;
 
@@ -411,6 +413,11 @@ const MARGIN: i32 = 4;
 const BBUF_SIZE: i32 = 2 * MARGIN + CHUNK_SIZE;
 const BBUF_LEN: usize = (BBUF_SIZE * BBUF_SIZE * BBUF_SIZE) as usize;
 const ADVANCE: [i32; 3] = [1, BBUF_SIZE, BBUF_SIZE * BBUF_SIZE];
+
+const VERTSET_SIZE: i32 = CHUNK_SIZE + 1;
+const VERTSET_LEN: usize = (VERTSET_SIZE * VERTSET_SIZE * VERTSET_SIZE) as usize;
+const VERTSET_WORDS: usize = (VERTSET_LEN + WORD_BITS - 1) / WORD_BITS;
+const VERTSET_ADV: [i32; 3] = [1, VERTSET_SIZE, VERTSET_SIZE * VERTSET_SIZE];
 
 const NOISE_SIZE: i32 = CHUNK_SIZE + 1;
 const NOISE_LEN: usize = (NOISE_SIZE * NOISE_SIZE * NOISE_SIZE) as usize;
@@ -500,6 +507,85 @@ impl AtlasChunk {
     }
 }
 
+struct PendingQuad {
+    uv: [u16; 2],
+    pos: [u8; 3],
+    size: [u8; 2],
+    axes: u8,
+}
+
+struct Vertset {
+    bits: [usize; VERTSET_WORDS],
+}
+impl Vertset {
+    fn new() -> Self {
+        Self {
+            bits: [0; VERTSET_WORDS],
+        }
+    }
+
+    fn to_idx(pos: Int3) -> i32 {
+        pos.x + VERTSET_SIZE * pos.y + VERTSET_SIZE * VERTSET_SIZE * pos.z
+    }
+
+    /// Set a `VERTSET_SIZE`-length row of vertex bits.
+    /// 64-bit words are assumed.
+    /// More specifically, it is assumed that the amount of bits is at least `VERTSET_SIZE`.
+    fn set_row(&mut self, idx: i32) {
+        let idx = idx as usize;
+        let pat = (1 << VERTSET_SIZE) - 1;
+        self.bits[idx / WORD_BITS] |= pat << (idx % WORD_BITS);
+        let shr = VERTSET_SIZE - (idx as i32 + VERTSET_SIZE) % WORD_BITS as i32;
+        if shr > 0 {
+            self.bits[idx / WORD_BITS + 1] |= pat >> shr;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.bits.fill(0);
+
+        // Set all chunk boundaries to `true`, since we don't know where vertices are located in
+        // the neighboring chunks
+        // Too bad
+        let mut idx = 0;
+        for _y in 0..=CHUNK_SIZE {
+            self.set_row(idx);
+            idx += VERTSET_ADV[1];
+        }
+        for _z in 1..CHUNK_SIZE {
+            self.set_row(idx);
+            idx += VERTSET_ADV[1];
+            for _y in 1..CHUNK_SIZE {
+                self.set_idx(idx);
+                idx += VERTSET_ADV[1];
+                self.set_idx(idx - 1);
+            }
+            self.set_row(idx);
+            idx += VERTSET_ADV[1];
+        }
+        for _y in 0..=CHUNK_SIZE {
+            self.set_row(idx);
+            idx += VERTSET_ADV[1];
+        }
+    }
+
+    fn set_idx(&mut self, idx: i32) {
+        let idx = idx as usize;
+        self.bits[(idx / WORD_BITS) as usize] |= 1 << (idx & (WORD_BITS - 1));
+    }
+    fn set(&mut self, pos: Int3) {
+        self.set_idx(Self::to_idx(pos))
+    }
+
+    fn get_idx(&self, idx: i32) -> bool {
+        let idx = idx as usize;
+        (self.bits[idx / WORD_BITS as usize] >> (idx & (WORD_BITS - 1))) & 1 != 0
+    }
+    fn get(&self, pos: Int3) -> bool {
+        self.get_idx(Self::to_idx(pos))
+    }
+}
+
 struct Mesher2 {
     block_buf: [BlockData; BBUF_LEN],
     corner_queue: Vec<(u8, u8)>,
@@ -507,12 +593,15 @@ struct Mesher2 {
     block_textures: [BlockTexture; 256],
     noise_buf: [f32; NOISE_LEN],
     mesh: Mesh<VoxelVertex>,
+    quad_queue: Vec<PendingQuad>,
+    vertex_set: Vertset,
     //atlas: AtlasChunk,
     /// Garbage atlas chunks that can be reused.
     //free_atlas_pool: Vec<AtlasChunk>,
     packer: DensePacker,
     atlas: Vec<(u8, u8, u8, u8)>,
     atlas_h: i32,
+    uv_scale: Vec2,
 }
 impl Mesher2 {
     fn new(textures: BlockTextures) -> Self {
@@ -531,6 +620,8 @@ impl Mesher2 {
                 }
                 unsafe { blocks.assume_init() }
             },
+            quad_queue: vec![],
+            vertex_set: Vertset::new(),
             noise_buf: [0.; NOISE_LEN],
             mesh: default(),
             atlas: vec![(0, 0, 0, 0); (ATLAS_BIN * ATLAS_SIZE) as usize],
@@ -538,6 +629,7 @@ impl Mesher2 {
             //atlas: AtlasChunk::new(),
             //free_atlas_pool: vec![],
             packer: DensePacker::new(1, 1),
+            uv_scale: Vec2::new(0., 0.),
         }
     }
 
@@ -546,13 +638,6 @@ impl Mesher2 {
     }
     fn is_clear(&self, idx: i32) -> bool {
         self.block_buf[idx as usize].is_clear(&self.style)
-    }
-
-    fn vertex(&mut self, pos: Vec3, uv: Vec2) -> VertIdx {
-        self.mesh.add_vertex(VoxelVertex {
-            pos: pos.into(),
-            uv: uv.into(),
-        })
     }
 
     fn color(&mut self, block: BlockData, blockpos: Int3, airpos: Int3) -> [u8; 4] {
@@ -658,24 +743,26 @@ impl Mesher2 {
             mem::swap(&mut uv10, &mut uv01);
         }
 
-        // Push the geometry out
-        let mut p00 = blockpos;
-        p00[axes[2]] += positive;
-        let mut p10 = p00;
-        p10[axes[0]] += w;
-        let mut p01 = p00;
-        p01[axes[1]] += h;
-        let mut p11 = p10;
-        p11[axes[1]] += h;
+        // Queue the geometry
+        // We cannot push out geometry just now because of the damn t-junctions
+        // We'll have to add vertices to the quads depending on which vertices are in use
+        let mut quadpos = blockpos;
+        quadpos[axes[2]] += positive;
+        let quadaxes = axes[0] as u8 | ((axes[1] as u8) << 2) | (((rect.width != w) as u8) << 4);
+        self.quad_queue.push(PendingQuad {
+            uv: [rect.x as u16, rect.y as u16],
+            pos: [quadpos.x as u8, quadpos.y as u8, quadpos.z as u8],
+            size: [w as u8, h as u8],
+            axes: quadaxes,
+        });
 
-        let v = [
-            self.vertex(p00.to_f32(), uv00),
-            self.vertex(p10.to_f32(), uv10),
-            self.vertex(p11.to_f32(), uv11),
-            self.vertex(p01.to_f32(), uv01),
-        ];
-        self.mesh.add_face(v[0], v[1], v[2]);
-        self.mesh.add_face(v[2], v[3], v[0]);
+        // Mark that these vertices have quads relying on them
+        let idx = Vertset::to_idx(quadpos);
+        self.vertex_set.set_idx(idx);
+        self.vertex_set.set_idx(idx + w * VERTSET_ADV[axes[0]]);
+        self.vertex_set
+            .set_idx(idx + w * VERTSET_ADV[axes[0]] + h * VERTSET_ADV[axes[1]]);
+        self.vertex_set.set_idx(idx + h * VERTSET_ADV[axes[1]]);
     }
 
     fn layer(&mut self, z: i32, dir: i32, axes: [usize; 3]) {
@@ -754,7 +841,7 @@ impl Mesher2 {
         }
     }
 
-    unsafe fn fetch_chunk(&mut self, chunk: ChunkRef, from: Int3, to: Int3, size: Int3) {
+    fn fetch_chunk(&mut self, chunk: ChunkRef, from: Int3, to: Int3, size: Int3) {
         let mut to_idx = ((to.z * BBUF_SIZE) + to.y) * BBUF_SIZE + to.x;
         if let Some(chunk) = chunk.blocks() {
             let mut from_idx = (((from.z << CHUNK_BITS) | from.y) << CHUNK_BITS) | from.x;
@@ -802,7 +889,7 @@ impl Mesher2 {
                 }
             }
         }
-        unsafe {
+        {
             let mut idx = 0;
             for z in 0..3 {
                 for y in 0..3 {
@@ -842,14 +929,149 @@ impl Mesher2 {
         }
     }
 
-    fn adjust_uv(&mut self) {
+    fn vertex(&mut self, pos: Int3, uv: Int2) -> VertIdx {
+        self.mesh.add_vertex(VoxelVertex {
+            pos: pos.to_f32().into(),
+            uv: (uv.to_f32() * self.uv_scale).into(),
+            //uv: rand::random(),
+        })
+    }
+
+    /// Generate triangles from the quad queue, avoiding T-junctions.
+    fn produce_triangles(&mut self) {
+        // Figure out atlas size to determine the proper UV coordinates of vertices
         self.atlas_h = (self.atlas_h as u32).next_power_of_two() as i32;
-        let (w, h) = (ATLAS_BIN, self.atlas_h);
-        let (adj_u, adj_v) = ((w as f32).recip(), (h as f32).recip());
-        for v in self.mesh.vertices.iter_mut() {
-            v.uv[0] *= adj_u;
-            v.uv[1] *= adj_v;
+        let (atlas_w, atlas_h) = (ATLAS_BIN, self.atlas_h);
+        self.uv_scale = Vec2::new((atlas_w as f32).recip(), (atlas_h as f32).recip());
+
+        // Go through all quads, generating the necessary triangles to not only cover the quads,
+        // but also to make sure there are no T-junctions, ie. vertex to edge joints
+        // To do this, the entire boundary of the quad is iterated, checking if there is queued
+        // vertex at each point.
+        // At the points marked to have vertices, a new vertex is created and the necessary
+        // triangle is added.
+        // The actual algorithm is a bit more complicated because many points are collinear, so
+        // the points for the triangles must be picked carefully
+        // OPTIMIZE: Make iteration through the vertset faster by using `count_zeros`, just like
+        // the greedy meshing technique.
+        // To make `count_zeros` efficient in all 3 axes, 3 different vertsets would need to be
+        // kept track of, each organized in a different order (XYZ, YZX, ZXY).
+        // Benchmark whether the read savings counteract the extra writes.
+        let quad_queue = mem::take(&mut self.quad_queue);
+        for quad in quad_queue.iter() {
+            #[derive(Copy, Clone)]
+            struct Vert {
+                pos: Int3,
+                uv: Int2,
+                idx: i32,
+            }
+
+            // Extract data from tiny `quad` struct
+            let qpos = Int3::new([quad.pos[0] as i32, quad.pos[1] as i32, quad.pos[2] as i32]);
+            let qvert = Vert {
+                pos: qpos,
+                uv: Int2::new([quad.uv[0] as i32, quad.uv[1] as i32]),
+                idx: Vertset::to_idx(qpos),
+            };
+            let axes = [
+                (quad.axes & 0b11) as usize,
+                ((quad.axes >> 2) & 0b11) as usize,
+            ];
+            let flip_uv = (quad.axes >> 4) != 0;
+            let uv_axes = if flip_uv { [1, 0] } else { [0, 1] };
+
+            macro_rules! adv {
+                ($vert:ident, $axis:expr, $dir:expr) => {{
+                    $vert.pos[axes[$axis]] += $dir;
+                    $vert.uv[uv_axes[$axis]] += $dir;
+                    $vert.idx += $dir * VERTSET_ADV[axes[$axis]];
+                }};
+            }
+
+            // Find first vertex along the first/bottom edge
+            let (mut vbase0, mut xbase0) = (0, 0);
+            {
+                let mut vert = qvert;
+                for x in 1..=quad.size[0] {
+                    adv!(vert, 0, 1);
+                    if self.vertex_set.get_idx(vert.idx) {
+                        xbase0 = x;
+                        vbase0 = self.vertex(vert.pos, vert.uv);
+                        break;
+                    }
+                }
+            }
+
+            // Find first vertex along the third/top edge
+            let (mut vbase1, mut xbase1) = (0, 0);
+            {
+                let mut vert = qvert;
+                adv!(vert, 0, quad.size[0] as i32);
+                adv!(vert, 1, quad.size[1] as i32);
+                for x in (0..quad.size[0]).rev() {
+                    adv!(vert, 0, -1);
+                    if self.vertex_set.get_idx(vert.idx) {
+                        xbase1 = x;
+                        vbase1 = self.vertex(vert.pos, vert.uv);
+                        break;
+                    }
+                }
+            }
+
+            // Do left side using base0
+            {
+                let mut vert = qvert;
+                let mut vidx = 0;
+                self.vertex(vert.pos, vert.uv);
+                // Iterate along the fourth/left edge
+                for _y in 1..=quad.size[1] {
+                    adv!(vert, 1, 1);
+                    if self.vertex_set.get_idx(vert.idx) {
+                        vidx = self.vertex(vert.pos, vert.uv);
+                        self.mesh.add_face(vbase0, vidx, vidx - 1);
+                    }
+                }
+                // Iterate along the third/top edge
+                for _x in 1..xbase1 {
+                    adv!(vert, 0, 1);
+                    if self.vertex_set.get_idx(vert.idx) {
+                        vidx = self.vertex(vert.pos, vert.uv);
+                        self.mesh.add_face(vbase0, vidx, vidx - 1);
+                    }
+                }
+                // Add final triangle to join both bases
+                self.mesh.add_face(vbase0, vbase1, vidx);
+            }
+
+            // Do right side using base1
+            {
+                let mut vert = qvert;
+                adv!(vert, 0, quad.size[0] as i32);
+                adv!(vert, 1, quad.size[1] as i32);
+                let mut vidx = 0;
+                self.vertex(vert.pos, vert.uv);
+                // Iterate along the second/right edge
+                for _y in (0..quad.size[1]).rev() {
+                    adv!(vert, 1, -1);
+                    if self.vertex_set.get_idx(vert.idx) {
+                        vidx = self.vertex(vert.pos, vert.uv);
+                        self.mesh.add_face(vbase1, vidx, vidx - 1);
+                    }
+                }
+                // Iterate along the first/bottom edge
+                for _x in (xbase0..quad.size[0]).rev() {
+                    adv!(vert, 0, -1);
+                    if self.vertex_set.get_idx(vert.idx) {
+                        vidx = self.vertex(vert.pos, vert.uv);
+                        self.mesh.add_face(vbase1, vidx, vidx - 1);
+                    }
+                }
+                // Add final triangle to join both bases
+                // This triangle complements the analogous triangle for base0
+                self.mesh.add_face(vbase1, vbase0, vidx);
+            }
         }
+        self.quad_queue = quad_queue;
     }
 
     fn make_mesh<'a>(
@@ -865,20 +1087,22 @@ impl Mesher2 {
         )?;
         chunks_store.take();
 
-        // Reset the atlas packer
-        self.packer.reset(ATLAS_BIN, ATLAS_SIZE);
+        // Reset everything
         //self.atlas.reset();
+        self.packer.reset(ATLAS_BIN, ATLAS_SIZE);
         self.atlas_h = 1;
         self.atlas.fill((0, 0, 0, 255));
+        self.quad_queue.clear();
+        self.vertex_set.clear();
 
         // Generate block texture noise
         self.texture_noise(chunk_pos);
 
-        // Turn voxels into triangular meshes
+        // Turn voxels into a list of quads
         self.visit_layers();
 
-        // Adjust uv coordinates to final texture size
-        self.adjust_uv();
+        // Take these quads and produce triangles
+        self.produce_triangles();
 
         Some(())
     }

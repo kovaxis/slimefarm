@@ -560,7 +560,7 @@ function World:draw()
             local pixelsize = frame.h / 100
             frame.mvp_hud:scale(pixelsize * tw, pixelsize * th, 1)
             Sprite.shader:set_matrix('mvp', frame.mvp_hud)
-            Sprite.shader:set_texture('tex', last_atlas)
+            Sprite.shader:set_texture_2d('tex', last_atlas)
             Sprite.shader:set_vec4('tint', 1, 1, 1, 100)
             Sprite.shader:draw(buf, frame.params_hud)
             frame.mvp_hud:pop()

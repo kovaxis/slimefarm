@@ -3,6 +3,13 @@ use crate::{
     prelude::*,
 };
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
+use glium::{
+    framebuffer::{
+        DepthRenderBuffer, DepthStencilRenderBuffer, RenderBuffer, SimpleFrameBuffer,
+        StencilRenderBuffer,
+    },
+    texture::{DepthStencilTexture2d, DepthTexture2d, StencilTexture2d},
+};
 
 #[derive(Clone)]
 pub(crate) enum BufferRef {
@@ -20,7 +27,7 @@ pub(crate) enum StaticUniform {
     Vec3([f32; 3]),
     Vec4([f32; 4]),
     Mat4([[f32; 4]; 4]),
-    Texture2d(TextureRef, SamplerBehavior),
+    Texture2d(LuaTexture<Texture2d>),
 }
 impl StaticUniform {
     fn as_uniform(&self) -> UniformValue {
@@ -30,7 +37,7 @@ impl StaticUniform {
             &Self::Vec3(v) => UniformValue::Vec3(v),
             &Self::Vec4(v) => UniformValue::Vec4(v),
             &Self::Mat4(v) => UniformValue::Mat4(v),
-            Self::Texture2d(tex, sampling) => UniformValue::Texture2d(&tex.tex, Some(*sampling)),
+            Self::Texture2d(tex) => UniformValue::Texture2d(&tex.tex, Some(tex.sampling)),
         }
     }
 }
@@ -84,13 +91,12 @@ lua_type! {UniformStorage, lua, this,
             .1 = StaticUniform::Mat4(top.into());
     }
 
-    mut fn set_texture((idx, tex): (usize, TextureRef)) {
-        let sampling = tex.sampling;
+    mut fn set_texture_2d((idx, tex): (usize, LuaTexture<Texture2d>)) {
         this.vars
             .get_mut(idx)
             .ok_or("index out of range")
             .to_lua_err()?
-            .1 = StaticUniform::Texture2d(tex, sampling);
+            .1 = StaticUniform::Texture2d(tex);
     }
 }
 impl Uniforms for UniformStorage {
@@ -175,13 +181,12 @@ pub(crate) struct ShaderRef {
 }
 impl LuaUserData for ShaderRef {}
 
-#[derive(Clone)]
-pub(crate) struct TextureRef {
-    pub tex: Rc<Texture2d>,
+pub(crate) struct LuaTexture<T> {
+    pub tex: Rc<T>,
     pub sampling: SamplerBehavior,
 }
-impl TextureRef {
-    fn new(tex: Texture2d) -> Self {
+impl<T> LuaTexture<T> {
+    fn new(tex: T) -> Self {
         use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter, SamplerWrapFunction};
         Self {
             tex: Rc::new(tex),
@@ -199,40 +204,53 @@ impl TextureRef {
         }
     }
 }
-lua_type! {TextureRef, lua, this,
-    fn dimensions() {
-        (this.tex.width(), this.tex.height())
-    }
-
-    mut fn set_min(filter: LuaString) {
-        use glium::uniforms::MinifySamplerFilter::*;
-        this.sampling.minify_filter = match filter.as_bytes() {
-            b"linear" => Linear,
-            b"nearest" => Nearest,
-            _ => lua_bail!("unknown minify filter '{}'", filter.to_str().unwrap_or_default())
-        };
-    }
-
-    mut fn set_mag(filter: LuaString) {
-        use glium::uniforms::MagnifySamplerFilter::*;
-        this.sampling.magnify_filter = match filter.as_bytes() {
-            b"linear" => Linear,
-            b"nearest" => Nearest,
-            _ => lua_bail!("unknown magnify filter '{}'", filter.to_str().unwrap_or_default())
-        };
-    }
-
-    mut fn set_wrap(wrap: LuaString) {
-        use glium::uniforms::SamplerWrapFunction::*;
-        let func = match wrap.as_bytes() {
-            b"repeat" => Repeat,
-            b"mirror" => Mirror,
-            b"clamp" => Clamp,
-            _ => lua_bail!("unknown wrap function '{}'", wrap.to_str().unwrap_or_default())
-        };
-        this.sampling.wrap_function = (func, func, func);
+impl<T> Clone for LuaTexture<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tex: self.tex.clone(),
+            sampling: self.sampling,
+        }
     }
 }
+macro_rules! lua_textures {
+    ($($ty:ty),*) => {$(
+        lua_type! {LuaTexture<$ty>, lua, this,
+            fn dimensions() {
+                (this.tex.width(), this.tex.height())
+            }
+
+            mut fn set_min(filter: LuaString) {
+                use glium::uniforms::MinifySamplerFilter::*;
+                this.sampling.minify_filter = match filter.as_bytes() {
+                    b"linear" => Linear,
+                    b"nearest" => Nearest,
+                    _ => lua_bail!("unknown minify filter '{}'", filter.to_str().unwrap_or_default())
+                };
+            }
+
+            mut fn set_mag(filter: LuaString) {
+                use glium::uniforms::MagnifySamplerFilter::*;
+                this.sampling.magnify_filter = match filter.as_bytes() {
+                    b"linear" => Linear,
+                    b"nearest" => Nearest,
+                    _ => lua_bail!("unknown magnify filter '{}'", filter.to_str().unwrap_or_default())
+                };
+            }
+
+            mut fn set_wrap(wrap: LuaString) {
+                use glium::uniforms::SamplerWrapFunction::*;
+                let func = match wrap.as_bytes() {
+                    b"repeat" => Repeat,
+                    b"mirror" => Mirror,
+                    b"clamp" => Clamp,
+                    _ => lua_bail!("unknown wrap function '{}'", wrap.to_str().unwrap_or_default())
+                };
+                this.sampling.wrap_function = (func, func, func);
+            }
+        }
+    )*};
+}
+lua_textures!(Texture2d);
 
 #[derive(Clone, Default)]
 pub(crate) struct LuaDrawParams {
@@ -554,7 +572,7 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                             &state.display,
                             RawImage2d::from_raw_rgba(img.to_vec(), (w, h))
                         ).unwrap();
-                        TextureRef::new(tex)
+                        LuaTexture::new(tex)
                     }
 
                     fn uniforms(()) {

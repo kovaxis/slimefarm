@@ -117,6 +117,7 @@ pub struct RawTexturePackage {
     owned: bool,
 }
 impl RawTexturePackage {
+    /// Pack a texture into a `Send`able raw package.
     pub fn pack(mut tex: TextureAny) -> Self {
         let owned = tex.owned;
         tex.owned = false;
@@ -130,6 +131,8 @@ impl RawTexturePackage {
         }
     }
 
+    /// Unpack a raw texture package sent from another thread.
+    /// The OpenGL contexts of both threads must share display lists.
     pub unsafe fn unpack<F: ?Sized + Facade>(self, facade: &F) -> TextureAny {
         TextureAny {
             context: facade.get_context().clone(),

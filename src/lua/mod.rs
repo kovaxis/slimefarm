@@ -222,7 +222,7 @@ lua_type! {TerrainRef, lua, this,
         if let Some(chunk) = this.meshes.get_mut(chunkpos) {
             let atlas = mem::replace(&mut chunk.atlas, None);
             if let Some(atlas) = atlas {
-                Some(crate::lua::gfx::TextureRef {
+                Some(crate::lua::gfx::LuaTexture {
                     tex: Rc::new(atlas),
                     sampling: default(),
                 })
