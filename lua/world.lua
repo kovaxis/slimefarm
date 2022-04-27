@@ -11,11 +11,6 @@ function World:new()
     self.tick_count = 0
     self.entities = {}
 
-    self.worldgen_path = "gen"
-    self.worldgen_main = "gen/main.lua"
-    self.worldgen_watcher = fs.watch(self.worldgen_path)
-    self:load_terrain()
-
     self.shaders = {
         terrain = util.Shader{
             vertex = 'terrain.vert',
@@ -37,7 +32,18 @@ function World:new()
             fragment = 'skybox.frag',
             uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir'},
         },
+        dbgchunk = util.Shader{
+            vertex = 'dbgchunk.vert',
+            fragment = 'dbgchunk.frag',
+            uniforms = {'mvp', 'offset'},
+        },
     }
+
+    self.worldgen_path = "gen"
+    self.worldgen_main = "gen/main.lua"
+    self.worldgen_watcher = fs.watch(self.worldgen_path)
+    self.showchunkgrid = false
+    self:load_terrain()
 
     self.font_size = 6
     self.font = gfx.font(util.read_file("font/dogicapixel.ttf"), self.font_size)
@@ -186,12 +192,63 @@ function World:load_terrain()
     local file = io.open(self.worldgen_main, 'r')
     local gen_main = file:read('a')
     file:close()
-    self.terrain = system.terrain(gen_main, {
-        seed = 6813264,
-        kind = 'gen.plainsgen',
-    })
-    self.terrain:set_view_distance(32*12, 32*14)
-    --self.terrain:set_view_distance(32*6, 32*8)
+    self.terrain = system.terrain {
+        gen = {
+            src = gen_main,
+            args = {{
+                seed = 6813264,
+                kind = 'gen.plainsgen',
+            }},
+        },
+        mesher = {
+            atlas_size = {64, 1024},
+            -- clear, normal, blocked, blocked, base
+            exposure_table = {65, 60, 45, 45, 0},
+            light_uv_offset = 0.5,
+        },
+    }
+    self.terrain:set_interpolation(false, true)
+    --self.terrain:set_view_distance(32*12, 32*14)
+    self.terrain:set_view_distance(32*6, 32*8)
+
+    --Set chunkframe
+    self:update_showchunkgrid(self.showchunkgrid)
+end
+
+function World:update_showchunkgrid(show)
+    if show then
+        local j, w = 0.1, 32
+        local r, g, b, a = 1, 0, 0, 1
+        local mesh = Mesh{}
+        local function addquad(bx, by, bz, dx, dy, dz, d1x, d1y, d1z, d2x, d2y, d2z)
+            mesh:add_quad(
+                bx + d1x, by + d1y, bz + d1z,
+                bx + d2x, by + d2y, bz + d2z,
+                bx + dx + d2x, by + dy + d2y, bz + dz + d2z,
+                bx + dx + d1x, by + dy + d1y, bz + dz + d1z,
+                r, g, b, a
+            )
+        end
+        addquad(0, 0, 0,   w, 0, 0,   0, j, 0,   0, 0, j)
+        addquad(w, 0, 0,   0, w, 0,  -j, 0, 0,   0, 0, j)
+        addquad(w, w, 0,  -w, 0, 0,  0, -j, 0,   0, 0, j)
+        addquad(0, w, 0,  0, -w, 0,   j, 0, 0,   0, 0, j)
+
+        addquad(0, 0, 0,   0, 0, w,   j, 0, 0,   0, j, 0)
+        addquad(w, 0, 0,   0, 0, w,   0, j, 0,  -j, 0, 0)
+        addquad(w, w, 0,   0, 0, w,  -j, 0, 0,  0, -j, 0)
+        addquad(w, 0, 0,   0, 0, w,  0, -j, 0,   j, 0, 0)
+
+        addquad(0, 0, w,   w, 0, 0,  0, 0, -j,   0, j, 0)
+        addquad(w, 0, w,   0, w, 0,  0, 0, -j,  -j, 0, 0)
+        addquad(w, w, w,  -w, 0, 0,  0, 0, -j,  0, -j, 0)
+        addquad(0, w, w,  0, -w, 0,  0, 0, -j,   j, 0, 0)
+
+        self.terrain:set_dbg_chunkframe(self.shaders.dbgchunk.program, mesh:as_buffer())
+    else
+        self.terrain:set_dbg_chunkframe(nil, nil)
+    end
+    self.showchunkgrid = show
 end
 
 local sky = {}
@@ -480,7 +537,6 @@ function World:draw()
             self.fog_poll_next = now + (self.fog_poll_interval - now % self.fog_poll_interval)
             --Poll fog
             local fog_now = self.terrain:visible_radius()
-            fog_now = 500 -- TODO: Remove or at least make configurable
             self.fog_min_idx = self.fog_min_idx + 1
             self.fog_last_minimums[self.fog_min_idx] = fog_now
             self.fog_min_idx = self.fog_min_idx % #self.fog_last_minimums
@@ -508,6 +564,7 @@ function World:draw()
 
     --Draw terrain
     frame.portal_budget = 16
+    self.terrain:reset_draw_stats()
     self:subdraw()
 
     --Draw HUD
@@ -515,16 +572,35 @@ function World:draw()
     frame.mvp_hud:translate(-frame.w + 4, frame.h - 16, 0)
     frame.mvp_hud:scale(self.font_size)
     self.font:draw("FPS: "..self.fps, frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    frame.mvp_hud:translate(0, -1.25, 0)
-    self.font:draw("gen: "..util.format_time(self.terrain:chunk_gen_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    frame.mvp_hud:translate(0, -1.25, 0)
-    self.font:draw("mesh: "..util.format_time(self.terrain:chunk_mesh_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    frame.mvp_hud:translate(0, -1.25, 0)
-    self.font:draw("upload: "..util.format_time(self.terrain:chunk_mesh_upload_time()), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    frame.mvp_hud:translate(0, -1.25, 0)
-    local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
-    self.font:draw("pos: "..math.floor(raw_x)..", "..math.floor(raw_y)..", "..math.floor(raw_z).." : "..math.floor(raw_w), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    frame.mvp_hud:pop()
+    if true then
+        -- chunk gen/mesh/upload average times
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("gen: "..util.format_time(self.terrain:get_stat("gentime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("light: "..util.format_time(self.terrain:get_stat("lighttime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("mesh: "..util.format_time(self.terrain:get_stat("meshtime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("upload: "..util.format_time(self.terrain:get_stat("uploadtime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    end
+    if true then
+        -- chunk draw stats
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("drawnchunks: "..self.terrain:get_stat('drawnchunks'), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("vertices: "..math.ceil(self.terrain:get_stat('vertbytes')/1024).."KB", frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("indices: "..math.ceil(self.terrain:get_stat('idxbytes')/1024).."KB", frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:translate(0, -1.25, 0)
+        self.font:draw("color: "..math.ceil(self.terrain:get_stat('colorbytes')/1024).."KB", frame.mvp_hud, frame.params_hud, 1, 1, 1)
+    end
+    if true then
+        -- absolute world coordinates
+        frame.mvp_hud:translate(0, -1.25, 0)
+        local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
+        self.font:draw("pos: "..math.floor(raw_x)..", "..math.floor(raw_y)..", "..math.floor(raw_z).." : "..math.floor(raw_w), frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        frame.mvp_hud:pop()
+    end
 
     --Draw crosshair
     frame.mvp_hud:push()
@@ -567,6 +643,16 @@ function World:draw()
             frame.mvp_hud:pop()
         end
     end
+end
+
+function World:keydown(key)
+    if key == 'f7' then
+        self:update_showchunkgrid(not self.showchunkgrid)
+    end
+end
+
+function World:keyup(key)
+
 end
 
 function World:mousemove(dx, dy)

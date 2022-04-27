@@ -25,6 +25,13 @@ while true do
         if has_focus then
             local scancode, state = input.scancodes[a], b
             if scancode then
+                if state ~= input.key_down[scancode] then
+                    if state then
+                        world:keydown(scancode)
+                    else
+                        world:keyup(scancode)
+                    end
+                end
                 input.key_down[scancode] = state
                 if state then
                     if scancode == 'escape' then

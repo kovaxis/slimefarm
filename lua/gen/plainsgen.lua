@@ -1,6 +1,7 @@
 
 local native = require 'gen.native'
 local blocks = require 'gen.blocks'
+local lightmodes = require 'gen.lightmodes'
 
 local plainsgen = {}
 
@@ -229,13 +230,21 @@ do
     }
 end
 
+local lightconf = native.action_buf()
+lightconf:reset(0, 0, 0)
+--lightconf:cube(0, 0, 0, 1, 1, 1, 0) -- Comment to enable chunkmesh lighting
+--lightconf:cube(1, 0, 0, 1, 1, 1, 0) -- Comment to enable chunkgen lighting
+--
+
+local sky_light = 1
 function plainsgen.generate(x, y, z, w)
-    local chunk = native.chunk(blocks['base.air'])
+    if z >= 6 then
+        return native.chunk(blocks['base.air'], lightmodes['base.std'], sky_light):into_raw()
+    end
+    local chunk = native.chunk(blocks['base.air'], lightmodes['base.std'])
     heightmap:fill_chunk(x, y, z, chunk)
     structs:fill_chunk(x, y, z, chunk, genstruct)
-    if z >= 6 then
-        chunk:mark_shiny()
-    end
+    lightconf:transfer(0, 0, 0, chunk)
     return chunk:into_raw()
 end
 

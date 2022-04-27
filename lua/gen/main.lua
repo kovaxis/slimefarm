@@ -1,6 +1,7 @@
 
 local native = require 'gen.native'
 local blocks = require 'gen.blocks'
+local lightmodes = require 'gen.lightmodes'
 local reclaim = require 'gen.reclaim'
 
 gen.k = ...
@@ -23,9 +24,35 @@ blocks.register {
     style = 'Portal',
 }
 
+lightmodes.register {
+    name = 'base.std',
+    light = {
+        -- 1/4 per block
+        base = 0,
+        mul = 1,
+        shr = 2,
+    },
+    _decay = {
+        base = 8,
+        mul = 0,
+        shr = 0,
+    },
+    decay = {
+        -- 8 + [0, 0]
+        base = 8 * 2^16,
+        mul = math.floor(0 * 2^16 / 255),
+        shr = 16,
+    },
+}
+
 function gen.textures()
     blocks.seal()
     return blocks.textures
+end
+
+function gen.lightmodes()
+    lightmodes.seal()
+    return lightmodes.modes
 end
 
 function gen.chunk(x, y, z, w)

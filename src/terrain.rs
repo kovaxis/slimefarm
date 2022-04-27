@@ -1,8 +1,9 @@
 use std::f64::INFINITY;
 
 use crate::{
-    chunkmesh::MesherHandle,
+    chunkmesh::{MesherCfg, MesherHandle},
     gen::{GenArea, GenConfig},
+    lua::gfx::{BufferRef, ShaderRef},
     mesh::RawBufPackage,
     prelude::*,
 };
@@ -263,11 +264,170 @@ struct PortalPlane {
     dim: u32,
 }
 
+macro_rules! light_spreader {
+    ( $name:ident($size:expr); ) => {
+        use self::light_impl::$name;
+        mod light_impl {
+            use super::*;
+
+            const SIZE: i32 = $size;
+            const LEN: usize = (SIZE * SIZE * SIZE) as usize;
+
+            bit_array! {
+                pub DirtyBits(LEN);
+            }
+
+            pub struct $name {
+                pub light_modes: [LightingConf; 256],
+                pub mode: usize,
+                pub style: StyleTable,
+                pub queue: VecDeque<[u8; 3]>,
+                pub dirty: DirtyBits,
+                pub decay: u8,
+            }
+            impl $name {
+                pub fn new(info: &WorldInfo) -> Self {
+                    Self {
+                        style: StyleTable::new(info),
+                        light_modes: arr![i => info.light_modes[i].clone(); 256],
+                        mode: 0,
+                        queue: default(),
+                        dirty: DirtyBits::new(),
+                        decay: 0,
+                    }
+                }
+
+                pub fn reset(&mut self, base_pos: BlockPos, chunk: &ChunkData) {
+                    // Load light mode from chunk metadata
+                    self.mode = chunk.light_mode as usize;
+                    let mode = &self.light_modes[self.mode];
+                    self.decay = (mode.decay.base >> mode.decay.shr) as u8;
+
+                    // Reset temporary data structures
+                    self.queue.clear();
+                    self.dirty.clear();
+                }
+
+                pub fn spread_to_unchecked(
+                    &mut self,
+                    light: &mut [u8; LEN],
+                    blocks: &[BlockData; LEN],
+                    to: Int3,
+                    l: u8,
+                ) -> bool {
+                    let to_idx = (to.x + SIZE * to.y + SIZE * SIZE * to.z) as usize;
+                    if !blocks[to_idx].is_clear(&self.style) {
+                        // Cannot spread to a non-clear block
+                        return false;
+                    }
+                    let to_l = light[to_idx];
+                    if to_l >= l {
+                        // The target block is already brighter than what is being spread
+                        return false;
+                    }
+                    light[to_idx] = l;
+                    if !self.dirty.get(to_idx) {
+                        self.dirty.set(to_idx);
+                        self.queue.push_back([to.x as u8, to.y as u8, to.z as u8]);
+                    }
+                    return true;
+                }
+
+                pub fn spread_to(
+                    &mut self,
+                    light: &mut [u8; LEN],
+                    blocks: &[BlockData; LEN],
+                    to: Int3,
+                    l: u8,
+                ) -> bool {
+                    if to.x as u32 >= SIZE as u32
+                        || to.y as u32 >= SIZE as u32
+                        || to.z as u32 >= SIZE as u32
+                    {
+                        return false;
+                    }
+                    self.spread_to_unchecked(light, blocks, to, l)
+                }
+
+                pub fn spread_from(
+                    &mut self,
+                    light: &mut [u8; LEN],
+                    blocks: &[BlockData; LEN],
+                    from: Int3,
+                ) {
+                    let idx = (from.x + SIZE * from.y + SIZE * SIZE * from.z) as usize;
+                    let decay = self.decay as u32;
+
+                    
+                    let l1 = light[idx].saturating_sub(decay as u8);
+                    let mut s1 = false;
+                    s1 |= self.spread_to(light, blocks, from + [1, 0, 0], l1);
+                    s1 |= self.spread_to(light, blocks, from + [-1, 0, 0], l1);
+                    s1 |= self.spread_to(light, blocks, from + [0, 1, 0], l1);
+                    s1 |= self.spread_to(light, blocks, from + [0, -1, 0], l1);
+                    s1 |= self.spread_to(light, blocks, from + [0, 0, 1], l1);
+                    s1 |= self.spread_to(light, blocks, from + [0, 0, -1], l1);
+
+                    if s1 {
+                        let l2 = light[idx].saturating_sub((decay * 1482910 / 1048576) as u8);
+                        self.spread_to(light, blocks, from + [1, 1, 0], l2);
+                        self.spread_to(light, blocks, from + [1, -1, 0], l2);
+                        self.spread_to(light, blocks, from + [-1, -1, 0], l2);
+                        self.spread_to(light, blocks, from + [1, 1, 0], l2);
+                        self.spread_to(light, blocks, from + [0, 1, 1], l2);
+                        self.spread_to(light, blocks, from + [0, 1, -1], l2);
+                        self.spread_to(light, blocks, from + [0, -1, -1], l2);
+                        self.spread_to(light, blocks, from + [0, 1, 1], l2);
+                        self.spread_to(light, blocks, from + [1,0,  1], l2);
+                        self.spread_to(light, blocks, from + [1, 0, -1], l2);
+                        self.spread_to(light, blocks, from + [-1, 0, -1], l2);
+                        self.spread_to(light, blocks, from + [1,0,  1], l2);
+                        
+                        let l3 = light[idx].saturating_sub((decay * 1816187 / 1048576) as u8);
+                        self.spread_to(light, blocks, from + [1, 1, 1], l3);
+                        self.spread_to(light, blocks, from + [1, 1, -1], l3);
+                        self.spread_to(light, blocks, from + [1, -1, 1], l3);
+                        self.spread_to(light, blocks, from + [1, -1, -1], l3);
+                        self.spread_to(light, blocks, from + [-1, 1, 1], l3);
+                        self.spread_to(light, blocks, from + [-1, 1, -1], l3);
+                        self.spread_to(light, blocks, from + [-1, -1, 1], l3);
+                        self.spread_to(light, blocks, from + [-1, -1, -1], l3);
+                    }
+
+                }
+
+                pub fn spread_pending(&mut self, light: &mut [u8; LEN], blocks: &[BlockData; LEN]) {
+                    while let Some(pos) = self.queue.pop_front() {
+                        let pos = Int3::new([pos[0] as i32, pos[1] as i32, pos[2] as i32]);
+                        let idx = (pos.x + SIZE * pos.y + SIZE * SIZE * pos.z) as usize;
+                        self.dirty.unset(idx);
+                        self.spread_from(light, blocks, pos);
+                    }
+                }
+            }
+        }
+    };
+}
+pub(crate) use light_spreader;
+
 /// Check whether a chunk is entirely within the given clip planes.
 fn check_chunk_clip_planes(clip: &[Vec4; 5], chunk_center: Vec3) -> bool {
     let x = chunk_center.into_homogeneous_point();
     clip.iter()
         .all(|p| p.dot(x) >= -3f32.sqrt() / 2. * CHUNK_SIZE as f32)
+}
+
+#[derive(Deserialize)]
+pub struct TerrainCfg {
+    mesher: MesherCfg,
+}
+
+#[derive(Default)]
+pub(crate) struct TerrainDbgStats {
+    pub drawnchunks: u64,
+    pub vertbytes: u64,
+    pub idxbytes: u64,
+    pub colorbytes: u64,
 }
 
 pub(crate) struct Terrain {
@@ -277,9 +437,13 @@ pub(crate) struct Terrain {
     pub state: Rc<State>,
     pub chunks: Arc<RwLock<ChunkStorage>>,
     pub meshes: MeshKeeper,
+    pub dbg_chunkframe: Option<(ShaderRef, BufferRef)>,
     pub view_radius: f32,
     pub gen_radius: f32,
     pub last_min_viewdist: f32,
+    pub draw_stats: RefCell<TerrainDbgStats>,
+    pub light_linear: bool,
+    pub color_linear: bool,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
     tmp_seenbuf: RefCell<HashMap<ChunkPos, f32>>,
     tmp_seenbuf_simple: RefCell<HashSet<Int4>>,
@@ -287,15 +451,19 @@ pub(crate) struct Terrain {
     tmp_sortbuf: RefCell<Vec<(f32, Int4)>>,
 }
 impl Terrain {
-    pub fn new(state: &Rc<State>, gen_cfg: GenConfig) -> Result<Terrain> {
+    pub fn new(state: &Rc<State>, cfg: TerrainCfg, gen_cfg: GenConfig) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let generator = GeneratorHandle::new(gen_cfg, &state.global, chunks.clone())?;
-        let tex = generator.take_block_textures()?;
+        let info = generator.take_world_info()?;
         Ok(Terrain {
-            style: StyleTable::new(&tex),
+            style: StyleTable::new(&info),
             state: state.clone(),
             meshes: MeshKeeper::new(),
-            mesher: MesherHandle::new(state, chunks.clone(), tex),
+            mesher: MesherHandle::new(state, chunks.clone(), cfg.mesher, *info),
+            dbg_chunkframe: None,
+            draw_stats: default(),
+            light_linear: true,
+            color_linear: false,
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
             tmp_seenbuf_simple: default(),
@@ -307,6 +475,10 @@ impl Terrain {
             generator: generator,
             chunks,
         })
+    }
+
+    pub fn reset_draw_stats(&self) {
+        *self.draw_stats.borrow_mut() = default();
     }
 
     pub fn set_view_radius(&mut self, view_radius: f32, gen_radius: f32) {
@@ -584,8 +756,16 @@ impl Terrain {
                             atlas,
                             Some(SamplerBehavior {
                                 wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
-                                minify_filter: Minify::Nearest,
-                                magnify_filter: Magnify::Nearest,
+                                minify_filter: if self.color_linear {
+                                    Minify::Linear
+                                } else {
+                                    Minify::Nearest
+                                },
+                                magnify_filter: if self.color_linear {
+                                    Magnify::Linear
+                                } else {
+                                    Magnify::Nearest
+                                },
                                 ..default()
                             }),
                         ),
@@ -596,8 +776,16 @@ impl Terrain {
                             atlas,
                             Some(SamplerBehavior {
                                 wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
-                                minify_filter: Minify::Linear,
-                                magnify_filter: Magnify::Linear,
+                                minify_filter: if self.light_linear {
+                                    Minify::Linear
+                                } else {
+                                    Minify::Nearest
+                                },
+                                magnify_filter: if self.light_linear {
+                                    Magnify::Linear
+                                } else {
+                                    Magnify::Nearest
+                                },
                                 ..default()
                             }),
                         ),
@@ -605,20 +793,21 @@ impl Terrain {
                 ];
                 let uniref = crate::lua::gfx::UniformsRef::new(uniforms, &uniextra);
                 frame.draw(&buf.vertex, &buf.index, &shader, &uniref, params)?;
+                if let Some((shader, BufferRef::Buf3d(buf))) = &self.dbg_chunkframe {
+                    frame.draw(&buf.vertex, &buf.index, &shader.program, &uniref, params)?;
+                }
                 drawn += 1;
                 bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
                 bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
                 bytes_c += atlas.width() * atlas.height() * 4;
                 Ok(())
             })?;
-            if true {
-                println!(
-                    "drew {} chunks: {}KB of vertices, {}KB of indices, {}KB of color",
-                    drawn,
-                    bytes_v / 1024,
-                    bytes_i / 1024,
-                    bytes_c / 1024,
-                );
+            {
+                let mut st = self.draw_stats.borrow_mut();
+                st.drawnchunks += drawn;
+                st.vertbytes += bytes_v as u64;
+                st.idxbytes += bytes_i as u64;
+                st.colorbytes += bytes_c as u64;
             }
         }
 

@@ -291,8 +291,8 @@ impl Int2 {
     }
 
     #[inline]
-    pub fn to_index(self, bits: Int2) -> usize {
-        (self.x | (self.y << bits.x)) as usize
+    pub fn to_index(self, bits: i32) -> usize {
+        (self.x | (self.y << bits)) as usize
     }
 
     #[inline]
@@ -644,8 +644,8 @@ impl Int3 {
     }
 
     #[inline]
-    pub fn to_index(self, bits: Int3) -> usize {
-        (self.x | ((self.y | ((self.z) << bits.y)) << bits.x)) as usize
+    pub fn to_index(self, bits: i32) -> usize {
+        (self.x | ((self.y | ((self.z) << bits)) << bits)) as usize
     }
 
     #[inline]

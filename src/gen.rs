@@ -3,11 +3,9 @@ use std::num::NonZeroU32;
 use crate::prelude::*;
 use common::lua::LuaValueStatic;
 
-const AVERAGE_WEIGHT: f32 = 0.005;
-
 pub struct GeneratorHandle {
     shared: Arc<GenSharedState>,
-    tex_recv: Receiver<BlockTextures>,
+    info_recv: Receiver<Box<WorldInfo>>,
     thread: Option<JoinHandle<Result<()>>>,
 }
 impl GeneratorHandle {
@@ -27,6 +25,7 @@ impl GeneratorHandle {
             .into(),
             close: false.into(),
             avg_gen_time: 0f32.into(),
+            avg_light_time: 0f32.into(),
         });
         let (tex_send, tex_recv) = channel::bounded(0);
         //let (colorizer_send, colorizer_recv) = channel::bounded(0);
@@ -59,7 +58,7 @@ impl GeneratorHandle {
         };*/
         Ok(Self {
             shared,
-            tex_recv,
+            info_recv: tex_recv,
             thread: Some(join_handle),
         })
         /*
@@ -98,8 +97,8 @@ impl GeneratorHandle {
         }
     }
 
-    pub fn take_block_textures(&self) -> Result<BlockTextures> {
-        self.tex_recv.recv().context("block texture channel closed")
+    pub fn take_world_info(&self) -> Result<Box<WorldInfo>> {
+        self.info_recv.recv().context("world info channel closed")
     }
 
     pub fn set_gen_area(&self, genarea: GenArea) {
@@ -138,6 +137,7 @@ pub struct GenSharedState {
     gen_area: Mutex<GenArea>,
     close: AtomicCell<bool>,
     pub avg_gen_time: AtomicCell<f32>,
+    pub avg_light_time: AtomicCell<f32>,
 }
 
 struct GenState {
@@ -147,6 +147,7 @@ struct GenState {
 }
 
 /// Transfer chunks from the local buffer to the game chunkstore.
+/// This is perhaps the only place in the entire codebase that `ChunkStorage` is modified.
 fn empty_chunk_buf(chunks: &mut ChunkStorage, unsent: &mut HashMap<ChunkPos, ChunkBox>) {
     for (pos, chunk) in unsent.drain() {
         chunks.insert(pos, ChunkArc::new(chunk));
@@ -154,11 +155,257 @@ fn empty_chunk_buf(chunks: &mut ChunkStorage, unsent: &mut HashMap<ChunkPos, Chu
     chunks.maybe_gc();
 }
 
+fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
+    // Attempt to exploit the fact that some chunks are all-empty or all-full
+    if chunk.is_homogeneous() {
+        let block = chunk.homogeneous_block();
+        if block.is_solid(style) {
+            // All dark. Ready
+            return;
+        }
+        match above.blocks() {
+            Some(above) => {
+                // Check whether the above lighting is uniform at the bottom layer
+                if above.shinethrough.iter().all(|&l| l == 0) {
+                    // All dark
+                    return;
+                }
+                let abovelight = above.skylight[0];
+                if above.shinethrough.iter().all(|&l| l == ChunkSizedInt::MAX)
+                    && above.skylight[..(CHUNK_SIZE * CHUNK_SIZE) as usize]
+                        .iter()
+                        .all(|&l| l == abovelight)
+                {
+                    // All lighted
+                    chunk.make_homogeneous(true, block, abovelight, chunk.homogeneous_lightmode());
+                    return;
+                }
+                // We'll have to allocate memory for skylight, sadly
+            }
+            None => {
+                let shinethrough = above.homogeneous_shinethrough();
+                let light = above.homogeneous_skylight();
+                if shinethrough {
+                    // All lighted
+                    chunk.make_homogeneous(true, block, light, chunk.homogeneous_lightmode());
+                } else {
+                    // All dark
+                }
+                return;
+            }
+        }
+    }
+
+    let chunk = chunk.blocks_mut();
+    if let Some(above) = above.blocks() {
+        let mut idx_2d = 0;
+        for y in 0..CHUNK_SIZE as usize {
+            for x in 0..CHUNK_SIZE as usize {
+                if (above.shinethrough[y] >> x) & 1 != 0 {
+                    // Propagate light down
+                    let light = above.skylight[idx_2d];
+                    let mut idx_3d = idx_2d + (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
+                    for _z in (0..CHUNK_SIZE).rev() {
+                        idx_3d -= (CHUNK_SIZE * CHUNK_SIZE) as usize;
+                        if chunk.blocks[idx_3d].is_solid(style) {
+                            break;
+                        }
+                        chunk.skylight[idx_3d] = light;
+                    }
+                    chunk.shinethrough[y] |= ((idx_3d == idx_2d) as ChunkSizedInt) << x;
+                }
+                idx_2d += 1;
+            }
+        }
+    } else {
+        let shinethrough = above.homogeneous_shinethrough();
+        let light = above.homogeneous_skylight();
+        if !shinethrough {
+            // All dark
+            return;
+        }
+        let mut idx_2d = 0;
+        for y in 0..CHUNK_SIZE as usize {
+            for x in 0..CHUNK_SIZE as usize {
+                // Propagate light down
+                let mut idx_3d = idx_2d + (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
+                for _z in 0..CHUNK_SIZE {
+                    idx_3d -= (CHUNK_SIZE * CHUNK_SIZE) as usize;
+                    if chunk.blocks[idx_3d].is_solid(style) {
+                        break;
+                    }
+                    chunk.skylight[idx_3d] = light;
+                }
+                chunk.shinethrough[y] |= ((idx_3d == idx_2d) as ChunkSizedInt) << x;
+                idx_2d += 1;
+            }
+        }
+    }
+}
+
+/*
+
+fn propagate_light(chunk_pos: ChunkPos, chunk: &mut ChunkBox, style: &StyleTable) {
+    struct State<'a> {
+        data: &'a mut ChunkData,
+        dirty: VecDeque<[u8; 3]>,
+        is_dirty: [ChunkSizedInt; (CHUNK_SIZE * CHUNK_SIZE) as usize],
+    }
+
+    let data = match chunk.try_blocks_mut() {
+        Some(data) => data,
+        None => return,
+    };
+    let mut state = State {
+        data,
+        dirty: VecDeque::new(),
+        is_dirty: [0 as ChunkSizedInt; (CHUNK_SIZE * CHUNK_SIZE) as usize],
+    };
+    let light_decay = state.data.light_decay;
+
+    // Dithering
+    let dither = {
+        let mut dither = [0; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize];
+        let base_pos = chunk_pos.coords << CHUNK_BITS;
+        let mut idx = 0;
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let rnd = fxhash::hash32(&(base_pos + [x, y, z])) as u8;
+                    let rnd = ((rnd as u16 * light_decay as u16 + 1) >> 8) as u8;
+                    dither[idx] = light_decay + (rnd >> 0);
+                    idx += 1;
+                }
+            }
+        }
+        dither
+    };
+
+    let check = |state: &mut State, pos: Int3, l: u8| {
+        if pos.x as u32 >= CHUNK_SIZE as u32
+            || pos.y as u32 >= CHUNK_SIZE as u32
+            || pos.z as u32 >= CHUNK_SIZE as u32
+        {
+            return;
+        }
+        let idx = pos.to_index(CHUNK_BITS);
+        if !state.data.blocks[idx].is_clear(style) {
+            return;
+        }
+        if state.data.skylight[idx] < l {
+            state.data.skylight[idx] = l;
+            if (state.is_dirty[idx >> CHUNK_BITS] >> (idx & CHUNK_MASK as usize)) & 1 == 0 {
+                state
+                    .dirty
+                    .push_back([pos.x as u8, pos.y as u8, pos.z as u8]);
+                state.is_dirty[idx >> CHUNK_BITS] |= 1 << (idx & CHUNK_MASK as usize);
+            }
+        }
+    };
+
+    for z in 0..CHUNK_SIZE {
+        for y in 0..CHUNK_SIZE {
+            for x in 0..CHUNK_SIZE {
+                let pos = Int3::new([x, y, z]);
+                let idx = pos.to_index(CHUNK_BITS) as usize;
+                let l = state.data.skylight[idx].saturating_sub(dither[idx]);
+                check(&mut state, pos + [-1, 0, 0], l);
+                check(&mut state, pos + [1, 0, 0], l);
+                check(&mut state, pos + [0, -1, 0], l);
+                check(&mut state, pos + [0, 1, 0], l);
+                check(&mut state, pos + [0, 0, -1], l);
+                check(&mut state, pos + [0, 0, 1], l);
+            }
+        }
+    }
+
+    while let Some(pos) = state.dirty.pop_front() {
+        let pos = Int3::new([pos[0] as i32, pos[1] as i32, pos[2] as i32]);
+        let idx = pos.to_index(CHUNK_BITS);
+        state.is_dirty[idx >> CHUNK_BITS] &= !(1 << (idx & CHUNK_MASK as usize));
+        let l = state.data.skylight[idx].saturating_sub(dither[idx]);
+        check(&mut state, pos + [-1, 0, 0], l);
+        check(&mut state, pos + [1, 0, 0], l);
+        check(&mut state, pos + [0, -1, 0], l);
+        check(&mut state, pos + [0, 1, 0], l);
+        check(&mut state, pos + [0, 0, -1], l);
+        check(&mut state, pos + [0, 0, 1], l);
+    }
+}
+
+*/
+
+crate::terrain::light_spreader! {
+    LightSpreader(CHUNK_SIZE);
+}
+
 fn process_lighting(
+    shared: &GenSharedState,
     chunks: &ChunkStorage,
     unsent: &mut HashMap<ChunkPos, ChunkBox>,
+    spreader: &mut LightSpreader,
     style: &StyleTable,
 ) {
+    // This function does 2 things:
+    // - Propagate skylight down for all unsent chunks
+    // - After that, propagates light in all directions _within each chunk_
+    // This means that at the time of meshing a final inter-chunk propagation pass must be done.
+
+    // Propagate skylight from sky to ground, from highest chunks to lowest chunks
+    let mut sortbuf = unsent.iter_mut().collect::<Vec<_>>();
+    sortbuf.sort_unstable_by_key(|(p, _c)| [p.coords.x, p.coords.y, -p.coords.z]);
+    let mut last_above: Option<(Int4, ChunkRef)> = None;
+    for (&pos, chunk) in sortbuf {
+        if !chunk.is_homogeneous() || !chunk.homogeneous_shinethrough() {
+            let mut above_pos = pos;
+            above_pos.coords.z += 1;
+            let above = last_above
+                .filter(|(abpos, _)| *abpos == above_pos)
+                .map(|(_, ab)| ab)
+                .or_else(|| chunks.chunk_at(above_pos));
+            if let Some(above) = above {
+                skylight_fall(above, chunk, style);
+            } else {
+                println!("no above-chunk found for chunk at {:?}!", pos);
+            }
+        }
+        last_above = Some((pos, chunk.as_ref()));
+    }
+
+    // Spread skylight within each chunk
+    for (pos, chunk) in unsent.iter_mut() {
+        // Debug hack to disable gen-time light spreading
+        /*if let Some(b) = chunk.blocks() {
+            if b.blocks[1].data == 0 {
+                continue;
+            }
+        }*/
+
+        time!(start lightspread);
+
+        // Get chunk lighting data
+        let chunk = match chunk.try_blocks_mut() {
+            Some(chunk) => chunk,
+            None => continue,
+        };
+        spreader.reset(*pos, chunk);
+
+        // Seed lightspread from every block
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    spreader.spread_from(&mut chunk.skylight, &chunk.blocks, [x, y, z].into());
+                }
+            }
+        }
+
+        // Finish spreading
+        spreader.spread_pending(&mut chunk.skylight, &chunk.blocks);
+
+        time!(store lightspread shared.avg_light_time);
+    }
+
+    /*
     let full_light = |chunk: &mut ChunkBox| {
         if let Some(data) = chunk.try_blocks_mut() {
             data.skymap.fill(0);
@@ -267,12 +514,13 @@ fn process_lighting(
         // Save this chunk as the above for the next chunk
         last_above = Some((pos, chunk.as_ref()));
     }
+    */
 }
 
-fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) -> Result<()> {
+fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) -> Result<()> {
     // Load Lua state and get all gen-related functions from it
     let lua = Lua::new();
-    let mut textures = None;
+    let mut world_info = None;
     let mut gen_chunk = None;
     let mut lua_gc = None;
     lua.context(|lua| -> Result<()> {
@@ -289,16 +537,24 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
             .call(LuaMultiValue::from_vec(args))?;
         let luagen = lua.globals().get::<_, LuaTable>("gen")?;
 
-        let tex = BlockTextures::default();
+        let mut info: Box<WorldInfo> = default();
         let luatex = luagen
             .get::<_, LuaFunction>("textures")?
             .call::<_, LuaTable>(())?;
         for res in luatex.pairs::<u8, LuaValue>() {
             let (k, v) = res?;
             let v = rlua_serde::from_value::<BlockTexture>(v)?;
-            tex.set(BlockData { data: k }, v);
+            info.blocks[k as usize] = v;
         }
-        textures = Some(tex);
+        let lualight = luagen
+            .get::<_, LuaFunction>("lightmodes")?
+            .call::<_, LuaTable>(())?;
+        for res in lualight.pairs::<u8, LuaValue>() {
+            let (k, v) = res?;
+            let v = rlua_serde::from_value::<LightingConf>(v)?;
+            info.light_modes[k as usize] = v;
+        }
+        world_info = Some(info);
 
         let gchunk = luagen.get::<_, LuaFunction>("chunk")?;
         let gchunk = lua.create_registry_value(gchunk)?;
@@ -310,15 +566,16 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
 
         Ok(())
     })?;
-    let textures = textures.unwrap();
+    let world_info = world_info.unwrap();
     let gen_chunk = gen_chunk.unwrap();
     let lua_gc = lua_gc.unwrap();
 
-    // Pass block textures back to the main game
-    let style = StyleTable::new(&textures);
-    tex_send
-        .send(textures)
-        .map_err(|_| Error::msg("failed to send block textures"))?;
+    // Pass world info back to the main game
+    let style = StyleTable::new(&world_info);
+    let mut light_spreader = LightSpreader::new(&world_info);
+    info_send
+        .send(world_info)
+        .map_err(|_| Error::msg("failed to send world info"))?;
 
     let mut last_stall_warning = Instant::now();
 
@@ -373,7 +630,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
         let mut gencount = 0;
         let mut queue_idx = 0;
         while queue_idx < gen_queue.len() {
-            let gen_start = Instant::now();
+            time!(start chunkgen);
 
             // Get the next chunk from the queue
             let pos = gen_queue[queue_idx];
@@ -391,7 +648,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
                 let chunk = unsafe { mem::transmute::<_, Option<ChunkBox>>(chunk.0) };
                 Ok(chunk.ok_or(anyhow!("gen_chunk produced no chunk!"))?)
             });
-            let mut chunk = match chunk {
+            let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
                     println!("failed to generate chunk at {:?}: {}", pos, err);
@@ -399,18 +656,11 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
                 }
             };
 
-            // If the chunk is homogeneous, mark the appropiate solidity (solid/nonsolid) tags.
-            if let Some(block) = chunk.homogeneous_block() {
-                if block.is_solid(&style) {
-                    chunk.mark_solid();
-                } else if block.is_clear(&style) {
-                    chunk.mark_clear();
-                }
-            }
-
             // If the chunk is not shiny or solid, generate more chunks above it until the sky is
             // reached, so shadows can be computed
-            if !chunk.is_shiny() && !chunk.is_solid() {
+            if !(chunk.is_homogeneous()
+                && (chunk.homogeneous_shinethrough() || chunk.homogeneous_block().is_solid(&style)))
+            {
                 let mut above = pos;
                 above.coords.z += 1;
                 if gen.chunks.read().chunk_at(above).is_none() && !unsent.contains_key(&above) {
@@ -424,14 +674,7 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
             gencount += 1;
 
             // Keep chunkgen timing statistics
-            {
-                //Dont care about data races here, after all it's just stats
-                //Therefore, dont synchronize
-                let time = gen_start.elapsed().as_secs_f32();
-                let old_time = gen.shared.avg_gen_time.load();
-                let new_time = old_time + (time - old_time) * AVERAGE_WEIGHT;
-                gen.shared.avg_gen_time.store(new_time);
-            }
+            time!(store chunkgen gen.shared.avg_gen_time);
 
             // Close quickly if requested
             if gen.shared.close.load() {
@@ -440,7 +683,13 @@ fn gen_thread(gen: GenState, tex_send: Sender<BlockTextures>, cfg: GenConfig) ->
         }
 
         // Process sky lighting
-        process_lighting(&chunks, &mut unsent, &style);
+        process_lighting(
+            &gen.shared,
+            &chunks,
+            &mut unsent,
+            &mut light_spreader,
+            &style,
+        );
 
         // Try harder to send back chunks
         if !unsent.is_empty() {

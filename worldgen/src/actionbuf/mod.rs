@@ -127,6 +127,11 @@ macro_rules! actionbuf_lua {
                 this.actions.clear();
             }
 
+            fn transfer((x, y, z, chunk): (i32, i32, i32, LuaAnyUserData)) {
+                let mut chunk = chunk.borrow_mut::<LuaChunkBox>()?;
+                this.transfer([x, y, z].into(), &mut chunk.chunk);
+            }
+
             $(
                 mut fn $name(args: <actions::$name as Action>::Args) {
                     actions::$name::make(args, &mut this.actions)?;

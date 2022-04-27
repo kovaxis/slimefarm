@@ -3,7 +3,7 @@
 use crate::prelude::*;
 
 mod prelude {
-    pub(crate) use crate::actionbuf::ActionBuf;
+    pub(crate) use crate::{actionbuf::ActionBuf, LuaChunkBox};
     pub(crate) use common::{
         lua_assert, lua_bail, lua_func, lua_lib, lua_type,
         noise2d::{Noise2d, NoiseScaler2d},
@@ -21,18 +21,16 @@ struct LuaChunkBox {
 }
 lua_type! {LuaChunkBox, lua, this,
     mut fn into_raw() {
-        let chunk = mem::replace(&mut this.chunk, ChunkBox::new_homogeneous(BlockData { data: 0 }));
+        let chunk = mem::replace(&mut this.chunk, ChunkBox::placeholder());
         unsafe {
             mem::transmute::<ChunkBox, LuaLightUserData>(chunk)
         }
     }
 
-    mut fn fill(block: u8) {
-        this.chunk.make_homogeneous(BlockData { data: block });
-    }
-
-    mut fn mark_shiny() {
-        this.chunk.mark_shiny();
+    mut fn fill((shinethrough, block, light, lightdecay): (bool, u8, f64, f64)) {
+        let light = (light * 255.) as u8;
+        let lightdecay = (lightdecay * 255.) as u8;
+        this.chunk.make_homogeneous(shinethrough, BlockData { data: block }, light, lightdecay);
     }
 }
 impl From<ChunkBox> for LuaChunkBox {
@@ -181,7 +179,7 @@ impl HeightMap {
 
     fn height_at(&mut self, pos: Int2) -> i16 {
         let (_, _, cnk) = self.gen_col(pos >> CHUNK_BITS);
-        cnk[pos.lowbits(CHUNK_BITS).to_index([CHUNK_BITS; 2].into())]
+        cnk[pos.lowbits(CHUNK_BITS).to_index(CHUNK_BITS)]
     }
 
     fn fill_chunk(&mut self, pos: Int3, chunk: &mut ChunkBox) {
@@ -190,11 +188,11 @@ impl HeightMap {
         let k = &self.k;
         if pos.z * CHUNK_SIZE >= *col_max as i32 {
             //Chunk is high enough to be all-air
-            chunk.make_homogeneous(k.air);
+            chunk.make_homogeneous(false, k.air, 0, chunk.light_mode());
             return;
         } else if (pos[2] + 1) * CHUNK_SIZE <= *col_min as i32 {
             //Chunk is low enough to be all-ground
-            chunk.make_homogeneous(k.ground);
+            chunk.make_homogeneous(false, k.ground, 0, chunk.light_mode());
             return;
         }
         let blocks = chunk.blocks_mut();
@@ -240,8 +238,12 @@ lua_type! {HeightMap, lua, this,
 fn open_lib(lua: LuaContext) -> Result<LuaTable> {
     let state = ();
     let lib = lua_lib! {lua, state,
-        fn chunk(block: u8) {
-            LuaChunkBox::from(ChunkBox::new_homogeneous(BlockData { data: block }))
+        fn chunk((block, lightmode, shinelight): (u8, u8, Option<f64>)) {
+            let (shinethrough, light) = match shinelight {
+                None => (false, 0),
+                Some(light) => (true, (light * 255.) as u8),
+            };
+            LuaChunkBox::from(ChunkBox::new_homogeneous(shinethrough, BlockData { data: block }, light, lightmode))
         }
 
         fn chunk_uninit(()) {

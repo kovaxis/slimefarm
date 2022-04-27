@@ -12,13 +12,16 @@ pub const CHUNK_SIZE: i32 = 1 << CHUNK_BITS;
 /// Masks a block coordinate into a chunk-relative block coordinate.
 pub const CHUNK_MASK: i32 = CHUNK_SIZE - 1;
 
+/// A primitive unsigned integer with the bit width of the chunk size.
+pub type ChunkSizedInt = u32;
+
 /// Maximum amount of portals that can touch a chunk.
 pub const MAX_CHUNK_PORTALS: usize = 256;
 
 /// A 2D slice (or loaf) of an arbitrary type.
 pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>;
 
-/// Saves chunk tags on the last 4 bits of the chunk pointer.
+/// Saves chunk tags on the last 1 bits of the chunk pointer.
 /// This is why `ChunkData` has an alignment of 16.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
@@ -30,56 +33,46 @@ unsafe impl Send for ChunkRef<'_> {}
 unsafe impl Sync for ChunkRef<'_> {}
 impl fmt::Debug for ChunkRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ChunkRef")?;
-        let mut tags = 0;
-        macro_rules! tag {
-            ($name:literal) => {{
-                if tags == 0 {
-                    write!(f, "<")?;
-                } else {
-                    write!(f, ", ")?;
-                }
-                write!(f, $name)?;
-                tags += 1;
-            }};
-        }
-        if self.is_solid() {
-            tag!("solid");
-        }
-        if self.is_clear() {
-            tag!("clear");
-        }
-        if self.is_shiny() {
-            tag!("shiny");
-        }
-        if tags != 0 {
-            write!(f, ">")?;
-        }
-        if let Some(block) = self.homogeneous_block() {
-            write!(f, "::Homogeneous({:?})", block)
+        if self.is_homogeneous() {
+            write!(f, "ChunkRef::Homogeneous({:?})", self.homogeneous_block())
         } else {
-            write!(f, "({}KB)", mem::size_of::<ChunkData>() / 1024)
+            write!(f, "ChunkRef({}KB)", mem::size_of::<ChunkData>() / 1024)
         }
     }
 }
 impl<'a> ChunkRef<'a> {
-    const MASK: usize = 0b1111;
-    const INFO_MASK: usize = 0b1110;
-    const FLAG_HOMOGENEOUS: usize = 0b0001;
-    const FLAG_CLEAR: usize = 0b0010;
-    const FLAG_SOLID: usize = 0b0100;
-    const FLAG_SHINY: usize = 0b1000;
+    const MASK: usize = 0b1;
+    const FLAG_HOMOGENEOUS: usize = 0b1;
+
+    const PACKED_SHINETHROUGH: usize = 1;
+    const PACKED_BLOCK: usize = 8;
+    const PACKED_SKYLIGHT: usize = 16;
+    const PACKED_LIGHTMODE: usize = 24;
 
     #[inline]
-    pub fn new_homogeneous(block: BlockData) -> ChunkRef<'static> {
+    pub fn new_homogeneous(
+        shinethrough: bool,
+        block: BlockData,
+        skylight: u8,
+        lightmode: u8,
+    ) -> ChunkRef<'static> {
         ChunkRef {
             ptr: unsafe {
                 NonNull::new_unchecked(
-                    (((block.data as usize) << 8) | ChunkRef::FLAG_HOMOGENEOUS) as *mut ChunkData,
+                    (((lightmode as usize) << Self::PACKED_LIGHTMODE)
+                        | ((skylight as usize) << Self::PACKED_SKYLIGHT)
+                        | ((block.data as usize) << Self::PACKED_BLOCK)
+                        | ((shinethrough as usize) << Self::PACKED_SHINETHROUGH)
+                        | ChunkRef::FLAG_HOMOGENEOUS) as *mut ChunkData,
                 )
             },
             marker: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn placeholder() -> ChunkRef<'static> {
+        ChunkRef::new_homogeneous(false, BlockData { data: 0 }, 0, 0)
     }
 
     #[inline]
@@ -92,37 +85,34 @@ impl<'a> ChunkRef<'a> {
         self.raw() & Self::FLAG_HOMOGENEOUS != 0
     }
 
+    /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
+    /// anyway.
     #[inline]
-    pub fn is_clear(self) -> bool {
-        self.raw() & Self::FLAG_CLEAR != 0
-    }
-
-    #[inline]
-    pub fn is_solid(self) -> bool {
-        self.raw() & Self::FLAG_SOLID != 0
-    }
-
-    #[inline]
-    pub fn is_shiny(self) -> bool {
-        self.raw() & Self::FLAG_SHINY != 0
+    pub fn homogeneous_shinethrough(self) -> bool {
+        (self.raw() >> Self::PACKED_SHINETHROUGH) & 1 != 0
     }
 
     /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
     /// anyway.
     #[inline]
-    pub fn homogeneous_block_unchecked(self) -> BlockData {
+    pub fn homogeneous_block(self) -> BlockData {
         BlockData {
-            data: (self.raw() >> 8) as u8,
+            data: (self.raw() >> Self::PACKED_BLOCK) as u8,
         }
     }
 
+    /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
+    /// anyway.
     #[inline]
-    pub fn homogeneous_block(self) -> Option<BlockData> {
-        if self.is_homogeneous() {
-            Some(self.homogeneous_block_unchecked())
-        } else {
-            None
-        }
+    pub fn homogeneous_skylight(self) -> u8 {
+        (self.raw() >> Self::PACKED_SKYLIGHT) as u8
+    }
+
+    /// Will return garbage if the chunk is not homogeneous, but it will be defined behaviour
+    /// anyway.
+    #[inline]
+    pub fn homogeneous_lightmode(self) -> u8 {
+        (self.raw() >> Self::PACKED_LIGHTMODE) as u8
     }
 
     #[inline]
@@ -144,7 +134,7 @@ impl<'a> ChunkRef<'a> {
         if let Some(blocks) = self.blocks() {
             blocks.sub_get(pos)
         } else {
-            self.homogeneous_block_unchecked()
+            self.homogeneous_block()
         }
     }
 
@@ -158,28 +148,42 @@ impl<'a> ChunkRef<'a> {
     }
 
     #[inline]
-    pub fn sub_skymap_idx(self, idx: usize) -> u8 {
+    pub fn light_mode(self) -> u8 {
         if let Some(data) = self.blocks() {
-            data.skymap[idx]
-        } else if self.is_shiny() {
-            0
+            data.light_mode
         } else {
-            CHUNK_SIZE as u8
+            self.homogeneous_lightmode()
         }
     }
 
     #[inline]
-    pub fn sub_skymap(self, pos: Int2) -> u8 {
-        self.sub_skymap_idx(pos.to_index([CHUNK_BITS; 2].into()))
+    pub fn sub_skylight_idx(self, idx: usize) -> u8 {
+        if let Some(data) = self.blocks() {
+            data.skylight[idx]
+        } else {
+            self.homogeneous_skylight()
+        }
     }
 
     #[inline]
-    pub fn sub_has_skylight(self, pos: Int3) -> bool {
-        if let Some(data) = self.blocks() {
-            pos.z >= data.skymap[pos.xy().to_index([CHUNK_BITS; 2].into())] as i32
-        } else {
-            self.is_shiny()
+    pub fn sub_skylight(self, pos: Int3) -> u8 {
+        self.sub_skylight_idx(pos.to_index(CHUNK_BITS))
+    }
+
+    #[inline]
+    pub fn is_clear(self, style: &StyleTable) -> bool {
+        if !self.is_homogeneous() {
+            return false;
         }
+        style.is_clear(self.homogeneous_block())
+    }
+
+    #[inline]
+    pub fn is_solid(self, style: &StyleTable) -> bool {
+        if !self.is_homogeneous() {
+            return false;
+        }
+        style.is_solid(self.homogeneous_block())
     }
 
     pub fn into_raw(self) -> *const ChunkData {
@@ -252,35 +256,10 @@ impl ops::Deref for ChunkBox {
 }
 impl fmt::Debug for ChunkBox {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ChunkBox")?;
-        let mut tags = 0;
-        macro_rules! tag {
-            ($name:literal) => {{
-                if tags == 0 {
-                    write!(f, "<")?;
-                } else {
-                    write!(f, ", ")?;
-                }
-                write!(f, $name)?;
-                tags += 1;
-            }};
-        }
-        if self.is_solid() {
-            tag!("solid");
-        }
-        if self.is_clear() {
-            tag!("clear");
-        }
-        if self.is_shiny() {
-            tag!("shiny");
-        }
-        if tags != 0 {
-            write!(f, ">")?;
-        }
-        if let Some(block) = self.homogeneous_block() {
-            write!(f, "::Homogeneous({:?})", block)
+        if self.is_homogeneous() {
+            write!(f, "ChunkBox::Homogeneous({:?})", self.homogeneous_block())
         } else {
-            write!(f, "({}KB)", mem::size_of::<ChunkData>() / 1024)
+            write!(f, "ChunkBox({}KB)", mem::size_of::<ChunkData>() / 1024)
         }
     }
 }
@@ -291,14 +270,7 @@ impl ChunkBox {
         }
     }
 
-    /// `raw` must be nonzero! (and valid, of course)
-    unsafe fn new_raw(raw: usize) -> Self {
-        Self {
-            ptr: NonNull::new_unchecked(raw as *mut ChunkData),
-        }
-    }
-
-    /// Create a new chunk box with memory allocated, but uninitialized.
+    /// Create a new chunk box with memory allocated, but with the blocks uninitialized.
     /// Inherently unsafe, but may work in most cases and speeds things up.
     #[inline]
     pub unsafe fn new_uninit() -> Self {
@@ -309,10 +281,20 @@ impl ChunkBox {
 
     /// Create a new chunk filled with the given block, without allocating any memory.
     #[inline]
-    pub fn new_homogeneous(block: BlockData) -> Self {
+    pub fn new_homogeneous(
+        shinethrough: bool,
+        block: BlockData,
+        skylight: u8,
+        lightmode: u8,
+    ) -> Self {
         Self {
-            ptr: ChunkRef::new_homogeneous(block).ptr,
+            ptr: ChunkRef::new_homogeneous(shinethrough, block, skylight, lightmode).ptr,
         }
+    }
+
+    #[inline]
+    pub fn placeholder() -> Self {
+        Self::new_homogeneous(false, BlockData { data: 0 }, 0, 0)
     }
 
     /// Create a new chunk box with unspecified but allocated contents.
@@ -332,18 +314,6 @@ impl ChunkBox {
         }
     }
 
-    /// Copy the informational tags from another chunk.
-    ///
-    /// This does not copy over the homogeneous tag since this could lead to memory unsafety.
-    /// However, care must still be taken to avoid logic errors.
-    #[inline]
-    pub fn copy_tags(&mut self, from: ChunkRef) {
-        unsafe {
-            let new_ptr = (self.raw() & !ChunkRef::INFO_MASK) | (from.raw() & ChunkRef::INFO_MASK);
-            self.ptr = NonNull::new_unchecked((new_ptr) as *mut _);
-        }
-    }
-
     pub unsafe fn blocks_mut_unchecked(&mut self) -> &mut ChunkData {
         &mut *((self.ptr.as_ptr() as usize & !ChunkRef::MASK) as *mut ChunkData)
     }
@@ -353,10 +323,21 @@ impl ChunkBox {
     /// block, according to the current state.
     #[inline]
     pub fn blocks_mut(&mut self) -> &mut ChunkData {
-        if let Some(block) = self.homogeneous_block() {
+        if self.is_homogeneous() {
+            let shinethrough = self.homogeneous_shinethrough();
+            let block = self.homogeneous_block();
+            let skylight = self.homogeneous_skylight();
+            let lightmode = self.homogeneous_lightmode();
             unsafe {
                 *self = ChunkBox::new_uninit();
                 ptr::write_bytes(&mut self.blocks_mut_unchecked().blocks, block.data, 1);
+                ptr::write_bytes(&mut self.blocks_mut_unchecked().skylight, skylight, 1);
+                ptr::write_bytes(
+                    &mut self.blocks_mut_unchecked().shinethrough,
+                    if shinethrough { 0xff } else { 0x00 },
+                    1,
+                );
+                self.blocks_mut_unchecked().light_mode = lightmode;
             }
         }
         unsafe { self.blocks_mut_unchecked() }
@@ -389,48 +370,47 @@ impl ChunkBox {
     }
 
     /// Remove any memory associated with this box, and make all blocks homogeneous.
-    pub fn make_homogeneous(&mut self, block: BlockData) {
-        self.take_blocks(Self::new_homogeneous(block));
-    }
-
-    /// Mark the chunk as solid.
-    /// It is a logic error if the chunk is not actually solid!
-    #[inline]
-    pub fn mark_solid(&mut self) {
-        unsafe {
-            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_SOLID));
-        }
-    }
-
-    /// Mark the chunk as clear.
-    /// It is a logic error if the chunk is not actually clear!
-    #[inline]
-    pub fn mark_clear(&mut self) {
-        unsafe {
-            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_CLEAR));
-        }
-    }
-
-    /// Mark the chunk as shiny.
-    /// That is, it emits skylight.
-    #[inline]
-    pub fn mark_shiny(&mut self) {
-        unsafe {
-            ptr::write(self, Self::new_raw(self.raw() | ChunkRef::FLAG_SHINY));
-        }
+    pub fn make_homogeneous(
+        &mut self,
+        shinethrough: bool,
+        block: BlockData,
+        skylight: u8,
+        lightmode: u8,
+    ) {
+        self.take_blocks(Self::new_homogeneous(
+            shinethrough,
+            block,
+            skylight,
+            lightmode,
+        ));
     }
 
     /// Check if all of the blocks are of the same type, and drop the data altogether and mark with
     /// a tag in that case.
     #[inline]
     pub fn try_drop_blocks(&mut self) {
-        if let Some(chunk_data) = self.blocks() {
-            let blocks = &chunk_data.blocks;
-            let block0 = blocks[0];
-            if blocks.iter().skip(1).all(|&b| b == block0) {
-                //All the same
-                self.make_homogeneous(block0);
+        if let Some(data) = self.blocks() {
+            if data.portal_count != 0 {
+                // Portals make a chunk nonhomogeneous
+                return;
             }
+            let block0 = data.blocks[0];
+            if data.blocks.iter().skip(1).any(|&b| b != block0) {
+                // Blocks are not homogeneous
+                return;
+            }
+            let shinethrough = match data.shinethrough[0] {
+                0 => 0,
+                ChunkSizedInt::MAX => ChunkSizedInt::MAX,
+                // Shinethrough is not homogeneous
+                _ => return,
+            };
+            let light0 = data.skylight[0];
+            if data.skylight.iter().skip(1).any(|&s| s != light0) {
+                // Skylight is not homogeneous
+                return;
+            }
+            self.make_homogeneous(shinethrough != 0, block0, light0, data.light_mode);
         }
     }
 }
@@ -624,12 +604,16 @@ impl PortalData {
 pub struct ChunkData {
     /// All of the blocks in this chunk.
     pub blocks: [BlockData; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
+    /// Skylight data for each block on this chunk.
+    pub skylight: [u8; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize],
+    /// A byte referencing a certain lighting mode.
+    pub light_mode: u8,
+    /// Which columns of this chunk does sunlight go through.
+    pub shinethrough: [ChunkSizedInt; CHUNK_SIZE as usize],
     /// All of the portals in this chunk.
     pub portals: [PortalData; MAX_CHUNK_PORTALS],
     /// The amount of portals in the portal buffer.
     pub portal_count: u32,
-    /// For each column, the Z coordinate of the lowest clear block that receives sunlight.
-    pub skymap: [u8; (CHUNK_SIZE * CHUNK_SIZE) as usize],
     /// A hidden reference count field for use in chunk reference counting.
     ref_count: AtomicCell<u32>,
 }
@@ -637,9 +621,11 @@ impl Clone for ChunkData {
     fn clone(&self) -> Self {
         Self {
             blocks: self.blocks,
+            skylight: self.skylight,
+            light_mode: self.light_mode,
+            shinethrough: self.shinethrough,
             portals: self.portals,
             portal_count: self.portal_count,
-            skymap: self.skymap,
             ref_count: AtomicCell::new(0),
         }
     }
@@ -648,7 +634,7 @@ impl ChunkData {
     #[track_caller]
     #[inline]
     pub fn sub_get(&self, sub_pos: Int3) -> BlockData {
-        match self.blocks.get(sub_pos.to_index([CHUNK_BITS; 3].into())) {
+        match self.blocks.get(sub_pos.to_index(CHUNK_BITS)) {
             Some(&b) => b,
             None => panic!(
                 "block index [{}, {}, {}] outside chunk boundaries",
@@ -660,10 +646,7 @@ impl ChunkData {
     #[track_caller]
     #[inline]
     pub fn sub_set(&mut self, sub_pos: Int3, block: BlockData) {
-        match self
-            .blocks
-            .get_mut(sub_pos.to_index([CHUNK_BITS; 3].into()))
-        {
+        match self.blocks.get_mut(sub_pos.to_index(CHUNK_BITS)) {
             Some(b) => *b = block,
             None => panic!(
                 "block index [{}, {}, {}] outside chunk boundaries",
@@ -838,6 +821,24 @@ pub type GridKeeper3<T> = GridKeeperN<Int3, T>;
 pub type GridKeeper4<T> = GridKeeperN<Int4, T>;
 
 #[derive(Default, Clone, Deserialize)]
+pub struct BlendConf {
+    pub base: u32,
+    pub mul: u32,
+    pub shr: u32,
+}
+
+#[derive(Default, Clone, Deserialize)]
+pub struct LightingConf {
+    /// When converting multiple light values to a single vertex light value, this constant
+    /// specifies the base lighting, per-block multiplication coefficient and final right-shift
+    /// amount.
+    pub light: BlendConf,
+    /// When generating the per-block decay dither, the base decay is added with an 8-bit random
+    /// value which is multiplied by `mul` and then the final result is shifted right by `shr`.
+    pub decay: BlendConf,
+}
+
+#[derive(Default, Clone, Deserialize)]
 pub struct BlockTexture {
     /// What are the physical and visual properties of the block.
     #[serde(default)]
@@ -900,40 +901,16 @@ impl BlockStyle {
     }
 }
 
-pub struct BlockTextures {
-    pub blocks: Box<[Cell<BlockTexture>; 256]>,
+pub struct WorldInfo {
+    pub blocks: [BlockTexture; 256],
+    pub light_modes: [LightingConf; 256],
 }
-impl BlockTextures {
-    pub fn set(&self, id: BlockData, tex: BlockTexture) {
-        self.blocks[id.data as usize].set(tex);
-    }
-}
-impl Default for BlockTextures {
+impl Default for WorldInfo {
     fn default() -> Self {
-        let mut arr: Uninit<[Cell<BlockTexture>; 256]> = Uninit::uninit();
-        for i in 0..256 {
-            unsafe {
-                (arr.as_mut_ptr() as *mut Cell<BlockTexture>)
-                    .offset(i)
-                    .write(default());
-            }
-        }
-        let arr = unsafe { arr.assume_init() };
         Self {
-            blocks: Box::new(arr),
+            blocks: arr![default(); 256],
+            light_modes: arr![default(); 256],
         }
-    }
-}
-impl Clone for BlockTextures {
-    fn clone(&self) -> Self {
-        let new = Self::default();
-        let mut tmp: BlockTexture = default();
-        for (old, new) in self.blocks.iter().zip(new.blocks.iter()) {
-            tmp = old.replace(tmp);
-            new.set(tmp.clone());
-            tmp = old.replace(tmp);
-        }
-        new
     }
 }
 
@@ -946,14 +923,12 @@ impl StyleTable {
     const BLOCKS_PER_WORD: usize = Self::BITS / Self::BITS_PER_BLOCK;
     const TOTAL_WORDS: usize = 256 / Self::BLOCKS_PER_WORD;
 
-    pub fn new(tex: &BlockTextures) -> Self {
+    pub fn new(info: &WorldInfo) -> Self {
         let mut words = [0; Self::TOTAL_WORDS];
         for i in 0..256 {
-            let texcell = &tex.blocks[i as usize];
-            let tx = texcell.take();
+            let tx = &info.blocks[i];
             words[i / Self::BLOCKS_PER_WORD] |=
                 (tx.style as u8 as usize) << (i % Self::BLOCKS_PER_WORD * Self::BITS_PER_BLOCK);
-            texcell.set(tx);
         }
         Self { words }
     }

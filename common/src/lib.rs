@@ -4,15 +4,17 @@ extern crate alloc;
 
 use crate::prelude::*;
 
+#[macro_use]
 pub mod prelude {
     pub use crate::{
         arena::{Box as ArenaBox, BoxUninit as ArenaBoxUninit},
+        arr, bit_array,
         ivec::{Int2, Int3},
         slotmap::{SlotId, SlotMap},
         terrain::{
-            BlockData, BlockPos, BlockStyle, BlockTexture, BlockTextures, ChunkArc, ChunkBox,
-            ChunkData, ChunkPos, ChunkRef, Int4, LoafBox, PortalData, StyleTable, WorldPos,
-            CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
+            BlockData, BlockPos, BlockStyle, BlockTexture, ChunkArc, ChunkBox, ChunkData, ChunkPos,
+            ChunkRef, ChunkSizedInt, Int4, LightingConf, LoafBox, PortalData, StyleTable,
+            WorldInfo, WorldPos, CHUNK_BITS, CHUNK_MASK, CHUNK_SIZE,
         },
     };
     pub use anyhow::{anyhow, bail, ensure, Context, Error, Result};
@@ -132,6 +134,16 @@ pub mod prelude {
         T::default()
     }
 
+    #[macro_export]
+    macro_rules! arr {
+        [$init:expr; $n:expr] => {
+            $crate::init_array(|_| $init)
+        };
+        [$i:ident => $init:expr; $n:expr] => {
+            $crate::init_array(|$i| $init)
+        };
+    }
+
     /// Stupid workaround for serde.
     #[inline]
     pub fn default_true() -> bool {
@@ -139,8 +151,22 @@ pub mod prelude {
     }
 }
 
+pub fn init_array<T, F: FnMut(usize) -> T, const N: usize>(mut init: F) -> [T; N] {
+    assert!(N.checked_mul(mem::size_of::<T>()).unwrap() <= isize::MAX as usize);
+    let mut arr: Uninit<[T; N]> = Uninit::uninit();
+    for i in 0..N {
+        unsafe {
+            (arr.as_mut_ptr() as *mut T)
+                .offset(i as isize)
+                .write(init(i));
+        }
+    }
+    unsafe { arr.assume_init() }
+}
+
 #[macro_use]
 pub mod arena;
+pub mod bitset;
 pub mod ivec;
 pub mod lua;
 pub mod noise2d;

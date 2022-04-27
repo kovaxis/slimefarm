@@ -9,13 +9,16 @@ smooth in vec2 v_luv;
 out vec4 out_color;
 
 void main() {
+    float gamma = 2.2;
+
     vec4 rawc = texture2D(color, v_cuv);
     vec4 rawl = texture2D(light, v_luv);
 
     vec3 col = rawc.rgb;
-    float ao = rawl.x;
+    float ao = pow(rawl.x, gamma);
+    float sky = pow(rawl.y, gamma);
 
-    out_color = vec4(col * ao, 1);
+    out_color = vec4(col * ao * sky, 1);
 }
 
 

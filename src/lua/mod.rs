@@ -2,6 +2,7 @@ use crate::{
     gen::GenConfig,
     lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, StaticUniform, UniformStorage},
     prelude::*,
+    terrain::TerrainCfg,
 };
 use common::{lua::LuaValueStatic, lua_assert, lua_bail, lua_func, lua_lib, lua_type};
 use notify::{DebouncedEvent as WatcherEvent, Watcher as _};
@@ -195,9 +196,13 @@ pub struct TerrainRef {
     rc: Rc<RefCell<Terrain>>,
 }
 impl TerrainRef {
-    pub(crate) fn new(state: &Rc<State>, gen_cfg: GenConfig) -> Result<TerrainRef> {
+    pub(crate) fn new(
+        state: &Rc<State>,
+        cfg: TerrainCfg,
+        gen_cfg: GenConfig,
+    ) -> Result<TerrainRef> {
         Ok(TerrainRef {
-            rc: Rc::new(RefCell::new(Terrain::new(state, gen_cfg)?)),
+            rc: Rc::new(RefCell::new(Terrain::new(state, cfg, gen_cfg)?)),
         })
     }
 }
@@ -212,6 +217,43 @@ lua_type! {TerrainRef, lua, this,
 
     fn visible_radius() {
         this.rc.borrow().last_min_viewdist
+    }
+
+    fn reset_draw_stats() {
+        this.rc.borrow().reset_draw_stats();
+    }
+
+    fn get_stat(name: LuaString) {
+        let name = name.as_bytes();
+        let this = this.rc.borrow();
+        let draw = this.draw_stats.borrow();
+        let val: LuaValue = match name {
+            b"drawnchunks" => draw.drawnchunks.to_lua(lua),
+            b"vertbytes" => draw.vertbytes.to_lua(lua),
+            b"idxbytes" => draw.idxbytes.to_lua(lua),
+            b"colorbytes" => draw.colorbytes.to_lua(lua),
+            b"gentime" => this.generator.avg_gen_time.load().to_lua(lua),
+            b"lighttime" => this.generator.avg_light_time.load().to_lua(lua),
+            b"meshtime" => this.mesher.avg_mesh_time.load().to_lua(lua),
+            b"uploadtime" => this.mesher.avg_upload_time.load().to_lua(lua),
+            _ => lua_bail!("unknown terrain stat '{}'", String::from_utf8_lossy(name)),
+        }?;
+        val
+    }
+
+    fn set_dbg_chunkframe((shader, buf): (Option<ShaderRef>, Option<BufferRef>)) {
+        let chunkframe = match (shader, buf) {
+            (None, None) => None,
+            (Some(shader), Some(BufferRef::Buf3d(buf))) => Some((shader, BufferRef::Buf3d(buf))),
+            _ => lua_bail!("invalid parameters to dbg_chunkframe")
+        };
+        this.rc.borrow_mut().dbg_chunkframe = chunkframe;
+    }
+
+    fn set_interpolation((color, light): (bool, bool)) {
+        let mut t = this.rc.borrow_mut();
+        t.color_linear = color;
+        t.light_linear = light;
     }
 
     fn atlas_at(pos: LuaWorldPos) {
@@ -309,19 +351,8 @@ lua_type! {TerrainRef, lua, this,
             out.raw_set(i, LuaValue::Nil)?;
         }
     }
-
-    fn chunk_gen_time() {
-        this.rc.borrow().generator.avg_gen_time.load()
-    }
-    fn chunk_mesh_time() {
-        this.rc.borrow().mesher.avg_mesh_time.load()
-    }
-    fn chunk_mesh_upload_time() {
-        this.rc.borrow().mesher.avg_upload_time.load()
-    }
 }
 
-// TODO: Include portal/screen buffer to offload portal drawing to lua
 struct CameraFrame {
     /// Where should the graphics-world-coordinates origin be, in absolute world coordinates.
     origin: WorldPos,
@@ -929,19 +960,20 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                     MatrixStack::from(Mat4::identity())
                 }
 
-                fn terrain(args: LuaMultiValue) {
-                    let mut args = args.into_vec();
-                    lua_assert!(args.len() >= 1, "expected at least 1 argument");
-                    let lua_main = String::from_lua(args.remove(0), lua)?;
+                fn terrain(cfg: LuaTable) {
+                    let gen_cfg = cfg.get::<_, LuaTable>("gen")?;
+                    let lua_main = gen_cfg.get::<_, String>("src")?;
+                    let args = gen_cfg.get::<_, Option<Vec<LuaValue>>>("args")?.unwrap_or(vec![]);
+                    let cfg = rlua_serde::from_value(LuaValue::Table(cfg))?;
                     let args = args
                         .into_iter()
                         .map(|arg| LuaValueStatic::from_lua(arg, lua))
                         .collect::<LuaResult<Vec<_>>>()?;
-                    let cfg = GenConfig {
+                    let gencfg = GenConfig {
                         lua_main,
                         args,
                     };
-                    TerrainRef::new(state, cfg).to_lua_err()?
+                    TerrainRef::new(state, cfg, gencfg).to_lua_err()?
                 }
 
                 fn world_pos((raw_x, raw_y, raw_z, raw_dim): (Option<f64>, Option<f64>, Option<f64>, Option<u32>)) {

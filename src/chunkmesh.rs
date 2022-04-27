@@ -10,6 +10,26 @@ pub(crate) struct ChunkMeshPkg {
     pub portals: Vec<RawPortalMesh>,
 }
 
+#[derive(Clone, Deserialize)]
+pub struct MesherCfg {
+    /// Atlas width and height.
+    /// The atlas width is fixed.
+    /// However, the atlas height is only a maximum value, since smaller chunk atlases will be
+    /// truncated to the next power-of-two size.
+    /// Width and height should be a power of two.
+    atlas_size: [i32; 2],
+    /// Ambient occlusion exposure table.
+    /// [0] = front clear, back clear
+    /// [1] = back solid, front clear
+    /// [2] = back clear, front solid
+    /// [3] = back solid, front solid
+    /// [4] = base exposure value
+    exposure_table: [u8; 5],
+    /// The offset that is applied to light uv coordinates.
+    /// 0.5 means "the center of each pixel" and is usually the right value.
+    light_uv_offset: f32,
+}
+
 pub struct MesherHandle {
     pub(crate) recv_bufs: Receiver<ChunkMeshPkg>,
     //pub(crate) recv_atlas: Receiver<(usize, RawTexturePackage)>,
@@ -21,7 +41,8 @@ impl MesherHandle {
     pub(crate) fn new(
         state: &Rc<State>,
         chunks: Arc<RwLock<ChunkStorage>>,
-        textures: BlockTextures,
+        cfg: MesherCfg,
+        info: WorldInfo,
     ) -> Self {
         let shared = Arc::new(SharedState {
             request: default(),
@@ -48,7 +69,8 @@ impl MesherHandle {
                     send_bufs,
                     //send_atlas: send_atlas,
                     //recv_atlas: recv_recycleatlas,
-                    mesher: Box::new(Mesher2::new(textures)),
+                    mesher: Box::new(Mesher2::new(&cfg, info)),
+                    cfg,
                 });
             })
         };
@@ -102,6 +124,7 @@ struct MesherState {
     //pending_atlas: Vec<Vec<AtlasChunk>>,
     mesher: Box<Mesher2>,
     send_bufs: Sender<ChunkMeshPkg>,
+    cfg: MesherCfg,
     //send_atlas: Sender<(usize, RawTexturePackage)>,
     //recv_atlas: Receiver<(usize, RawTexturePackage)>,
 }
@@ -304,9 +327,6 @@ fn run_mesher(mut state: MesherState) {
 
 const WORD_BITS: usize = mem::size_of::<usize>() * 8;
 
-const ATLAS_SIZE: i32 = 1024;
-const ATLAS_BIN: i32 = 64;
-
 const MARGIN: i32 = 4;
 const BBUF_SIZE: i32 = 2 * MARGIN + CHUNK_SIZE;
 const BBUF_LEN: usize = (BBUF_SIZE * BBUF_SIZE * BBUF_SIZE) as usize;
@@ -320,23 +340,20 @@ const VERTSET_ADV: [i32; 3] = [1, VERTSET_SIZE, VERTSET_SIZE * VERTSET_SIZE];
 const NOISE_SIZE: i32 = CHUNK_SIZE + 1;
 const NOISE_LEN: usize = (NOISE_SIZE * NOISE_SIZE * NOISE_SIZE) as usize;
 
-/// A primitive with the same bitwidth as the chunk size.
-type ChunkSizePrim = u32;
-
-fn mask(w: u8) -> ChunkSizePrim {
+fn mask(w: u8) -> ChunkSizedInt {
     if w >= CHUNK_SIZE as u8 {
         !0
     } else {
-        ((1 as ChunkSizePrim) << w).wrapping_sub(1)
+        ((1 as ChunkSizedInt) << w).wrapping_sub(1)
     }
 }
 
 struct SurfaceBits {
-    bits: [ChunkSizePrim; CHUNK_SIZE as usize],
+    bits: [ChunkSizedInt; CHUNK_SIZE as usize],
 }
 impl SurfaceBits {
     fn new() -> Self {
-        assert_eq!(mem::size_of::<ChunkSizePrim>() * 8, CHUNK_SIZE as usize);
+        assert_eq!(mem::size_of::<ChunkSizedInt>() * 8, CHUNK_SIZE as usize);
         Self {
             bits: [0; CHUNK_SIZE as usize],
         }
@@ -357,7 +374,7 @@ impl SurfaceBits {
     /// Returns the x position of the first unset bit to the right of `(x, y)`.
     fn march_right(&self, x: u8, y: u8) -> u8 {
         let mut row = self.bits[y as usize];
-        row |= ((1 as ChunkSizePrim) << x).wrapping_sub(1);
+        row |= ((1 as ChunkSizedInt) << x).wrapping_sub(1);
         row.trailing_ones() as u8
     }
 
@@ -389,19 +406,19 @@ struct AtlasChunk {
     size: [i32; 2],
 }
 impl AtlasChunk {
-    fn new() -> Self {
+    fn new(cfg: &MesherCfg) -> Self {
         Self {
-            data: vec![(0, 0, 0, 0); (ATLAS_BIN * ATLAS_SIZE) as usize],
+            data: vec![(0, 0, 0, 0); (cfg.atlas_size[0] * cfg.atlas_size[1]) as usize],
             size: [0; 2],
         }
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, cfg: &MesherCfg) {
         // DEBUG: Fill with black so that wasted space can be easily seen on the atlas texture
         // Not necessary for production
         self.data.fill((0, 0, 0, 255));
 
-        self.size = [ATLAS_BIN, 1];
+        self.size = [cfg.atlas_size[0], 1];
     }
 
     fn round_size(&mut self) {
@@ -418,35 +435,26 @@ struct PendingQuad {
     size: [u8; 2],
 }
 
+bit_array! {
+    BlocksetBits(BBUF_LEN);
+}
+
+bit_array! {
+    VertsetBits(VERTSET_LEN);
+}
+
 struct Vertset {
-    bits: [usize; VERTSET_WORDS],
+    bits: VertsetBits,
 }
 impl Vertset {
     fn new() -> Self {
         Self {
-            bits: [0; VERTSET_WORDS],
-        }
-    }
-
-    fn to_idx(pos: Int3) -> i32 {
-        pos.x + VERTSET_SIZE * pos.y + VERTSET_SIZE * VERTSET_SIZE * pos.z
-    }
-
-    /// Set a `VERTSET_SIZE`-length row of vertex bits.
-    /// 64-bit words are assumed.
-    /// More specifically, it is assumed that the amount of bits is at least `VERTSET_SIZE`.
-    fn set_row(&mut self, idx: i32) {
-        let idx = idx as usize;
-        let pat = (1 << VERTSET_SIZE) - 1;
-        self.bits[idx / WORD_BITS] |= pat << (idx % WORD_BITS);
-        let shr = VERTSET_SIZE - (idx as i32 + VERTSET_SIZE) % WORD_BITS as i32;
-        if shr > 0 {
-            self.bits[idx / WORD_BITS + 1] |= pat >> shr;
+            bits: VertsetBits::new(),
         }
     }
 
     fn clear(&mut self) {
-        self.bits.fill(0);
+        self.bits.clear();
 
         // Set all chunk boundaries to `true`, since we don't know where vertices are located in
         // the neighboring chunks
@@ -460,9 +468,9 @@ impl Vertset {
             self.set_row(idx);
             idx += VERTSET_ADV[1];
             for _y in 1..CHUNK_SIZE {
-                self.set_idx(idx);
+                self.set(idx);
                 idx += VERTSET_ADV[1];
-                self.set_idx(idx - 1);
+                self.set(idx - 1);
             }
             self.set_row(idx);
             idx += VERTSET_ADV[1];
@@ -473,68 +481,91 @@ impl Vertset {
         }
     }
 
-    fn set_idx(&mut self, idx: i32) {
-        let idx = idx as usize;
-        self.bits[(idx / WORD_BITS) as usize] |= 1 << (idx & (WORD_BITS - 1));
-    }
-    fn set(&mut self, pos: Int3) {
-        self.set_idx(Self::to_idx(pos))
+    fn to_idx(pos: Int3) -> i32 {
+        pos.x + VERTSET_SIZE * pos.y + VERTSET_SIZE * VERTSET_SIZE * pos.z
     }
 
-    fn get_idx(&self, idx: i32) -> bool {
-        let idx = idx as usize;
-        (self.bits[idx / WORD_BITS as usize] >> (idx & (WORD_BITS - 1))) & 1 != 0
+    /// Set a `VERTSET_SIZE`-length row of vertex bits.
+    fn set_row(&mut self, idx: i32) {
+        self.bits.set_row(idx as usize, VERTSET_SIZE as usize);
     }
-    fn get(&self, pos: Int3) -> bool {
-        self.get_idx(Self::to_idx(pos))
+
+    fn set(&mut self, idx: i32) {
+        self.bits.set(idx as usize);
     }
+
+    fn get(&self, idx: i32) -> bool {
+        self.bits.get(idx as usize)
+    }
+}
+
+crate::terrain::light_spreader! {
+    LightSpreader(BBUF_SIZE);
 }
 
 struct Mesher2 {
-    block_buf: [BlockData; BBUF_LEN],
-    corner_queue: Vec<(u8, u8)>,
+    /// Knows which blocks are solid and which blocks are clear.
     style: StyleTable,
+    /// Texture parameters for every block type.
     block_textures: [BlockTexture; 256],
+    /// A flat buffer containing all blocks in the current chunk and some margin of the neighboring
+    /// chunks.
+    block_buf: [BlockData; BBUF_LEN],
+    /// A buffer equivalent to `block_buf`, but containing light values.
+    light_buf: [u8; BBUF_LEN],
+    /// Subsystem responsible for spreading light correctly.
+    light_spread: LightSpreader,
+    /// A queue buffer for mesh quad corners.
+    /// Used in the quad generation stage.
+    corner_queue: Vec<(u8, u8)>,
+    /// Stores the noise that is used to give block colors a little texture.
     noise_buf: [f32; NOISE_LEN],
-    mesh: Mesh<VoxelVertex>,
+    /// A queue buffer for mesh quads.
+    /// This is the intermediate state between quad generation and triangle generation.
     quad_queue: Vec<PendingQuad>,
+    /// A bitmask with 1 bit per vertex.
+    /// The bit is set if a quad touches this vertex, and unset otherwise.
+    /// Used to generate triangles from quads in a way that produces no T-junctions.
     vertex_set: Vertset,
-    /// Garbage atlas chunks that can be reused.
-    //free_atlas_pool: Vec<AtlasChunk>,
+    /// A rectangle packer, to associate mesh quads with texture coordinates in the chunk atlas.
     packer: DensePacker,
+    /// The chunk atlas texture, storing color and lighting data for every quad.
     atlas: AtlasChunk,
+    /// Stores the final mesh geometry.
+    mesh: Mesh<VoxelVertex>,
+    /// Configurable constants and behaviour.
+    cfg: MesherCfg,
 }
 impl Mesher2 {
-    fn new(textures: BlockTextures) -> Self {
+    fn new(cfg: &MesherCfg, info: WorldInfo) -> Self {
         Self {
             block_buf: [BlockData { data: 0 }; BBUF_LEN],
+            light_buf: [0; BBUF_LEN],
             corner_queue: Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize),
-            style: StyleTable::new(&textures),
-            block_textures: {
-                let mut blocks: Uninit<[BlockTexture; 256]> = Uninit::uninit();
-                for (src, dst) in textures.blocks.iter().zip(0..256) {
-                    unsafe {
-                        (blocks.as_mut_ptr() as *mut BlockTexture)
-                            .offset(dst)
-                            .write(src.take());
-                    }
-                }
-                unsafe { blocks.assume_init() }
-            },
+            style: StyleTable::new(&info),
+            block_textures: arr![i => info.blocks[i].clone(); 256],
+            light_spread: LightSpreader::new(&info),
             quad_queue: vec![],
             vertex_set: Vertset::new(),
             noise_buf: [0.; NOISE_LEN],
             mesh: default(),
-            atlas: AtlasChunk::new(),
+            atlas: AtlasChunk::new(cfg),
             packer: DensePacker::new(1, 1),
+            cfg: cfg.clone(),
         }
     }
 
+    fn index_for(&self, pos: Int3) -> i32 {
+        pos.x * ADVANCE[0] + pos.y * ADVANCE[1] + pos.z * ADVANCE[2]
+    }
     fn is_solid(&self, idx: i32) -> bool {
         self.block_buf[idx as usize].is_solid(&self.style)
     }
     fn is_clear(&self, idx: i32) -> bool {
         self.block_buf[idx as usize].is_clear(&self.style)
+    }
+    fn skylight(&self, idx: i32) -> u8 {
+        self.light_buf[idx as usize]
     }
 
     fn color(&mut self, block: BlockData, blockpos: Int3, airpos: Int3) -> [u8; 4] {
@@ -588,24 +619,46 @@ impl Mesher2 {
         let (front, back) = ((2 * positive - 1) * ADVANCE[axes[2]], 0);
 
         // Gather occlusion data for nearby blocks
-        const EXPOSURE_TABLE: [i8; 4] = [6, 0, -70, -70];
-        let mut exposure = 255u8 - EXPOSURE_TABLE[0] as u8 * 3;
-        // 0 = front clear, back clear
-        // 1 = back solid, front clear
-        // 2 = back clear, front solid
-        // 3 = back solid, front solid
+        let mut exposure = self.cfg.exposure_table[4];
+        let mut obs_count = 0;
         for y in -1..=0 {
             for x in -1..=0 {
                 let b =
                     self.is_solid(blockidx + back + x * ADVANCE[axes[0]] + y * ADVANCE[axes[1]]);
                 let f =
                     self.is_solid(blockidx + front + x * ADVANCE[axes[0]] + y * ADVANCE[axes[1]]);
+                obs_count += f as usize;
                 let occ = (b as usize) | ((f as usize) << 1);
-                exposure = exposure.wrapping_add(EXPOSURE_TABLE[occ] as u8);
+                exposure = exposure.wrapping_add(self.cfg.exposure_table[occ]);
             }
         }
 
-        [exposure, 0, 0, 255]
+        // Check how much skylight reaches this block
+        let mode = &self.light_spread.light_modes[self.light_spread.mode];
+        //let mut skylight = mode.light.base;
+        let mut lacc = 0;
+        for y in -1..=0 {
+            for x in -1..=0 {
+                let l =
+                    self.skylight(blockidx + front + x * ADVANCE[axes[0]] + y * ADVANCE[axes[1]]);
+                //lacc = lacc.max(l as u32);
+                lacc += l as u32;
+            }
+        }
+        // Compensate for obstructed blocks
+        const SCALETABLE: [u32; 5] = [
+            (4. / 4. * (1 << 20) as f64) as u32,
+            (4. / 3. * (1 << 20) as f64) as u32,
+            (4. / 2. * (1 << 20) as f64) as u32,
+            (4. / 1. * (1 << 20) as f64) as u32,
+            1 << 20,
+        ];
+        lacc = (lacc * SCALETABLE[obs_count]) >> 20;
+        // Scale according to runtime parameters
+        let skylight = mode.light.base + ((lacc * mode.light.mul) >> mode.light.shr);
+        let skylight = skylight as u8;
+
+        [exposure, skylight, 0, 255]
     }
 
     fn quad(&mut self, blockpos: Int3, positive: i32, axes: [usize; 3], w: i32, h: i32) {
@@ -644,15 +697,15 @@ impl Mesher2 {
         let badv_y = ADVANCE[axes[1]];
 
         // Figure out mapping to color atlas texture indices
-        let mut cidx1 = crect.x + crect.y * ATLAS_BIN;
-        let (mut cadv_x, mut cadv_y) = (1, ATLAS_BIN);
+        let mut cidx1 = crect.x + crect.y * self.cfg.atlas_size[0];
+        let (mut cadv_x, mut cadv_y) = (1, self.cfg.atlas_size[0]);
         if crect.width != w {
             mem::swap(&mut cadv_x, &mut cadv_y);
         }
 
         // Figure out mapping to light atlas texture indices
-        let mut lidx1 = lrect.x + lrect.y * ATLAS_BIN;
-        let (mut ladv_x, mut ladv_y) = (1, ATLAS_BIN);
+        let mut lidx1 = lrect.x + lrect.y * self.cfg.atlas_size[0];
+        let (mut ladv_x, mut ladv_y) = (1, self.cfg.atlas_size[0]);
         if lrect.width != w + 1 {
             mem::swap(&mut ladv_x, &mut ladv_y);
         }
@@ -719,11 +772,11 @@ impl Mesher2 {
 
         // Mark that these vertices have quads relying on them
         let idx = Vertset::to_idx(quadpos);
-        self.vertex_set.set_idx(idx);
-        self.vertex_set.set_idx(idx + w * VERTSET_ADV[axes[0]]);
+        self.vertex_set.set(idx);
+        self.vertex_set.set(idx + w * VERTSET_ADV[axes[0]]);
         self.vertex_set
-            .set_idx(idx + w * VERTSET_ADV[axes[0]] + h * VERTSET_ADV[axes[1]]);
-        self.vertex_set.set_idx(idx + h * VERTSET_ADV[axes[1]]);
+            .set(idx + w * VERTSET_ADV[axes[0]] + h * VERTSET_ADV[axes[1]]);
+        self.vertex_set.set(idx + h * VERTSET_ADV[axes[1]]);
     }
 
     fn layer(&mut self, z: i32, dir: i32, axes: [usize; 3]) {
@@ -810,6 +863,7 @@ impl Mesher2 {
                 for _y in 0..size.y {
                     for _x in 0..size.x {
                         self.block_buf[to_idx as usize] = chunk.blocks[from_idx as usize];
+                        self.light_buf[to_idx as usize] = chunk.skylight[from_idx as usize];
                         from_idx += 1;
                         to_idx += 1;
                     }
@@ -820,11 +874,13 @@ impl Mesher2 {
                 to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
             }
         } else {
-            let b = chunk.homogeneous_block_unchecked();
+            let b = chunk.homogeneous_block();
+            let l = chunk.homogeneous_skylight();
             for _z in 0..size.z {
                 for _y in 0..size.y {
                     for _x in 0..size.x {
                         self.block_buf[to_idx as usize] = b;
+                        self.light_buf[to_idx as usize] = l;
                         to_idx += 1;
                     }
                     to_idx += BBUF_SIZE - size.x;
@@ -836,7 +892,8 @@ impl Mesher2 {
 
     /// Fetch relevant chunk data and place it in a flat buffer.
     fn gather_chunks<'a>(&mut self, chunk_pos: ChunkPos, chunks: &ChunkStorage) -> Option<()> {
-        let mut near_chunks = [ChunkRef::new_homogeneous(BlockData { data: 0 }); 27];
+        // Fetch chunk references of the surrounding terrain
+        let mut near_chunks = [ChunkRef::placeholder(); 27];
         {
             let mut idx = 0;
             for z in -1..=1 {
@@ -850,26 +907,252 @@ impl Mesher2 {
                 }
             }
         }
-        {
-            let mut idx = 0;
-            for z in 0..3 {
-                for y in 0..3 {
-                    for x in 0..3 {
-                        const FROM: [i32; 3] = [CHUNK_SIZE - MARGIN, 0, 0];
-                        const TO: [i32; 3] = [0, MARGIN, MARGIN + CHUNK_SIZE];
-                        const SIZE: [i32; 3] = [MARGIN, CHUNK_SIZE, MARGIN];
-                        self.fetch_chunk(
-                            near_chunks[idx],
-                            [FROM[x], FROM[y], FROM[z]].into(),
-                            [TO[x], TO[y], TO[z]].into(),
-                            [SIZE[x], SIZE[y], SIZE[z]].into(),
-                        );
-                        idx += 1;
-                    }
+
+        // Copy block and light data
+        let mut idx = 0;
+        for z in 0..3 {
+            for y in 0..3 {
+                for x in 0..3 {
+                    const FROM: [i32; 3] = [CHUNK_SIZE - MARGIN, 0, 0];
+                    const TO: [i32; 3] = [0, MARGIN, MARGIN + CHUNK_SIZE];
+                    const SIZE: [i32; 3] = [MARGIN, CHUNK_SIZE, MARGIN];
+                    self.fetch_chunk(
+                        near_chunks[idx],
+                        [FROM[x], FROM[y], FROM[z]].into(),
+                        [TO[x], TO[y], TO[z]].into(),
+                        [SIZE[x], SIZE[y], SIZE[z]].into(),
+                    );
+                    idx += 1;
                 }
             }
         }
+
+        // Initialize light spreader
+        if let Some(data) = near_chunks[13].blocks() {
+            let mut base_pos = chunk_pos.chunk_to_block();
+            base_pos.coords -= [MARGIN; 3];
+            self.light_spread.reset(base_pos, data);
+        }
+
         Some(())
+    }
+
+    /*
+
+    fn check_light(&mut self, pos: Int3, l: u8) {
+        let idx = self.index_for(pos);
+        let pos = [pos.x as u32, pos.y as u32, pos.z as u32];
+        if pos[0] >= BBUF_SIZE as u32 || pos[1] >= BBUF_SIZE as u32 || pos[2] >= BBUF_SIZE as u32 {
+            return;
+        }
+        if !self.is_clear(idx) {
+            return;
+        }
+        let lx = self.skylight(idx);
+        if lx < l {
+            self.light_buf[idx as usize] = l;
+            if !self.light_dirty_table.get(idx as usize) {
+                self.light_dirty_queue
+                    .push_back([pos[0] as u8, pos[1] as u8, pos[2] as u8]);
+                self.light_dirty_table.set(idx as usize);
+            }
+        }
+    }
+
+    fn check_light_pair(&mut self, pos0: Int3, pos1: Int3) {
+        let idx0 = self.index_for(pos0);
+        let idx1 = self.index_for(pos1);
+
+        //self.light_buf[idx0 as usize] = 0;
+        //self.light_buf[idx1 as usize] = 0;
+        //return;
+
+        if !self.is_clear(idx0) || !self.is_clear(idx1) {
+            return;
+        }
+        let l0 = self.skylight(idx0);
+        let l0d = l0.saturating_sub(self.light_dither[idx0 as usize]);
+        let l1 = self.skylight(idx1);
+        let l1d = l1.saturating_sub(self.light_dither[idx1 as usize]);
+        let (pos, idx, l) = if l0d > l1 {
+            (pos1, idx1, l0d)
+        } else if l1d > l0 {
+            (pos0, idx0, l1d)
+        } else {
+            return;
+        };
+        self.light_buf[idx as usize] = l;
+        if !self.light_dirty_table.get(idx as usize) {
+            self.light_dirty_queue
+                .push_back([pos[0] as u8, pos[1] as u8, pos[2] as u8]);
+            self.light_dirty_table.set(idx as usize);
+        }
+    }
+
+    /// Propagate light among the entire chunk + neighboring blocks.
+    /// This pass is necessary to spread light across chunks.
+    /// However, since a per-chunk pass was already done, it is enough to scanline the edges of
+    /// the chunk only.
+    fn propagate_light(&mut self, chunk_pos: ChunkPos) {
+        // Dithering
+        let base_pos = (chunk_pos.coords << CHUNK_BITS) - [MARGIN, MARGIN, MARGIN];
+        let mut idx = 0;
+        for z in 0..BBUF_SIZE {
+            for y in 0..BBUF_SIZE {
+                for x in 0..BBUF_SIZE {
+                    let rnd = fxhash::hash32(&(base_pos + [x, y, z])) as u8;
+                    let rnd =
+                        ((rnd as u32 * self.light_decay as u32 * self.cfg.light_dither_frac.0)
+                            >> (8 + self.cfg.light_dither_frac.1)) as u8;
+                    self.light_dither[idx] = self.light_decay + rnd;
+                    idx += 1;
+                }
+            }
+        }
+
+        // Scan the 6 edge planes of the chunk for any light gradients
+        for y in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.check_light_pair([x, y, MARGIN - 1].into(), [x, y, MARGIN].into());
+            }
+        }
+        for z in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.check_light_pair([x, MARGIN - 1, z].into(), [x, MARGIN, z].into());
+            }
+            for x in 0..BBUF_SIZE {
+                self.check_light_pair(
+                    [x, MARGIN + CHUNK_SIZE - 1, z].into(),
+                    [x, MARGIN + CHUNK_SIZE, z].into(),
+                );
+            }
+            for y in 0..BBUF_SIZE {
+                self.check_light_pair([MARGIN - 1, y, z].into(), [MARGIN, y, z].into());
+            }
+            for y in 0..BBUF_SIZE {
+                self.check_light_pair(
+                    [MARGIN + CHUNK_SIZE - 1, y, z].into(),
+                    [MARGIN + CHUNK_SIZE, y, z].into(),
+                );
+            }
+        }
+        for y in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.check_light_pair(
+                    [x, y, MARGIN + CHUNK_SIZE - 1].into(),
+                    [x, y, MARGIN + CHUNK_SIZE].into(),
+                );
+            }
+        }
+
+        // Resolve dirty blocks recursively
+        while let Some(pos) = self.light_dirty_queue.pop_front() {
+            let pos = Int3::new([pos[0] as i32, pos[1] as i32, pos[2] as i32]);
+            let idx = self.index_for(pos);
+            self.light_dirty_table.unset(idx as usize);
+            let l = self
+                .skylight(idx)
+                .saturating_sub(self.light_dither[idx as usize]);
+            self.check_light(pos + [-1, 0, 0], l);
+            self.check_light(pos + [1, 0, 0], l);
+            self.check_light(pos + [0, -1, 0], l);
+            self.check_light(pos + [0, 1, 0], l);
+            self.check_light(pos + [0, 0, -1], l);
+            self.check_light(pos + [0, 0, 1], l);
+        }
+    }
+
+    */
+
+    fn seed_light(&mut self, pos: Int3) {
+        self.light_spread
+            .spread_from(&mut self.light_buf, &self.block_buf, pos);
+    }
+
+    fn spread_light(&mut self) {
+        // Seed light from the 6 planes that separate chunks
+        // OPTIMIZE: Only spread across chunks, reducing 65% of checks
+        for y in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, y, MARGIN - 1].into());
+                self.seed_light([x, y, MARGIN].into());
+            }
+        }
+        for z in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, MARGIN - 1, z].into());
+                self.seed_light([x, MARGIN, z].into());
+            }
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, MARGIN + CHUNK_SIZE - 1, z].into());
+                self.seed_light([x, MARGIN + CHUNK_SIZE, z].into());
+            }
+            for y in 0..BBUF_SIZE {
+                self.seed_light([MARGIN - 1, y, z].into());
+                self.seed_light([MARGIN, y, z].into());
+            }
+            for y in 0..BBUF_SIZE {
+                self.seed_light([MARGIN + CHUNK_SIZE - 1, y, z].into());
+                self.seed_light([MARGIN + CHUNK_SIZE, y, z].into());
+            }
+        }
+        for y in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, y, MARGIN + CHUNK_SIZE - 1].into());
+                self.seed_light([x, y, MARGIN + CHUNK_SIZE].into());
+            }
+        }
+
+        /*
+        // Seed light only from the chunk border
+        for z in -1..=0 {
+            for y in -1..=CHUNK_SIZE {
+                for x in -1..=CHUNK_SIZE {
+                    self.seed_light([x, y, z].into());
+                }
+            }
+        }
+        for z in 1..CHUNK_SIZE - 1 {
+            for y in -1..=0 {
+                for x in -1..=CHUNK_SIZE {
+                    self.seed_light([x, y, z].into());
+                }
+            }
+            for y in 1..CHUNK_SIZE - 1 {
+                self.seed_light([-1, y, z].into());
+                self.seed_light([0, y, z].into());
+                self.seed_light([CHUNK_SIZE - 1, y, z].into());
+                self.seed_light([CHUNK_SIZE, y, z].into());
+            }
+            for y in CHUNK_SIZE - 1..=CHUNK_SIZE {
+                for x in -1..=CHUNK_SIZE {
+                    self.seed_light([x, y, z].into());
+                }
+            }
+        }
+        for z in CHUNK_SIZE - 1..=CHUNK_SIZE {
+            for y in -1..=CHUNK_SIZE {
+                for x in -1..=CHUNK_SIZE {
+                    self.seed_light([x, y, z].into());
+                }
+            }
+        }
+        */
+
+        /*
+        // Seed chunk from every block
+        for z in 0..BBUF_SIZE {
+            for y in 0..BBUF_SIZE {
+                for x in 0..BBUF_SIZE {
+                    self.seed_light([x, y, z].into());
+                }
+            }
+        }
+        */
+
+        // Finish spreading
+        self.light_spread
+            .spread_pending(&mut self.light_buf, &self.block_buf);
     }
 
     /// Generate texture noise.
@@ -898,7 +1181,7 @@ impl Mesher2 {
             (self.atlas.size[0] as f32).recip(),
             (self.atlas.size[1] as f32).recip(),
         );
-        let luv_offset = uv_scale * 0.5;
+        let luv_offset = uv_scale * self.cfg.light_uv_offset;
 
         // Go through all quads, generating the necessary triangles to not only cover the quads,
         // but also to make sure there are no T-junctions, ie. vertex to edge joints
@@ -975,7 +1258,7 @@ impl Mesher2 {
                 let mut vert = qvert;
                 for x in 1..=quad.size[0] {
                     adv!(vert, 0, 1);
-                    if self.vertex_set.get_idx(vert.idx) {
+                    if self.vertex_set.get(vert.idx) {
                         xbase0 = x;
                         vbase0 = vertex(self, vert);
                         break;
@@ -991,7 +1274,7 @@ impl Mesher2 {
                 adv!(vert, 1, quad.size[1] as i32);
                 for x in (0..quad.size[0]).rev() {
                     adv!(vert, 0, -1);
-                    if self.vertex_set.get_idx(vert.idx) {
+                    if self.vertex_set.get(vert.idx) {
                         xbase1 = x;
                         vbase1 = vertex(self, vert);
                         break;
@@ -1007,7 +1290,7 @@ impl Mesher2 {
                 // Iterate along the fourth/left edge
                 for _y in 1..=quad.size[1] {
                     adv!(vert, 1, 1);
-                    if self.vertex_set.get_idx(vert.idx) {
+                    if self.vertex_set.get(vert.idx) {
                         vidx = vertex(self, vert);
                         self.mesh.add_face(vbase0, vidx, vidx - 1);
                     }
@@ -1015,7 +1298,7 @@ impl Mesher2 {
                 // Iterate along the third/top edge
                 for _x in 1..xbase1 {
                     adv!(vert, 0, 1);
-                    if self.vertex_set.get_idx(vert.idx) {
+                    if self.vertex_set.get(vert.idx) {
                         vidx = vertex(self, vert);
                         self.mesh.add_face(vbase0, vidx, vidx - 1);
                     }
@@ -1034,7 +1317,7 @@ impl Mesher2 {
                 // Iterate along the second/right edge
                 for _y in (0..quad.size[1]).rev() {
                     adv!(vert, 1, -1);
-                    if self.vertex_set.get_idx(vert.idx) {
+                    if self.vertex_set.get(vert.idx) {
                         vidx = vertex(self, vert);
                         self.mesh.add_face(vbase1, vidx, vidx - 1);
                     }
@@ -1042,7 +1325,7 @@ impl Mesher2 {
                 // Iterate along the first/bottom edge
                 for _x in (xbase0..quad.size[0]).rev() {
                     adv!(vert, 0, -1);
-                    if self.vertex_set.get_idx(vert.idx) {
+                    if self.vertex_set.get(vert.idx) {
                         vidx = vertex(self, vert);
                         self.mesh.add_face(vbase1, vidx, vidx - 1);
                     }
@@ -1070,10 +1353,22 @@ impl Mesher2 {
 
         // Reset everything
         //self.atlas.reset();
-        self.packer.reset(ATLAS_BIN, ATLAS_SIZE);
-        self.atlas.reset();
+        self.packer
+            .reset(self.cfg.atlas_size[0], self.cfg.atlas_size[1]);
+        self.atlas.reset(&self.cfg);
         self.quad_queue.clear();
         self.vertex_set.clear();
+
+        // Update light using info from neighboring chunks
+        // Commmented: debug hack to disable mesh-time light spreading
+        /*
+        if self.block_buf
+            [(MARGIN * ADVANCE[0] + MARGIN * ADVANCE[1] + MARGIN * ADVANCE[2]) as usize]
+            .data
+            != 0
+        {*/
+        self.spread_light();
+        // }
 
         // Generate block texture noise
         self.texture_noise(chunk_pos);
@@ -1087,6 +1382,10 @@ impl Mesher2 {
         Some(())
     }
 }
+
+/*
+
+// Old mesher implementation, still here for reference
 
 struct LayerParams {
     x: [i32; 3],
@@ -1656,3 +1955,4 @@ impl Mesher {
         portals
     }
 }
+*/
