@@ -234,4 +234,11 @@ function util.Shader:draw_terrain(terr, offset, color, light, draw_params, mvp, 
     terr:draw(self.program, self.raw_uniforms, offset, color, light, draw_params, mvp, locate, subdraw)
 end
 
+function util.Shader:draw_voxel(voxel, draw_params)
+    self:set_vec3('offset', 0, 0, 0)
+    self:set_texture_2d('color', voxel:atlas_nearest())
+    self:set_texture_2d('light', voxel:atlas_linear())
+    gfx.draw(voxel:buffer(), self.program, self.raw_uniforms, draw_params)
+end
+
 return util

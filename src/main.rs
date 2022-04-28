@@ -179,6 +179,7 @@ pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 mod chunkmesh;
 mod gen;
 mod lua;
+mod magicavox;
 mod mesh;
 mod terrain;
 

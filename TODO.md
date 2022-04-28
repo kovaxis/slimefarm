@@ -20,7 +20,8 @@ Maybes:
 - SIMD for noise.
 - Optimize gen and mesh priorities based on player velocity.
 - Do something about ambient occlusion around portals.
-- Do something about noise texturing around portals.
+- Do something about noise texturing around portals?
+- Stitch atlas textures together.
 
 
 Threads:

@@ -1,4 +1,5 @@
 use crate::{
+    chunkmesh::{Mesher2, MesherCfg, ModelMesherCfg, ModelMesherKind},
     lua::{CameraFrame, CameraStack, LuaImage, MatrixStack},
     prelude::*,
 };
@@ -16,10 +17,57 @@ pub(crate) enum BufferRef {
     NoBuf,
     Buf2d(Rc<GpuBuffer<TexturedVertex>>),
     Buf3d(Rc<GpuBuffer<SimpleVertex>>),
+    VoxelBuf(Rc<GpuBuffer<VoxelVertex>>),
 }
 unsafe impl Send for BufferRef {}
 unsafe impl Sync for BufferRef {}
 impl LuaUserData for BufferRef {}
+
+#[derive(Clone)]
+pub(crate) struct LuaVoxelBuf {
+    size: Int3,
+    buf: Rc<GpuBuffer<VoxelVertex>>,
+    atlas: LuaTexture<Texture2d>,
+}
+lua_type! {LuaVoxelBuf, lua, this,
+    fn size() {
+        (this.size.x, this.size.y, this.size.z)
+    }
+
+    fn buffer() {
+        BufferRef::VoxelBuf(this.buf.clone())
+    }
+
+    fn atlas_linear() {
+        use glium::uniforms::{
+            MagnifySamplerFilter as Magnify, MinifySamplerFilter as Minify, SamplerBehavior,
+            SamplerWrapFunction as Wrap,
+        };
+        let mut tex = this.atlas.clone();
+        tex.sampling = SamplerBehavior {
+            wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+            minify_filter: Minify::Linear,
+            magnify_filter: Magnify::Linear,
+            ..default()
+        };
+        tex
+    }
+
+    fn atlas_nearest() {
+        use glium::uniforms::{
+            MagnifySamplerFilter as Magnify, MinifySamplerFilter as Minify, SamplerBehavior,
+            SamplerWrapFunction as Wrap,
+        };
+        let mut tex = this.atlas.clone();
+        tex.sampling = SamplerBehavior {
+            wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+            minify_filter: Minify::Nearest,
+            magnify_filter: Magnify::Nearest,
+            ..default()
+        };
+        tex
+    }
+}
 
 pub(crate) enum StaticUniform {
     Float(f32),
@@ -251,6 +299,38 @@ macro_rules! lua_textures {
     )*};
 }
 lua_textures!(Texture2d);
+
+pub(crate) struct LuaMesher {
+    state: Rc<State>,
+    mesher: Box<Mesher2<ModelMesherKind>>,
+}
+impl LuaMesher {
+    fn new(state: Rc<State>, cfg: &ModelMesherCfg) -> Self {
+        Self {
+            state,
+            mesher: Box::new(Mesher2::new(&cfg.cfg, ModelMesherKind::new(cfg))),
+        }
+    }
+}
+lua_type! {LuaMesher, lua, this,
+    mut fn mesh((raw, sx, sy, sz): (LuaString, i32, i32, i32)) {
+        let data = raw.as_bytes();
+        lua_assert!(data.len() == (sx * sy * sz * 4) as usize, "data size does not match given size");
+        let data = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const [u8; 4], data.len() / 4)
+        };
+        let dsize = Int3::new([sx, sy, sz]);
+
+        this.mesher.make_model_mesh(data, dsize);
+        let buf = Rc::new(this.mesher.mesh.make_buffer(&this.state.display));
+        let atlas = LuaTexture::new(this.mesher.atlas.make_texture(&this.state.display));
+        LuaVoxelBuf {
+            size: dsize,
+            buf,
+            atlas,
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct LuaDrawParams {
@@ -558,6 +638,11 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                         }))
                     }
 
+                    fn mesher(cfg: LuaValue) {
+                        let cfg = rlua_serde::from_value(cfg)?;
+                        LuaMesher::new(state.clone(), &cfg)
+                    }
+
                     fn camera_stack(()) {
                         CameraStack::new()
                     }
@@ -616,6 +701,9 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                                 frame.draw(&buf.vertex, &buf.index, &shader.program, &*uniforms, &params.params)
                             },
                             BufferRef::Buf3d(buf) => {
+                                frame.draw(&buf.vertex, &buf.index, &shader.program, &*uniforms, &params.params)
+                            },
+                            BufferRef::VoxelBuf(buf) => {
                                 frame.draw(&buf.vertex, &buf.index, &shader.program, &*uniforms, &params.params)
                             },
                         }.unwrap();

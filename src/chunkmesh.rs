@@ -69,8 +69,8 @@ impl MesherHandle {
                     send_bufs,
                     //send_atlas: send_atlas,
                     //recv_atlas: recv_recycleatlas,
-                    mesher: Box::new(Mesher2::new(&cfg, info)),
-                    cfg,
+                    mesher: Box::new(Mesher2::new(&cfg, TerrainMesherKind::new(info))),
+                    _cfg: cfg,
                 });
             })
         };
@@ -122,9 +122,9 @@ struct MesherState {
     /// Therefore, whenever the alternative texture for an atlas is received, these atlas chunks are
     /// written and then sent back to the pool.
     //pending_atlas: Vec<Vec<AtlasChunk>>,
-    mesher: Box<Mesher2>,
+    mesher: Box<Mesher2<TerrainMesherKind>>,
     send_bufs: Sender<ChunkMeshPkg>,
-    cfg: MesherCfg,
+    _cfg: MesherCfg,
     //send_atlas: Sender<(usize, RawTexturePackage)>,
     //recv_atlas: Receiver<(usize, RawTexturePackage)>,
 }
@@ -137,7 +137,7 @@ impl MesherState {
     ) -> Option<ChunkMeshPkg> {
         // Make mesh
         time!(start mesh);
-        self.mesher.make_mesh(pos, chunks, chunks_store)?;
+        self.mesher.make_chunk_mesh(pos, chunks, chunks_store)?;
         time!(store mesh self.shared.avg_mesh_time);
 
         time!(start upload);
@@ -154,19 +154,7 @@ impl MesherState {
         let tex_pkg = if mesh.indices.is_empty() {
             None
         } else {
-            let [w, h] = self.mesher.atlas.size;
-            let raw_img = RawImage2d {
-                data: Cow::Borrowed(&self.mesher.atlas.data[..(w * h) as usize]),
-                width: w as u32,
-                height: h as u32,
-                format: glium::texture::ClientFormat::U8U8U8U8,
-            };
-            let tex = Texture2d::with_mipmaps(
-                &self.gl_ctx,
-                raw_img,
-                glium::texture::MipmapsOption::NoMipmap,
-            )
-            .expect("failed to upload atlas texture for chunk");
+            let tex = self.mesher.atlas.make_texture(&self.gl_ctx);
             let tex = RawTexturePackage::pack(tex.into_any());
             Some(tex)
         };
@@ -325,8 +313,6 @@ fn run_mesher(mut state: MesherState) {
     }
 }
 
-const WORD_BITS: usize = mem::size_of::<usize>() * 8;
-
 const MARGIN: i32 = 4;
 const BBUF_SIZE: i32 = 2 * MARGIN + CHUNK_SIZE;
 const BBUF_LEN: usize = (BBUF_SIZE * BBUF_SIZE * BBUF_SIZE) as usize;
@@ -334,7 +320,6 @@ const ADVANCE: [i32; 3] = [1, BBUF_SIZE, BBUF_SIZE * BBUF_SIZE];
 
 const VERTSET_SIZE: i32 = CHUNK_SIZE + 1;
 const VERTSET_LEN: usize = (VERTSET_SIZE * VERTSET_SIZE * VERTSET_SIZE) as usize;
-const VERTSET_WORDS: usize = (VERTSET_LEN + WORD_BITS - 1) / WORD_BITS;
 const VERTSET_ADV: [i32; 3] = [1, VERTSET_SIZE, VERTSET_SIZE * VERTSET_SIZE];
 
 const NOISE_SIZE: i32 = CHUNK_SIZE + 1;
@@ -357,10 +342,6 @@ impl SurfaceBits {
         Self {
             bits: [0; CHUNK_SIZE as usize],
         }
-    }
-
-    fn clear(&mut self) {
-        self.bits = [0; CHUNK_SIZE as usize];
     }
 
     fn get(&self, x: u8, y: u8) -> bool {
@@ -401,7 +382,7 @@ impl SurfaceBits {
 }
 
 /// The atlas data for a single chunk.
-struct AtlasChunk {
+pub struct AtlasChunk {
     data: Vec<(u8, u8, u8, u8)>,
     size: [i32; 2],
 }
@@ -424,6 +405,18 @@ impl AtlasChunk {
     fn round_size(&mut self) {
         self.size[0] = (self.size[0] as u32).next_power_of_two() as i32;
         self.size[1] = (self.size[1] as u32).next_power_of_two() as i32;
+    }
+
+    pub fn make_texture(&self, gl_ctx: &Display) -> Texture2d {
+        let [w, h] = self.size;
+        let raw_img = RawImage2d {
+            data: Cow::Borrowed(&self.data[..(w * h) as usize]),
+            width: w as u32,
+            height: h as u32,
+            format: glium::texture::ClientFormat::U8U8U8U8,
+        };
+        Texture2d::with_mipmaps(gl_ctx, raw_img, glium::texture::MipmapsOption::NoMipmap)
+            .expect("failed to upload atlas texture for voxel data")
     }
 }
 
@@ -503,7 +496,7 @@ crate::terrain::light_spreader! {
     LightSpreader(BBUF_SIZE);
 }
 
-struct Mesher2 {
+struct TerrainMesherKind {
     /// Knows which blocks are solid and which blocks are clear.
     style: StyleTable,
     /// Texture parameters for every block type.
@@ -513,65 +506,45 @@ struct Mesher2 {
     block_buf: [BlockData; BBUF_LEN],
     /// A buffer equivalent to `block_buf`, but containing light values.
     light_buf: [u8; BBUF_LEN],
-    /// Subsystem responsible for spreading light correctly.
-    light_spread: LightSpreader,
-    /// A queue buffer for mesh quad corners.
-    /// Used in the quad generation stage.
-    corner_queue: Vec<(u8, u8)>,
     /// Stores the noise that is used to give block colors a little texture.
     noise_buf: [f32; NOISE_LEN],
-    /// A queue buffer for mesh quads.
-    /// This is the intermediate state between quad generation and triangle generation.
-    quad_queue: Vec<PendingQuad>,
-    /// A bitmask with 1 bit per vertex.
-    /// The bit is set if a quad touches this vertex, and unset otherwise.
-    /// Used to generate triangles from quads in a way that produces no T-junctions.
-    vertex_set: Vertset,
-    /// A rectangle packer, to associate mesh quads with texture coordinates in the chunk atlas.
-    packer: DensePacker,
-    /// The chunk atlas texture, storing color and lighting data for every quad.
-    atlas: AtlasChunk,
-    /// Stores the final mesh geometry.
-    mesh: Mesh<VoxelVertex>,
-    /// Configurable constants and behaviour.
-    cfg: MesherCfg,
+    /// Subsystem responsible for spreading light correctly.
+    light_spread: LightSpreader,
 }
-impl Mesher2 {
-    fn new(cfg: &MesherCfg, info: WorldInfo) -> Self {
+impl TerrainMesherKind {
+    fn new(info: WorldInfo) -> Self {
         Self {
             block_buf: [BlockData { data: 0 }; BBUF_LEN],
             light_buf: [0; BBUF_LEN],
-            corner_queue: Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize),
             style: StyleTable::new(&info),
             block_textures: arr![i => info.blocks[i].clone(); 256],
-            light_spread: LightSpreader::new(&info),
-            quad_queue: vec![],
-            vertex_set: Vertset::new(),
             noise_buf: [0.; NOISE_LEN],
-            mesh: default(),
-            atlas: AtlasChunk::new(cfg),
-            packer: DensePacker::new(1, 1),
-            cfg: cfg.clone(),
+            light_spread: LightSpreader::new(&info),
         }
     }
-
-    fn index_for(&self, pos: Int3) -> i32 {
-        pos.x * ADVANCE[0] + pos.y * ADVANCE[1] + pos.z * ADVANCE[2]
-    }
+}
+impl MesherKind for TerrainMesherKind {
     fn is_solid(&self, idx: i32) -> bool {
         self.block_buf[idx as usize].is_solid(&self.style)
     }
+
     fn is_clear(&self, idx: i32) -> bool {
         self.block_buf[idx as usize].is_clear(&self.style)
     }
-    fn skylight(&self, idx: i32) -> u8 {
+
+    fn light_conf(&self) -> &LightingConf {
+        &self.light_spread.light_modes[self.light_spread.mode]
+    }
+
+    fn light_value(&self, idx: i32) -> u8 {
         self.light_buf[idx as usize]
     }
 
-    fn color(&mut self, block: BlockData, blockpos: Int3, airpos: Int3) -> [u8; 4] {
+    fn color(this: &mut Mesher2<Self>, blockidx: i32, blockpos: Int3, _airpos: Int3) -> [u8; 4] {
+        let block = this.kind.block_buf[blockidx as usize];
         // Get the noise value at a particular location
         let noise_at = |pos: [i32; 3]| {
-            self.noise_buf
+            this.kind.noise_buf
                 [(pos[0] + NOISE_SIZE * pos[1] + NOISE_SIZE * NOISE_SIZE * pos[2]) as usize]
         };
         // Snap to the nearest grid-aligned integer points
@@ -580,7 +553,7 @@ impl Mesher2 {
             (x & mask, (x & mask) + (1 << i))
         };
         // Texture parameters for this block
-        let tex = &self.block_textures[block.data as usize];
+        let tex = &this.kind.block_textures[block.data as usize];
         // Color accumulator, starting with the base color
         let mut color = Vec4::from(tex.base);
         // Add the first layer of noise, which can be computed using a single noise lookup
@@ -613,6 +586,78 @@ impl Mesher2 {
         let q = |f: f32| (f * 255.) as u8;
         [q(color.x), q(color.y), q(color.z), q(color.w)]
     }
+}
+
+pub trait MesherKind: Sized {
+    fn is_solid(&self, idx: i32) -> bool;
+    fn is_clear(&self, idx: i32) -> bool;
+    fn light_conf(&self) -> &LightingConf;
+    fn light_value(&self, idx: i32) -> u8;
+    fn color(this: &mut Mesher2<Self>, blockidx: i32, blockpos: Int3, airpos: Int3) -> [u8; 4];
+}
+
+pub struct Mesher2<D> {
+    kind: D,
+
+    /// A queue buffer for mesh quad corners.
+    /// Used in the quad generation stage.
+    corner_queue: Vec<(u8, u8)>,
+    /// A queue buffer for mesh quads.
+    /// This is the intermediate state between quad generation and triangle generation.
+    quad_queue: Vec<PendingQuad>,
+    /// A bitmask with 1 bit per vertex.
+    /// The bit is set if a quad touches this vertex, and unset otherwise.
+    /// Used to generate triangles from quads in a way that produces no T-junctions.
+    vertex_set: Vertset,
+    /// A rectangle packer, to associate mesh quads with texture coordinates in the chunk atlas.
+    packer: DensePacker,
+    /// The chunk atlas texture, storing color and lighting data for every quad.
+    pub(crate) atlas: AtlasChunk,
+    /// Stores the final mesh geometry.
+    pub(crate) mesh: Mesh<VoxelVertex>,
+    /// Configurable constants and behaviour.
+    cfg: MesherCfg,
+}
+impl<D: MesherKind> Mesher2<D> {
+    pub fn new(cfg: &MesherCfg, kind: D) -> Self {
+        Self {
+            kind,
+            corner_queue: Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize),
+            quad_queue: vec![],
+            vertex_set: Vertset::new(),
+            mesh: default(),
+            atlas: AtlasChunk::new(cfg),
+            packer: DensePacker::new(1, 1),
+            cfg: cfg.clone(),
+        }
+    }
+
+    /// Does not reset kind-specific data.
+    fn reset_atlas(&mut self) {
+        self.mesh.clear();
+        self.packer
+            .reset(self.cfg.atlas_size[0], self.cfg.atlas_size[1]);
+        self.atlas.reset(&self.cfg);
+    }
+
+    /// Does not reset kind-specific data.
+    fn reset_meshqueues(&mut self) {
+        self.quad_queue.clear();
+        self.vertex_set.clear();
+    }
+
+    #[inline]
+    fn is_solid(&self, idx: i32) -> bool {
+        self.kind.is_solid(idx)
+    }
+    #[inline]
+    fn is_clear(&self, idx: i32) -> bool {
+        self.kind.is_clear(idx)
+    }
+    #[inline]
+    fn skylight(&self, idx: i32) -> u8 {
+        self.kind.light_value(idx)
+    }
 
     fn light(&mut self, _vertpos: Int3, blockidx: i32, axes: [usize; 3], positive: i32) -> [u8; 4] {
         // Index offsets to get from `blockidx` to the front and the back block
@@ -634,7 +679,7 @@ impl Mesher2 {
         }
 
         // Check how much skylight reaches this block
-        let mode = &self.light_spread.light_modes[self.light_spread.mode];
+        let mode = self.kind.light_conf();
         //let mut skylight = mode.light.base;
         let mut lacc = 0;
         for y in -1..=0 {
@@ -722,7 +767,7 @@ impl Mesher2 {
                     let mut bpos = blockpos;
                     bpos[axes[0]] += x;
                     bpos[axes[1]] += y;
-                    let color = self.color(self.block_buf[bidx0 as usize], bpos, bpos + front_off);
+                    let color = D::color(self, bidx0, bpos, bpos + front_off);
                     self.atlas.data[cidx0 as usize] = (color[0], color[1], color[2], color[3]);
                     bidx0 += badv_x;
                     cidx0 += cadv_x;
@@ -852,324 +897,6 @@ impl Mesher2 {
         // Z-
         for z in 0..CHUNK_SIZE {
             self.layer(z, -1, [1, 0, 2]);
-        }
-    }
-
-    fn fetch_chunk(&mut self, chunk: ChunkRef, from: Int3, to: Int3, size: Int3) {
-        let mut to_idx = ((to.z * BBUF_SIZE) + to.y) * BBUF_SIZE + to.x;
-        if let Some(chunk) = chunk.blocks() {
-            let mut from_idx = (((from.z << CHUNK_BITS) | from.y) << CHUNK_BITS) | from.x;
-            for _z in 0..size.z {
-                for _y in 0..size.y {
-                    for _x in 0..size.x {
-                        self.block_buf[to_idx as usize] = chunk.blocks[from_idx as usize];
-                        self.light_buf[to_idx as usize] = chunk.skylight[from_idx as usize];
-                        from_idx += 1;
-                        to_idx += 1;
-                    }
-                    from_idx += CHUNK_SIZE - size.x;
-                    to_idx += BBUF_SIZE - size.x;
-                }
-                from_idx += CHUNK_SIZE * CHUNK_SIZE - CHUNK_SIZE * size.y;
-                to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
-            }
-        } else {
-            let b = chunk.homogeneous_block();
-            let l = chunk.homogeneous_skylight();
-            for _z in 0..size.z {
-                for _y in 0..size.y {
-                    for _x in 0..size.x {
-                        self.block_buf[to_idx as usize] = b;
-                        self.light_buf[to_idx as usize] = l;
-                        to_idx += 1;
-                    }
-                    to_idx += BBUF_SIZE - size.x;
-                }
-                to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
-            }
-        }
-    }
-
-    /// Fetch relevant chunk data and place it in a flat buffer.
-    fn gather_chunks<'a>(&mut self, chunk_pos: ChunkPos, chunks: &ChunkStorage) -> Option<()> {
-        // Fetch chunk references of the surrounding terrain
-        let mut near_chunks = [ChunkRef::placeholder(); 27];
-        {
-            let mut idx = 0;
-            for z in -1..=1 {
-                for y in -1..=1 {
-                    for x in -1..=1 {
-                        let mut pos = chunk_pos;
-                        pos.coords += [x, y, z];
-                        near_chunks[idx] = chunks.chunk_at(pos)?;
-                        idx += 1;
-                    }
-                }
-            }
-        }
-
-        // Copy block and light data
-        let mut idx = 0;
-        for z in 0..3 {
-            for y in 0..3 {
-                for x in 0..3 {
-                    const FROM: [i32; 3] = [CHUNK_SIZE - MARGIN, 0, 0];
-                    const TO: [i32; 3] = [0, MARGIN, MARGIN + CHUNK_SIZE];
-                    const SIZE: [i32; 3] = [MARGIN, CHUNK_SIZE, MARGIN];
-                    self.fetch_chunk(
-                        near_chunks[idx],
-                        [FROM[x], FROM[y], FROM[z]].into(),
-                        [TO[x], TO[y], TO[z]].into(),
-                        [SIZE[x], SIZE[y], SIZE[z]].into(),
-                    );
-                    idx += 1;
-                }
-            }
-        }
-
-        // Initialize light spreader
-        if let Some(data) = near_chunks[13].blocks() {
-            let mut base_pos = chunk_pos.chunk_to_block();
-            base_pos.coords -= [MARGIN; 3];
-            self.light_spread.reset(base_pos, data);
-        }
-
-        Some(())
-    }
-
-    /*
-
-    fn check_light(&mut self, pos: Int3, l: u8) {
-        let idx = self.index_for(pos);
-        let pos = [pos.x as u32, pos.y as u32, pos.z as u32];
-        if pos[0] >= BBUF_SIZE as u32 || pos[1] >= BBUF_SIZE as u32 || pos[2] >= BBUF_SIZE as u32 {
-            return;
-        }
-        if !self.is_clear(idx) {
-            return;
-        }
-        let lx = self.skylight(idx);
-        if lx < l {
-            self.light_buf[idx as usize] = l;
-            if !self.light_dirty_table.get(idx as usize) {
-                self.light_dirty_queue
-                    .push_back([pos[0] as u8, pos[1] as u8, pos[2] as u8]);
-                self.light_dirty_table.set(idx as usize);
-            }
-        }
-    }
-
-    fn check_light_pair(&mut self, pos0: Int3, pos1: Int3) {
-        let idx0 = self.index_for(pos0);
-        let idx1 = self.index_for(pos1);
-
-        //self.light_buf[idx0 as usize] = 0;
-        //self.light_buf[idx1 as usize] = 0;
-        //return;
-
-        if !self.is_clear(idx0) || !self.is_clear(idx1) {
-            return;
-        }
-        let l0 = self.skylight(idx0);
-        let l0d = l0.saturating_sub(self.light_dither[idx0 as usize]);
-        let l1 = self.skylight(idx1);
-        let l1d = l1.saturating_sub(self.light_dither[idx1 as usize]);
-        let (pos, idx, l) = if l0d > l1 {
-            (pos1, idx1, l0d)
-        } else if l1d > l0 {
-            (pos0, idx0, l1d)
-        } else {
-            return;
-        };
-        self.light_buf[idx as usize] = l;
-        if !self.light_dirty_table.get(idx as usize) {
-            self.light_dirty_queue
-                .push_back([pos[0] as u8, pos[1] as u8, pos[2] as u8]);
-            self.light_dirty_table.set(idx as usize);
-        }
-    }
-
-    /// Propagate light among the entire chunk + neighboring blocks.
-    /// This pass is necessary to spread light across chunks.
-    /// However, since a per-chunk pass was already done, it is enough to scanline the edges of
-    /// the chunk only.
-    fn propagate_light(&mut self, chunk_pos: ChunkPos) {
-        // Dithering
-        let base_pos = (chunk_pos.coords << CHUNK_BITS) - [MARGIN, MARGIN, MARGIN];
-        let mut idx = 0;
-        for z in 0..BBUF_SIZE {
-            for y in 0..BBUF_SIZE {
-                for x in 0..BBUF_SIZE {
-                    let rnd = fxhash::hash32(&(base_pos + [x, y, z])) as u8;
-                    let rnd =
-                        ((rnd as u32 * self.light_decay as u32 * self.cfg.light_dither_frac.0)
-                            >> (8 + self.cfg.light_dither_frac.1)) as u8;
-                    self.light_dither[idx] = self.light_decay + rnd;
-                    idx += 1;
-                }
-            }
-        }
-
-        // Scan the 6 edge planes of the chunk for any light gradients
-        for y in 0..BBUF_SIZE {
-            for x in 0..BBUF_SIZE {
-                self.check_light_pair([x, y, MARGIN - 1].into(), [x, y, MARGIN].into());
-            }
-        }
-        for z in 0..BBUF_SIZE {
-            for x in 0..BBUF_SIZE {
-                self.check_light_pair([x, MARGIN - 1, z].into(), [x, MARGIN, z].into());
-            }
-            for x in 0..BBUF_SIZE {
-                self.check_light_pair(
-                    [x, MARGIN + CHUNK_SIZE - 1, z].into(),
-                    [x, MARGIN + CHUNK_SIZE, z].into(),
-                );
-            }
-            for y in 0..BBUF_SIZE {
-                self.check_light_pair([MARGIN - 1, y, z].into(), [MARGIN, y, z].into());
-            }
-            for y in 0..BBUF_SIZE {
-                self.check_light_pair(
-                    [MARGIN + CHUNK_SIZE - 1, y, z].into(),
-                    [MARGIN + CHUNK_SIZE, y, z].into(),
-                );
-            }
-        }
-        for y in 0..BBUF_SIZE {
-            for x in 0..BBUF_SIZE {
-                self.check_light_pair(
-                    [x, y, MARGIN + CHUNK_SIZE - 1].into(),
-                    [x, y, MARGIN + CHUNK_SIZE].into(),
-                );
-            }
-        }
-
-        // Resolve dirty blocks recursively
-        while let Some(pos) = self.light_dirty_queue.pop_front() {
-            let pos = Int3::new([pos[0] as i32, pos[1] as i32, pos[2] as i32]);
-            let idx = self.index_for(pos);
-            self.light_dirty_table.unset(idx as usize);
-            let l = self
-                .skylight(idx)
-                .saturating_sub(self.light_dither[idx as usize]);
-            self.check_light(pos + [-1, 0, 0], l);
-            self.check_light(pos + [1, 0, 0], l);
-            self.check_light(pos + [0, -1, 0], l);
-            self.check_light(pos + [0, 1, 0], l);
-            self.check_light(pos + [0, 0, -1], l);
-            self.check_light(pos + [0, 0, 1], l);
-        }
-    }
-
-    */
-
-    fn seed_light(&mut self, pos: Int3) {
-        self.light_spread
-            .spread_from(&mut self.light_buf, &self.block_buf, pos);
-    }
-
-    fn spread_light(&mut self) {
-        // Seed light from the 6 planes that separate chunks
-        // OPTIMIZE: Only spread across chunks, reducing 65% of checks
-        for y in 0..BBUF_SIZE {
-            for x in 0..BBUF_SIZE {
-                self.seed_light([x, y, MARGIN - 1].into());
-                self.seed_light([x, y, MARGIN].into());
-            }
-        }
-        for z in 0..BBUF_SIZE {
-            for x in 0..BBUF_SIZE {
-                self.seed_light([x, MARGIN - 1, z].into());
-                self.seed_light([x, MARGIN, z].into());
-            }
-            for x in 0..BBUF_SIZE {
-                self.seed_light([x, MARGIN + CHUNK_SIZE - 1, z].into());
-                self.seed_light([x, MARGIN + CHUNK_SIZE, z].into());
-            }
-            for y in 0..BBUF_SIZE {
-                self.seed_light([MARGIN - 1, y, z].into());
-                self.seed_light([MARGIN, y, z].into());
-            }
-            for y in 0..BBUF_SIZE {
-                self.seed_light([MARGIN + CHUNK_SIZE - 1, y, z].into());
-                self.seed_light([MARGIN + CHUNK_SIZE, y, z].into());
-            }
-        }
-        for y in 0..BBUF_SIZE {
-            for x in 0..BBUF_SIZE {
-                self.seed_light([x, y, MARGIN + CHUNK_SIZE - 1].into());
-                self.seed_light([x, y, MARGIN + CHUNK_SIZE].into());
-            }
-        }
-
-        /*
-        // Seed light only from the chunk border
-        for z in -1..=0 {
-            for y in -1..=CHUNK_SIZE {
-                for x in -1..=CHUNK_SIZE {
-                    self.seed_light([x, y, z].into());
-                }
-            }
-        }
-        for z in 1..CHUNK_SIZE - 1 {
-            for y in -1..=0 {
-                for x in -1..=CHUNK_SIZE {
-                    self.seed_light([x, y, z].into());
-                }
-            }
-            for y in 1..CHUNK_SIZE - 1 {
-                self.seed_light([-1, y, z].into());
-                self.seed_light([0, y, z].into());
-                self.seed_light([CHUNK_SIZE - 1, y, z].into());
-                self.seed_light([CHUNK_SIZE, y, z].into());
-            }
-            for y in CHUNK_SIZE - 1..=CHUNK_SIZE {
-                for x in -1..=CHUNK_SIZE {
-                    self.seed_light([x, y, z].into());
-                }
-            }
-        }
-        for z in CHUNK_SIZE - 1..=CHUNK_SIZE {
-            for y in -1..=CHUNK_SIZE {
-                for x in -1..=CHUNK_SIZE {
-                    self.seed_light([x, y, z].into());
-                }
-            }
-        }
-        */
-
-        /*
-        // Seed chunk from every block
-        for z in 0..BBUF_SIZE {
-            for y in 0..BBUF_SIZE {
-                for x in 0..BBUF_SIZE {
-                    self.seed_light([x, y, z].into());
-                }
-            }
-        }
-        */
-
-        // Finish spreading
-        self.light_spread
-            .spread_pending(&mut self.light_buf, &self.block_buf);
-    }
-
-    /// Generate texture noise.
-    fn texture_noise(&mut self, chunk_pos: ChunkPos) {
-        // OPTIMIZE: Generate noise rows by hashing hashes
-        let mut idx = 0;
-        let base_pos = chunk_pos.coords << CHUNK_BITS;
-        for z in 0..=CHUNK_SIZE {
-            for y in 0..=CHUNK_SIZE {
-                for x in 0..=CHUNK_SIZE {
-                    let rnd = fxhash::hash32(&(base_pos + [x, y, z]));
-                    let val = 0x3f800000 | (rnd >> 9);
-                    let val = f32::from_bits(val) * 2. - 3.;
-                    self.noise_buf[idx] = val;
-                    idx += 1;
-                }
-            }
         }
     }
 
@@ -1337,27 +1064,194 @@ impl Mesher2 {
         }
         self.quad_queue = quad_queue;
     }
+}
+impl Mesher2<TerrainMesherKind> {
+    fn fetch_chunk(&mut self, chunk: ChunkRef, from: Int3, to: Int3, size: Int3) {
+        let mut to_idx = ((to.z * BBUF_SIZE) + to.y) * BBUF_SIZE + to.x;
+        if let Some(chunk) = chunk.blocks() {
+            let mut from_idx = (((from.z << CHUNK_BITS) | from.y) << CHUNK_BITS) | from.x;
+            for _z in 0..size.z {
+                for _y in 0..size.y {
+                    for _x in 0..size.x {
+                        self.kind.block_buf[to_idx as usize] = chunk.blocks[from_idx as usize];
+                        self.kind.light_buf[to_idx as usize] = chunk.skylight[from_idx as usize];
+                        from_idx += 1;
+                        to_idx += 1;
+                    }
+                    from_idx += CHUNK_SIZE - size.x;
+                    to_idx += BBUF_SIZE - size.x;
+                }
+                from_idx += CHUNK_SIZE * CHUNK_SIZE - CHUNK_SIZE * size.y;
+                to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
+            }
+        } else {
+            let b = chunk.homogeneous_block();
+            let l = chunk.homogeneous_skylight();
+            for _z in 0..size.z {
+                for _y in 0..size.y {
+                    for _x in 0..size.x {
+                        self.kind.block_buf[to_idx as usize] = b;
+                        self.kind.light_buf[to_idx as usize] = l;
+                        to_idx += 1;
+                    }
+                    to_idx += BBUF_SIZE - size.x;
+                }
+                to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
+            }
+        }
+    }
 
-    fn make_mesh<'a>(
+    /// Fetch relevant chunk data and place it in a flat buffer.
+    fn gather_chunks<'a>(&mut self, chunk_pos: ChunkPos, chunks: &ChunkStorage) -> Option<bool> {
+        // Fetch chunk references of the surrounding terrain
+        let mut near_chunks = [ChunkRef::placeholder(); 27];
+        {
+            let mut idx = 0;
+            for z in -1..=1 {
+                for y in -1..=1 {
+                    for x in -1..=1 {
+                        let mut pos = chunk_pos;
+                        pos.coords += [x, y, z];
+                        near_chunks[idx] = chunks.chunk_at(pos)?;
+                        idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Check homogeneous chunk hints
+        if near_chunks[13].is_homogeneous() {
+            // If the center is clear, nothing to do
+            if near_chunks[13]
+                .homogeneous_block()
+                .is_clear(&self.kind.style)
+            {
+                return Some(false);
+            }
+            // If the center and the 6 chunks around it are solid, nothing to do
+            const SOLID_REQ: &[usize] = &[13, 4, 10, 12, 14, 16, 22];
+            if SOLID_REQ.iter().all(|&idx| {
+                near_chunks[idx].is_homogeneous()
+                    && near_chunks[idx]
+                        .homogeneous_block()
+                        .is_solid(&self.kind.style)
+            }) {
+                return Some(false);
+            }
+        }
+
+        // Copy block and light data
+        let mut idx = 0;
+        for z in 0..3 {
+            for y in 0..3 {
+                for x in 0..3 {
+                    const FROM: [i32; 3] = [CHUNK_SIZE - MARGIN, 0, 0];
+                    const TO: [i32; 3] = [0, MARGIN, MARGIN + CHUNK_SIZE];
+                    const SIZE: [i32; 3] = [MARGIN, CHUNK_SIZE, MARGIN];
+                    self.fetch_chunk(
+                        near_chunks[idx],
+                        [FROM[x], FROM[y], FROM[z]].into(),
+                        [TO[x], TO[y], TO[z]].into(),
+                        [SIZE[x], SIZE[y], SIZE[z]].into(),
+                    );
+                    idx += 1;
+                }
+            }
+        }
+
+        // Initialize light spreader
+        if let Some(data) = near_chunks[13].blocks() {
+            let mut base_pos = chunk_pos.chunk_to_block();
+            base_pos.coords -= [MARGIN; 3];
+            self.kind.light_spread.reset(base_pos, data);
+        }
+
+        Some(true)
+    }
+
+    fn seed_light(&mut self, pos: Int3) {
+        self.kind
+            .light_spread
+            .spread_from(&mut self.kind.light_buf, &self.kind.block_buf, pos);
+    }
+
+    fn spread_light(&mut self) {
+        // Seed light from the 6 planes that separate chunks
+        // OPTIMIZE: Only spread across chunks, reducing 65% of checks
+        for y in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, y, MARGIN - 1].into());
+                self.seed_light([x, y, MARGIN].into());
+            }
+        }
+        for z in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, MARGIN - 1, z].into());
+                self.seed_light([x, MARGIN, z].into());
+            }
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, MARGIN + CHUNK_SIZE - 1, z].into());
+                self.seed_light([x, MARGIN + CHUNK_SIZE, z].into());
+            }
+            for y in 0..BBUF_SIZE {
+                self.seed_light([MARGIN - 1, y, z].into());
+                self.seed_light([MARGIN, y, z].into());
+            }
+            for y in 0..BBUF_SIZE {
+                self.seed_light([MARGIN + CHUNK_SIZE - 1, y, z].into());
+                self.seed_light([MARGIN + CHUNK_SIZE, y, z].into());
+            }
+        }
+        for y in 0..BBUF_SIZE {
+            for x in 0..BBUF_SIZE {
+                self.seed_light([x, y, MARGIN + CHUNK_SIZE - 1].into());
+                self.seed_light([x, y, MARGIN + CHUNK_SIZE].into());
+            }
+        }
+
+        // Spread initial light seeds
+        self.kind
+            .light_spread
+            .spread_pending(&mut self.kind.light_buf, &self.kind.block_buf);
+    }
+
+    /// Generate texture noise.
+    fn texture_noise(&mut self, chunk_pos: ChunkPos) {
+        // OPTIMIZE: Generate noise rows by hashing hashes
+        let mut idx = 0;
+        let base_pos = chunk_pos.coords << CHUNK_BITS;
+        for z in 0..=CHUNK_SIZE {
+            for y in 0..=CHUNK_SIZE {
+                for x in 0..=CHUNK_SIZE {
+                    let rnd = fxhash::hash32(&(base_pos + [x, y, z]));
+                    let val = 0x3f800000 | (rnd >> 9);
+                    let val = f32::from_bits(val) * 2. - 3.;
+                    self.kind.noise_buf[idx] = val;
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    fn make_chunk_mesh<'a>(
         &mut self,
         chunk_pos: ChunkPos,
         chunks_raw: &'a RwLock<ChunkStorage>,
         chunks_store: &mut Option<RwLockReadGuard<'a, ChunkStorage>>,
     ) -> Option<()> {
         // Make sure the necessary chunks are available
-        self.gather_chunks(
+        let nonempty = self.gather_chunks(
             chunk_pos,
             chunks_store.get_or_insert_with(|| chunks_raw.read()),
         )?;
+        if !nonempty {
+            return Some(());
+        }
         chunks_store.take();
 
         // Reset everything
-        //self.atlas.reset();
-        self.packer
-            .reset(self.cfg.atlas_size[0], self.cfg.atlas_size[1]);
-        self.atlas.reset(&self.cfg);
-        self.quad_queue.clear();
-        self.vertex_set.clear();
+        self.reset_atlas();
+        self.reset_meshqueues();
 
         // Update light using info from neighboring chunks
         // Commmented: debug hack to disable mesh-time light spreading
@@ -1380,6 +1274,157 @@ impl Mesher2 {
         self.produce_triangles();
 
         Some(())
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ModelMesherCfg {
+    pub cfg: MesherCfg,
+    pub transparency: [u8; 4],
+    pub light_value: u8,
+    pub lighting: LightingConf,
+}
+
+pub struct ModelMesherKind {
+    /// The color used as transparency.
+    transparency: [u8; 4],
+    /// The uniform virtual light lighting everything up.
+    uniform_light: u8,
+    /// A flat buffer containing colors for all blocks and a little margin.
+    color_buf: [[u8; 4]; BBUF_LEN],
+    /// Configuration for how to do lighting.
+    light_conf: LightingConf,
+}
+impl ModelMesherKind {
+    pub fn new(cfg: &ModelMesherCfg) -> Self {
+        Self {
+            transparency: cfg.transparency,
+            uniform_light: cfg.light_value,
+            color_buf: [cfg.transparency; BBUF_LEN],
+            light_conf: cfg.lighting.clone(),
+        }
+    }
+}
+impl MesherKind for ModelMesherKind {
+    fn is_solid(&self, idx: i32) -> bool {
+        self.color_buf[idx as usize] != self.transparency
+    }
+
+    fn is_clear(&self, idx: i32) -> bool {
+        self.color_buf[idx as usize] == self.transparency
+    }
+
+    fn light_conf(&self) -> &LightingConf {
+        &self.light_conf
+    }
+
+    fn light_value(&self, idx: i32) -> u8 {
+        if self.color_buf[idx as usize] == self.transparency {
+            self.uniform_light
+        } else {
+            0
+        }
+    }
+
+    fn color(this: &mut Mesher2<Self>, blockidx: i32, _blockpos: Int3, _airpos: Int3) -> [u8; 4] {
+        this.kind.color_buf[blockidx as usize]
+    }
+}
+impl Mesher2<ModelMesherKind> {
+    fn blit_color(&mut self, data: &[[u8; 4]], dsize: Int3, from: Int3, to: Int3, size: Int3) {
+        let mut to_idx = (to.z * BBUF_SIZE + to.y) * BBUF_SIZE + to.x;
+        let mut from_idx = (from.z * dsize.y + from.y) * dsize.x + from.x;
+        for _z in 0..size.z {
+            for _y in 0..size.y {
+                for _x in 0..size.x {
+                    self.kind.color_buf[to_idx as usize] = data[from_idx as usize];
+                    from_idx += 1;
+                    to_idx += 1;
+                }
+                from_idx += dsize.x - size.x;
+                to_idx += BBUF_SIZE - size.x;
+            }
+            from_idx += dsize.x * dsize.y - dsize.x * size.y;
+            to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
+        }
+    }
+
+    fn fill_transparency(&mut self, to: Int3, size: Int3) {
+        let mut to_idx = ((to.z * BBUF_SIZE) + to.y) * BBUF_SIZE + to.x;
+        for _z in 0..size.z {
+            for _y in 0..size.y {
+                for _x in 0..size.x {
+                    self.kind.color_buf[to_idx as usize] = self.kind.transparency;
+                    to_idx += 1;
+                }
+                to_idx += BBUF_SIZE - size.x;
+            }
+            to_idx += BBUF_SIZE * BBUF_SIZE - BBUF_SIZE * size.y;
+        }
+    }
+
+    fn fetch_color(&mut self, data: &[[u8; 4]], dsize: Int3, mut from: Int3) {
+        // Clip blit window
+        from -= [MARGIN; 3];
+        let mut to = Int3::zero();
+        let mut size = Int3::splat(BBUF_SIZE);
+        for axis in 0..3 {
+            if from[axis] < 0 {
+                to[axis] -= from[axis];
+                size[axis] += from[axis];
+                from[axis] = 0;
+            }
+        }
+        for axis in 0..3 {
+            let extra = from[axis] + size[axis] - dsize[axis];
+            if extra > 0 {
+                size[axis] -= extra;
+            }
+            if size[axis] <= 0 {
+                return;
+            }
+        }
+
+        // Blit color
+        for axis in 0..3 {
+            if to[axis] > 0 || to[axis] + size[axis] < BBUF_SIZE {
+                self.fill_transparency(Int3::zero(), Int3::splat(BBUF_SIZE));
+                break;
+            }
+        }
+        self.blit_color(data, dsize, from, to, size);
+    }
+
+    fn make_submesh(&mut self) {
+        // Reset only the mesh-producing machinery
+        self.reset_meshqueues();
+
+        // Turn voxels into a list of quads
+        self.visit_layers();
+
+        // Take these quads and produce triangles
+        self.produce_triangles();
+    }
+
+    pub fn make_model_mesh(&mut self, data: &[[u8; 4]], dsize: Int3) {
+        assert_eq!(data.len(), (dsize.x * dsize.y * dsize.z) as usize);
+
+        self.reset_atlas();
+        for z in (0..dsize.z).step_by(CHUNK_SIZE as usize) {
+            for y in (0..dsize.z).step_by(CHUNK_SIZE as usize) {
+                for x in (0..dsize.x).step_by(CHUNK_SIZE as usize) {
+                    let offset = Int3::new([x, y, z]);
+                    self.fetch_color(data, dsize, offset);
+                    let top = self.mesh.vertices.len();
+                    self.make_submesh();
+                    for v in self.mesh.vertices.iter_mut().skip(top) {
+                        for axis in 0..3 {
+                            v.pos[axis] += offset[axis] as u8;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

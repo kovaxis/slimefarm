@@ -35,11 +35,18 @@ impl ChunkStorage {
         }
     }
 
+    /// Get an immutable reference to the chunk at the given position (if it was already generated).
+    /// Keeps the chunk storage borrowed (and therefore locked) for the duration of the reference.
     pub fn chunk_at(&self, pos: ChunkPos) -> Option<ChunkRef> {
         self.chunks.get(pos).map(|cnk| cnk.as_ref())
     }
 
-    pub fn chunk_arc_at(&self, pos: ChunkPos) -> Option<ChunkArc> {
+    /// Get an immutable reference-counted reference to the chunk at the given position (if it was
+    /// already generated).
+    /// Does not extend the borrow of `ChunkStorage`, so it can be unlocked while the chunk
+    /// information is used. If the chunk is modified in the underlying chunk storage, the reference
+    /// will still be valid and point to the original chunk.
+    pub fn _chunk_arc_at(&self, pos: ChunkPos) -> Option<ChunkArc> {
         self.chunks.get(pos).map(|cnk| cnk.clone())
     }
 
@@ -297,7 +304,7 @@ macro_rules! light_spreader {
                     }
                 }
 
-                pub fn reset(&mut self, base_pos: BlockPos, chunk: &ChunkData) {
+                pub fn reset(&mut self, _base_pos: BlockPos, chunk: &ChunkData) {
                     // Load light mode from chunk metadata
                     self.mode = chunk.light_mode as usize;
                     let mode = &self.light_modes[self.mode];
@@ -358,7 +365,7 @@ macro_rules! light_spreader {
                     let idx = (from.x + SIZE * from.y + SIZE * SIZE * from.z) as usize;
                     let decay = self.decay as u32;
 
-                    
+
                     let l1 = light[idx].saturating_sub(decay as u8);
                     let mut s1 = false;
                     s1 |= self.spread_to(light, blocks, from + [1, 0, 0], l1);
@@ -382,7 +389,7 @@ macro_rules! light_spreader {
                         self.spread_to(light, blocks, from + [1, 0, -1], l2);
                         self.spread_to(light, blocks, from + [-1, 0, -1], l2);
                         self.spread_to(light, blocks, from + [1,0,  1], l2);
-                        
+
                         let l3 = light[idx].saturating_sub((decay * 1816187 / 1048576) as u8);
                         self.spread_to(light, blocks, from + [1, 1, 1], l3);
                         self.spread_to(light, blocks, from + [1, 1, -1], l3);

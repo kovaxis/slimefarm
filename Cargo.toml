@@ -47,6 +47,7 @@ notify = "4"
 lazysort = "0.2"
 libloading = "0.7"
 rectpack = { path = "rectpack" }
+dot_vox = "4"
 
 [profile.dev.package."*"]
 opt-level = 3

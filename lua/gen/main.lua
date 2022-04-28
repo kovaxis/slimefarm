@@ -26,22 +26,17 @@ blocks.register {
 
 lightmodes.register {
     name = 'base.std',
+    -- 1/4 per block
     light = {
-        -- 1/4 per block
         base = 0,
         mul = 1,
         shr = 2,
     },
-    _decay = {
+    -- 8 per block
+    decay = {
         base = 8,
         mul = 0,
         shr = 0,
-    },
-    decay = {
-        -- 8 + [0, 0]
-        base = 8 * 2^16,
-        mul = math.floor(0 * 2^16 / 255),
-        shr = 16,
     },
 }
 

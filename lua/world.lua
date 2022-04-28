@@ -4,6 +4,7 @@ local util = require 'util'
 local Mesh = require 'mesh'
 local input = require 'input'
 local Sprite = require 'sprite'
+local voxel = require 'voxel'
 
 local World = class{}
 
@@ -15,7 +16,7 @@ function World:new()
         terrain = util.Shader{
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
-            uniforms = {'mvp', 'mv', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
+            uniforms = {'offset', 'color', 'light', 'mvp', 'mv', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
         portal = util.Shader{
             vertex = 'portal.vert',
@@ -200,12 +201,7 @@ function World:load_terrain()
                 kind = 'gen.plainsgen',
             }},
         },
-        mesher = {
-            atlas_size = {64, 1024},
-            -- clear, normal, blocked, blocked, base
-            exposure_table = {65, 60, 45, 45, 0},
-            light_uv_offset = 0.5,
-        },
+        mesher = voxel.mesher_cfg,
     }
     self.terrain:set_interpolation(false, true)
     --self.terrain:set_view_distance(32*12, 32*14)

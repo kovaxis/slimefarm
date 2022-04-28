@@ -1,17 +1,21 @@
 
-local Mesh = require 'mesh'
+local voxel = require 'voxel'
 local class = require 'class'
 local input = require 'input'
 local util = require 'util'
 
 local Player = class{}
 
+Player.model = voxel.dot_vox 'voxel/chr_knight.vox'
+
+--[[
 Player.mesh = Mesh{}
 Player.mesh:add_cube(   0,   0,   0,   1.2, 1.2, 1.2,      0, 0.31, 0.13,   1)
 Player.mesh:add_cube( 0.4,   1, 0.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
 Player.mesh:add_cube(-0.4,   1, 0.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
 Player.mesh:add_cube(   0,   0,   0,     2,   2,   2,      0, 0.63, 0.26, 0.4)
 Player.mesh_buf = Player.mesh:as_buffer()
+]]
 
 local bbox_h = 2
 local bbox_v = 1.8
@@ -232,9 +236,13 @@ function Player:draw(world)
     local sxy = (1/sz)^0.5
     frame.mvp_world:scale(sxy, sxy, sz)
 
-    world.shaders.basic:set_matrix('mvp', frame.mvp_world)
-    world.shaders.basic:set_vec4('tint', 1, 1, 1, 1)
-    world.shaders.basic:draw(Player.mesh_buf, frame.params_world)
+    local sx, sy, sz = Player.model:size()
+    frame.mvp_world:translate(0, 0, -bbox_v/2)
+    frame.mvp_world:scale(1/8)
+    frame.mvp_world:translate(-sx/2, -sy/2, 0)
+
+    world.shaders.terrain:set_matrix('mvp', frame.mvp_world)
+    world.shaders.terrain:draw_voxel(Player.model, frame.params_world)
 end
 
 return Player

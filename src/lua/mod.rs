@@ -992,6 +992,17 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                 fn image(path: String) {
                     LuaImage::new(&path)?
                 }
+
+                fn dot_vox((raw, idx): (LuaString, Option<usize>)) {
+                    let idx = idx.unwrap_or(0);
+                    let models = crate::magicavox::load_vox(raw.as_bytes()).to_lua_err()?;
+                    lua_assert!(idx < models.len(), "model index {} out of range (.vox file contains only {} models)", idx, models.len());
+                    let (data, size) = models.into_iter().skip(idx).next().unwrap();
+                    let raw = unsafe {
+                        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
+                    };
+                    (lua.create_string(raw)?, size.x, size.y, size.z)
+                }
             },
         )
         .unwrap();

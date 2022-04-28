@@ -15,14 +15,6 @@ impl<V, I> Default for Mesh<V, I> {
     }
 }
 
-fn vert(pos: Vec3, normal: [i8; 3], color: [u8; 4]) -> SimpleVertex {
-    SimpleVertex {
-        pos: pos.into(),
-        normal: [normal[0], normal[1], normal[2], 0],
-        color: color,
-    }
-}
-
 pub trait MeshIndex {
     const MAX: usize;
     fn from_usize(x: usize) -> Self;
@@ -50,7 +42,7 @@ impl MeshIndex for u32 {
 }
 
 impl<V, I> Mesh<V, I> {
-    pub fn with_capacity(verts: usize, faces: usize) -> Self {
+    pub fn _with_capacity(verts: usize, faces: usize) -> Self {
         Self {
             vertices: Vec::with_capacity(verts),
             indices: Vec::with_capacity(faces * 3),
@@ -58,7 +50,7 @@ impl<V, I> Mesh<V, I> {
     }
 
     /// Remove all vertices and faces.
-    pub fn _clear(&mut self) {
+    pub fn clear(&mut self) {
         self.vertices.clear();
         self.indices.clear();
     }
@@ -91,14 +83,6 @@ impl<V, I: MeshIndex> Mesh<V, I> {
     pub fn add_vertex(&mut self, v: V) -> I {
         let idx = I::from_usize(self.vertices.len());
         self.vertices.push(v);
-        idx
-    }
-}
-impl Mesh<SimpleVertex> {
-    /// Add a single vertex and return its index.
-    pub fn add_vertex_simple(&mut self, v: Vec3, normal: [i8; 3], color: [u8; 4]) -> VertIdx {
-        let idx = self.vertices.len() as VertIdx;
-        self.vertices.push(vert(v, normal, color));
         idx
     }
 }
