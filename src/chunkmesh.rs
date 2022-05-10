@@ -1,4 +1,4 @@
-use crate::{mesh::RawBufPackage, prelude::*, terrain::RawPortalMesh};
+use crate::{magicavox::VoxelModel, mesh::RawBufPackage, prelude::*, terrain::RawPortalMesh};
 use rectpack::DensePacker;
 
 pub(crate) struct ChunkMeshPkg {
@@ -902,14 +902,6 @@ impl<D: MesherKind> Mesher2<D> {
 
     /// Generate triangles from the quad queue, avoiding T-junctions.
     fn produce_triangles(&mut self) {
-        // Figure out atlas size to determine the proper UV coordinates of vertices
-        self.atlas.round_size();
-        let uv_scale = Vec2::new(
-            (self.atlas.size[0] as f32).recip(),
-            (self.atlas.size[1] as f32).recip(),
-        );
-        let luv_offset = uv_scale * self.cfg.light_uv_offset;
-
         // Go through all quads, generating the necessary triangles to not only cover the quads,
         // but also to make sure there are no T-junctions, ie. vertex to edge joints
         // To do this, the entire boundary of the quad is iterated, checking if there is queued
@@ -973,9 +965,8 @@ impl<D: MesherKind> Mesher2<D> {
                 luv[luv_axes[1]] += vert.off.y;
                 this.mesh.add_vertex(VoxelVertex {
                     pos: [pos.x as u8, pos.y as u8, pos.z as u8, 1],
-                    cuv: (cuv.to_f32() * uv_scale).into(),
-                    luv: (luv.to_f32() * uv_scale + luv_offset).into(),
-                    //uv: rand::random(),
+                    cuv: cuv.to_f32().into(),
+                    luv: luv.to_f32().into(),
                 })
             };
 
@@ -1063,6 +1054,22 @@ impl<D: MesherKind> Mesher2<D> {
             }
         }
         self.quad_queue = quad_queue;
+    }
+
+    /// Scale texture coordinates so that they reference the current atlas size correctly.
+    fn rescale_uv(&mut self) {
+        // Figure out atlas size to determine the proper UV coordinates of vertices
+        self.atlas.round_size();
+        let uv_scale = Vec2::new(
+            (self.atlas.size[0] as f32).recip(),
+            (self.atlas.size[1] as f32).recip(),
+        );
+        let luv_offset = uv_scale * self.cfg.light_uv_offset;
+
+        for v in self.mesh.vertices.iter_mut() {
+            v.cuv = (Vec2::from(v.cuv) * uv_scale).into();
+            v.luv = (Vec2::from(v.luv) * uv_scale + luv_offset).into();
+        }
     }
 }
 impl Mesher2<TerrainMesherKind> {
@@ -1273,6 +1280,9 @@ impl Mesher2<TerrainMesherKind> {
         // Take these quads and produce triangles
         self.produce_triangles();
 
+        // Adjust UV coordinates to match atlas size
+        self.rescale_uv();
+
         Some(())
     }
 }
@@ -1280,18 +1290,20 @@ impl Mesher2<TerrainMesherKind> {
 #[derive(Deserialize)]
 pub struct ModelMesherCfg {
     pub cfg: MesherCfg,
-    pub transparency: [u8; 4],
+    pub transparency: u8,
     pub light_value: u8,
     pub lighting: LightingConf,
 }
 
 pub struct ModelMesherKind {
-    /// The color used as transparency.
-    transparency: [u8; 4],
+    /// The voxel type used as transparency.
+    transparency: u8,
     /// The uniform virtual light lighting everything up.
     uniform_light: u8,
-    /// A flat buffer containing colors for all blocks and a little margin.
-    color_buf: [[u8; 4]; BBUF_LEN],
+    /// A flat buffer containing voxels for all blocks and a little margin.
+    voxel_buf: [u8; BBUF_LEN],
+    /// The palette used to map voxel types to color.
+    palette: [[u8; 4]; 256],
     /// Configuration for how to do lighting.
     light_conf: LightingConf,
 }
@@ -1300,18 +1312,19 @@ impl ModelMesherKind {
         Self {
             transparency: cfg.transparency,
             uniform_light: cfg.light_value,
-            color_buf: [cfg.transparency; BBUF_LEN],
+            voxel_buf: [cfg.transparency; BBUF_LEN],
+            palette: [[0; 4]; 256],
             light_conf: cfg.lighting.clone(),
         }
     }
 }
 impl MesherKind for ModelMesherKind {
     fn is_solid(&self, idx: i32) -> bool {
-        self.color_buf[idx as usize] != self.transparency
+        self.voxel_buf[idx as usize] != self.transparency
     }
 
     fn is_clear(&self, idx: i32) -> bool {
-        self.color_buf[idx as usize] == self.transparency
+        self.voxel_buf[idx as usize] == self.transparency
     }
 
     fn light_conf(&self) -> &LightingConf {
@@ -1319,7 +1332,7 @@ impl MesherKind for ModelMesherKind {
     }
 
     fn light_value(&self, idx: i32) -> u8 {
-        if self.color_buf[idx as usize] == self.transparency {
+        if self.voxel_buf[idx as usize] == self.transparency {
             self.uniform_light
         } else {
             0
@@ -1327,17 +1340,17 @@ impl MesherKind for ModelMesherKind {
     }
 
     fn color(this: &mut Mesher2<Self>, blockidx: i32, _blockpos: Int3, _airpos: Int3) -> [u8; 4] {
-        this.kind.color_buf[blockidx as usize]
+        this.kind.palette[this.kind.voxel_buf[blockidx as usize] as usize]
     }
 }
 impl Mesher2<ModelMesherKind> {
-    fn blit_color(&mut self, data: &[[u8; 4]], dsize: Int3, from: Int3, to: Int3, size: Int3) {
+    fn blit_voxel(&mut self, data: &[u8], dsize: Int3, from: Int3, to: Int3, size: Int3) {
         let mut to_idx = (to.z * BBUF_SIZE + to.y) * BBUF_SIZE + to.x;
         let mut from_idx = (from.z * dsize.y + from.y) * dsize.x + from.x;
         for _z in 0..size.z {
             for _y in 0..size.y {
                 for _x in 0..size.x {
-                    self.kind.color_buf[to_idx as usize] = data[from_idx as usize];
+                    self.kind.voxel_buf[to_idx as usize] = data[from_idx as usize];
                     from_idx += 1;
                     to_idx += 1;
                 }
@@ -1354,7 +1367,7 @@ impl Mesher2<ModelMesherKind> {
         for _z in 0..size.z {
             for _y in 0..size.y {
                 for _x in 0..size.x {
-                    self.kind.color_buf[to_idx as usize] = self.kind.transparency;
+                    self.kind.voxel_buf[to_idx as usize] = self.kind.transparency;
                     to_idx += 1;
                 }
                 to_idx += BBUF_SIZE - size.x;
@@ -1363,7 +1376,7 @@ impl Mesher2<ModelMesherKind> {
         }
     }
 
-    fn fetch_color(&mut self, data: &[[u8; 4]], dsize: Int3, mut from: Int3) {
+    fn fetch_voxel(&mut self, data: &[u8], dsize: Int3, mut from: Int3) {
         // Clip blit window
         from -= [MARGIN; 3];
         let mut to = Int3::zero();
@@ -1392,7 +1405,7 @@ impl Mesher2<ModelMesherKind> {
                 break;
             }
         }
-        self.blit_color(data, dsize, from, to, size);
+        self.blit_voxel(data, dsize, from, to, size);
     }
 
     fn make_submesh(&mut self) {
@@ -1406,15 +1419,17 @@ impl Mesher2<ModelMesherKind> {
         self.produce_triangles();
     }
 
-    pub fn make_model_mesh(&mut self, data: &[[u8; 4]], dsize: Int3) {
-        assert_eq!(data.len(), (dsize.x * dsize.y * dsize.z) as usize);
+    pub fn make_model_mesh(&mut self, m: &VoxelModel) {
+        let dsize = m.size();
+        assert_eq!(m.data().len(), (dsize.x * dsize.y * dsize.z) as usize);
 
+        self.kind.palette = *m.palette;
         self.reset_atlas();
         for z in (0..dsize.z).step_by(CHUNK_SIZE as usize) {
             for y in (0..dsize.z).step_by(CHUNK_SIZE as usize) {
                 for x in (0..dsize.x).step_by(CHUNK_SIZE as usize) {
                     let offset = Int3::new([x, y, z]);
-                    self.fetch_color(data, dsize, offset);
+                    self.fetch_voxel(m.data(), dsize, offset);
                     let top = self.mesh.vertices.len();
                     self.make_submesh();
                     for v in self.mesh.vertices.iter_mut().skip(top) {
@@ -1425,6 +1440,7 @@ impl Mesher2<ModelMesherKind> {
                 }
             }
         }
+        self.rescale_uv();
     }
 }
 

@@ -3,6 +3,9 @@ local input = require 'input'
 local World = require 'world'
 local Player = require 'player'
 local Enemy = require 'enemy'
+local voxel = require 'voxel'
+
+voxel.load_models('models.lua')
 
 local world = World{}
 table.insert(world.entities, Player{

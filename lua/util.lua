@@ -241,4 +241,43 @@ function util.Shader:draw_voxel(voxel, draw_params)
     gfx.draw(voxel:buffer(), self.program, self.raw_uniforms, draw_params)
 end
 
+
+-- Deep clone a table value.
+function util.clone(v)
+    if type(v) == 'table' then
+        local nv = {}
+        for k, v in pairs(v) do
+            nv[util.clone(k)] = util.clone(v)
+        end
+        v = nv
+    end
+    return v
+end
+
+
+util.Pool = class{}
+
+function util.Pool:new() end
+
+function util.Pool:clean()
+    local n = #self
+    local x = self[n] or {}
+    self[n] = nil
+    for k in pairs(x) do
+        x[k] = nil
+    end
+    return x
+end
+
+function util.Pool:dirty()
+    local n = #self
+    local x = self[n] or {}
+    self[n] = nil
+    return x
+end
+
+function util.Pool:put(x)
+    self[#self + 1] = x
+end
+
 return util

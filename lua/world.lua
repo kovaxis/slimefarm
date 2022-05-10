@@ -143,6 +143,9 @@ function World:tick()
         self:load_terrain()
     end
 
+    --Check whether voxel models changed
+    voxel.check_reload()
+
     --Tick entities
     for _, ent in ipairs(self.entities) do
         ent:tick(self)
@@ -487,6 +490,7 @@ function World:draw()
     --Get interpolation factor `s`, a weight between the previous tick and the current one
     frame.dt = now - self.last_frame
     frame.s = (now - self.next_tick) / self.tick_period
+    frame.t = self.tick_count + (1 + frame.s)
     self.last_frame = now
 
     --Find out real camera location

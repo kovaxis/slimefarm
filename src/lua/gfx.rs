@@ -1,6 +1,6 @@
 use crate::{
     chunkmesh::{Mesher2, MesherCfg, ModelMesherCfg, ModelMesherKind},
-    lua::{CameraFrame, CameraStack, LuaImage, MatrixStack},
+    lua::{CameraFrame, CameraStack, LuaImage, LuaVoxelModel, MatrixStack},
     prelude::*,
 };
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
@@ -313,19 +313,16 @@ impl LuaMesher {
     }
 }
 lua_type! {LuaMesher, lua, this,
-    mut fn mesh((raw, sx, sy, sz): (LuaString, i32, i32, i32)) {
-        let data = raw.as_bytes();
-        lua_assert!(data.len() == (sx * sy * sz * 4) as usize, "data size does not match given size");
-        let data = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const [u8; 4], data.len() / 4)
-        };
-        let dsize = Int3::new([sx, sy, sz]);
+    mut fn mesh(m: LuaAnyUserData) {
+        let m = m.borrow::<LuaVoxelModel>()?;
+        let sz = m.0.size();
+        assert_eq!(m.0.data().len(), (sz.x * sz.y * sz.z) as usize);
 
-        this.mesher.make_model_mesh(data, dsize);
+        this.mesher.make_model_mesh(&m.0);
         let buf = Rc::new(this.mesher.mesh.make_buffer(&this.state.display));
         let atlas = LuaTexture::new(this.mesher.atlas.make_texture(&this.state.display));
         LuaVoxelBuf {
-            size: dsize,
+            size: sz,
             buf,
             atlas,
         }

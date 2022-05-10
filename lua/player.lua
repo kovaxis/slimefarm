@@ -6,17 +6,6 @@ local util = require 'util'
 
 local Player = class{}
 
-Player.model = voxel.dot_vox 'voxel/chr_knight.vox'
-
---[[
-Player.mesh = Mesh{}
-Player.mesh:add_cube(   0,   0,   0,   1.2, 1.2, 1.2,      0, 0.31, 0.13,   1)
-Player.mesh:add_cube( 0.4,   1, 0.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
-Player.mesh:add_cube(-0.4,   1, 0.1,   0.2, 0.2, 0.6,      0,    0,    0,   1)
-Player.mesh:add_cube(   0,   0,   0,     2,   2,   2,      0, 0.63, 0.26, 0.4)
-Player.mesh_buf = Player.mesh:as_buffer()
-]]
-
 local bbox_h = 2
 local bbox_v = 1.8
 local gravity = 0.04
@@ -77,6 +66,8 @@ function Player:new()
     self.visual_fall_time = 0
     self.draw_r = 1.1 * math.sqrt(3)
 
+    self.anim = voxel.AnimState{}
+
     self.jumps_left = 0
     self.jump_was_down = false
 
@@ -108,7 +99,27 @@ function Player:tick(world)
     --Apply gravity
     self.vel_z = self.vel_z - gravity
 
-    --Jump around
+    --Horizontal movement
+    local wx, wy = wasd_delta(world.cam_yaw)
+    if self.on_ground then
+        --Run around
+        self.vel_x, self.vel_y = wx * walk_speed, wy * walk_speed
+    else
+        --Maneuver in the air
+        local cur_norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
+        local max_norm = math.max(cur_norm, air_maneuver_max)
+        self.vel_x = self.vel_x + wx * air_maneuver
+        self.vel_y = self.vel_y + wy * air_maneuver
+        local norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
+        if norm > max_norm then
+            --Renormalize
+            local mul_by = max_norm / norm
+            self.vel_x = self.vel_x * mul_by
+            self.vel_y = self.vel_y * mul_by
+        end
+    end
+
+    --Jump
     if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and (self.on_ground or not self.jump_was_down) then
         self.jump_ticks = 0
         self.jump_cooldown = jump_cooldown_start
@@ -124,9 +135,6 @@ function Player:tick(world)
             self.jump_ticks = self.jump_ticks + 1
             if self.jump_ticks >= jump_charge then
                 --Start jumping
-                local dx, dy = wasd_delta(world.cam_yaw)
-                self.vel_x = dx * jump_hvel
-                self.vel_y = dy * jump_hvel
                 self.vel_z = jump_vvel
             end
         else
@@ -148,32 +156,29 @@ function Player:tick(world)
         end
     end
 
-    --Maneuver in the air
-    if not self.on_ground then
-        local cur_norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
-        local max_norm = math.max(cur_norm, air_maneuver_max)
-        local dx, dy = wasd_delta(world.cam_yaw)
-        self.vel_x = self.vel_x + dx * air_maneuver
-        self.vel_y = self.vel_y + dy * air_maneuver
-        local norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
-        if norm > max_norm then
-            --Renormalize
-            local mul_by = max_norm / norm
-            self.vel_x = self.vel_x * mul_by
-            self.vel_y = self.vel_y * mul_by
-        end
-    end
-
     --Set yaw if moving
     if self.vel_x*self.vel_x + self.vel_y*self.vel_y > 0.02^2 then
         self.yaw = util.pos_to_yaw(self.vel_x, self.vel_y)
     end
 
-    --Count idle ticks
-    if self.on_ground and self.vel_x == 0 and self.vel_y == 0 then
-        self.idle_ticks = self.idle_ticks + 1
+    --Set animation from movement
+    if self.on_ground then
+        if self.vel_x == 0 and self.vel_y == 0 then
+            --Idle
+            self.anim:stop('run', world.tick_count)
+            self.anim:stop('air', world.tick_count)
+            self.anim:start_lazy('idle', world.tick_count)
+        else
+            --Run
+            self.anim:stop('idle', world.tick_count)
+            self.anim:stop('air', world.tick_count)
+            self.anim:start_lazy('run', world.tick_count)
+        end
     else
-        self.idle_ticks = 0
+        --Airtime
+        self.anim:stop('run', world.tick_count)
+        self.anim:stop('idle', world.tick_count)
+        self.anim:start_lazy('air', world.tick_count)
     end
 
     --Apply velocity to position
@@ -187,7 +192,7 @@ function Player:tick(world)
 
     --Move camera to point at player
     do
-        local focus_height = 3.2
+        local focus_height = 2
         local focus_dist = 8
         local cam_wall_dist = 0.4
         world.cam_pos:copy_from(self.pos)
@@ -204,45 +209,10 @@ function Player:draw(world)
     self.visual_yaw = util.approach(self.yaw - dyaw, self.yaw, yaw_anim_factor, yaw_anim_linear, frame.dt) % (2*math.pi)
     frame.mvp_world:rotate_z(self.visual_yaw)
 
-    self.visual_lag_vel_z = util.approach(self.visual_lag_vel_z, self.vel_z, lag_vel_z_mul, lag_vel_z_add, frame.dt)
-
-    local sz = 1
-    if self.jump_ticks >= 0 and self.jump_ticks < jump_charge then
-        --Jump charge animation
-        local x = (self.jump_ticks + frame.s) / jump_charge
-        sz = 0.8 + 0.2*(1+3.4*(x-1)*x)^2
-    elseif self.idle_ticks > 0 then
-        --On-ground animation
-        local acc = self.vel_z - self.visual_lag_vel_z
-        if self.vel_z <= 0 and acc > 0.0 then
-            --Squash animation
-            sz = 1 + 0.35 * (1/(1+2^(2.2*acc)) - 0.5)
-        else
-            --Idle animation
-            local x = (self.idle_ticks + frame.s) + 56
-            sz = 1 - 0.03 * math.sin(x*0.04) / (1+2^(30 - x*0.4))
-        end
-    elseif self.vel_z > 0 then
-        --Rise animation
-        sz = 1 - 0.8 * (1/(1+2^(8*self.vel_z)) - 0.5)
-    else
-        --Fall animation
-        self.visual_fall_time = self.visual_fall_time + self.vel_z * frame.dt
-        local mag = 0.02 * (1/(1+2^(-2*self.vel_z)) - 0.5)
-        local t = self.visual_fall_time
-        local x = math.sin(t * 17 + 11.758) + math.sin(t * 23 + 7.138) + math.sin(t * 38 + 2.873)
-        sz = 1 + mag * x
-    end
-    local sxy = (1/sz)^0.5
-    frame.mvp_world:scale(sxy, sxy, sz)
-
-    local sx, sy, sz = Player.model:size()
     frame.mvp_world:translate(0, 0, -bbox_v/2)
     frame.mvp_world:scale(1/8)
-    frame.mvp_world:translate(-sx/2, -sy/2, 0)
 
-    world.shaders.terrain:set_matrix('mvp', frame.mvp_world)
-    world.shaders.terrain:draw_voxel(Player.model, frame.params_world)
+    self.anim:draw(voxel.models.player, frame.t, world.shaders.terrain, frame.params_world, 'mvp', frame.mvp_world)
 end
 
 return Player

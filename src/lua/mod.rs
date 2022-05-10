@@ -1,6 +1,7 @@
 use crate::{
     gen::GenConfig,
     lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, StaticUniform, UniformStorage},
+    magicavox::VoxelModel,
     prelude::*,
     terrain::TerrainCfg,
 };
@@ -51,6 +52,22 @@ lua_type! {MatrixStack, lua, this,
         *this = *other * *this;
     }
 
+    // Right-multiplies the matrix by a "look-at matrix".
+    // This matrix takes any vector right-multiplied with it and takes it to camera coordinates.
+    fn look_at((x, y, z, fx, fy, fz, ux, uy, uz): (f32, f32, f32, f32, f32, f32, f32, f32, f32)) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        let eye = Vec3::new(x, y, z); // Position
+        let f = Vec3::new(fx, fy, fz).normalized(); // Y+
+        let r = f.cross(Vec3::new(ux, uy, uz)).normalized(); // X+
+        let u = r.cross(f); // Z+
+        *top = *top * Mat4::new(
+            Vec4::new(r.x, f.x, u.x, 0.),
+            Vec4::new(r.y, f.y, u.y, 0.),
+            Vec4::new(r.z, f.z, u.z, 0.),
+            Vec4::new(-r.dot(eye), -f.dot(eye), u.dot(eye), 1.)
+        );
+    }
+
     fn push() {
         let (stack, top) = &mut *this.stack.borrow_mut();
         stack.push(top.clone());
@@ -94,6 +111,10 @@ lua_type! {MatrixStack, lua, this,
     fn rotate_z(angle: f32) {
         let (_, top) = &mut *this.stack.borrow_mut();
         *top = *top * Mat4::from_rotation_z(angle);
+    }
+    fn rotate((angle, x, y, z): (f32, f32, f32, f32)) {
+        let (_, top) = &mut *this.stack.borrow_mut();
+        *top = *top * Mat4::from_rotation_around(Vec4::new(x, y, z, 1.), angle);
     }
 
     fn invert() {
@@ -598,6 +619,46 @@ lua_type! {LuaImage, lua, this,
     }
 }
 
+struct LuaVoxelModel(VoxelModel);
+lua_type! {LuaVoxelModel, lua, this,
+    fn size() {
+        let sz = this.0.size();
+        (sz.x, sz.y, sz.z)
+    }
+
+    fn palette(v: u8) {
+        let c = this.0.palette[v as usize];
+        (c[0], c[1], c[2], c[3])
+    }
+
+    mut fn set_palette((v, r, g, b, a): (u8, u8, u8, u8, u8)) {
+        this.0.palette[v as usize] = [r, g, b, a];
+    }
+
+    fn voxel((x, y, z): (i32, i32, i32)) {
+        let sz = this.0.size();
+        let v = this.0.data()[(x + sz.x * (y + sz.y * z)) as usize];
+        v
+    }
+
+    mut fn set_voxel((x, y, z, v): (i32, i32, i32, u8)) {
+        let sz = this.0.size();
+        this.0.data_mut()[(x + sz.x * (y + sz.y * z)) as usize] = v;
+    }
+
+    fn find() {
+        let mut find = [true; 256];
+        find[0] = false;
+        let list: Vec<Vec<i32>> = this.0
+            .find(&find)
+            .iter()
+            .skip(1)
+            .map(|list| list.iter().flat_map(|pos| [pos.x, pos.y, pos.z]).collect())
+            .collect();
+        list
+    }
+}
+
 struct Watcher {
     _raw: notify::RecommendedWatcher,
     rx: std::sync::mpsc::Receiver<WatcherEvent>,
@@ -899,7 +960,18 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
             LuaVec3 {
                 u: match args.len() {
                     0 => DVec3::zero(),
-                    1 => LuaVec3::from_lua_multi(args, lua)?.u,
+                    1 => {
+                        let val = args.iter().next().unwrap();
+                        match val {
+                            &LuaValue::Integer(x) => DVec3::broadcast(x as f64),
+                            &LuaValue::Number(x) => DVec3::broadcast(x),
+                            LuaValue::Table(x) => {
+                                DVec3::new(x.raw_get(1i32)?, x.raw_get(2i32)?, x.raw_get(3i32)?)
+                            }
+                            LuaValue::UserData(x) => x.borrow::<LuaVec3>()?.u,
+                            _ => lua_bail!("invalid argument type to math.vec3")
+                        }
+                    },
                     3 => {
                         let (x, y, z) = FromLuaMulti::from_lua_multi(args, lua)?;
                         DVec3::new(x, y, z)
@@ -993,15 +1065,10 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                     LuaImage::new(&path)?
                 }
 
-                fn dot_vox((raw, idx): (LuaString, Option<usize>)) {
-                    let idx = idx.unwrap_or(0);
+                fn dot_vox(raw: LuaString) {
                     let models = crate::magicavox::load_vox(raw.as_bytes()).to_lua_err()?;
-                    lua_assert!(idx < models.len(), "model index {} out of range (.vox file contains only {} models)", idx, models.len());
-                    let (data, size) = models.into_iter().skip(idx).next().unwrap();
-                    let raw = unsafe {
-                        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
-                    };
-                    (lua.create_string(raw)?, size.x, size.y, size.z)
+                    let models: Vec<LuaVoxelModel> = models.into_iter().map(|m| LuaVoxelModel(m)).collect();
+                    models
                 }
             },
         )

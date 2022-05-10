@@ -609,14 +609,11 @@ unsafe fn create_lua(lua_mod_to_load: StdLib, init_flags: InitFlags) -> Lua {
 
                         -- dofile([filename])
                         local real_dofile = dofile
+                        local real_assert = assert
                         dofile = function(filename)
                             -- Note: this is the wrapped loadfile above
-                            local chunk = loadfile(filename)
-                            if chunk then
-                                return chunk()
-                            else
-                                real_error("rlua dofile: attempt to load bytecode")
-                            end
+                            local chunk = real_assert(loadfile(filename))
+                            return chunk()
                         end
                     end
                 "#;
@@ -680,14 +677,11 @@ unsafe fn create_lua(lua_mod_to_load: StdLib, init_flags: InitFlags) -> Lua {
 
                         -- dofile([filename])
                         local real_dofile = dofile
+                        local real_assert = assert
                         dofile = function(filename)
                             -- Note: this is the wrapped loadfile above
-                            local chunk = loadfile(filename)
-                            if chunk then
-                                return chunk()
-                            else
-                                real_error("rlua dofile: attempt to load bytecode")
-                            end
+                            local chunk = real_assert(loadfile(filename))
+                            return chunk()
                         end
                     end
                 "#;
