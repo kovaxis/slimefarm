@@ -189,75 +189,25 @@ function voxel.Model:new()
     end
     loadbone(self.rootbone, nil, nil)
 
-    assert(type(self.animations) == 'table', "animations must be a table")
-    for i = 1, #self.animations do
-        local anim = self.animations[i]
-        assert(type(anim) == 'table', "each anim must be a table")
-        assert(type(anim.name) == 'string', "anim.name must be a string")
-        assert(type(anim.speed) == 'nil' or type(anim.speed) == 'number', "anim.speed must be number or nil")
-        anim.speed = anim.speed or 1
-        assert(type(anim.bones) == 'table', "anim.bones must be a table")
-        assert(type(anim.manage) == 'table', "anim.manage must be a table")
-
-        self.animations[anim.name] = anim
-        self.animations[i] = nil
-
-        for bname, func in pairs(anim.bones) do
-            assert(self.bones[bname], "anim bone keys must be bone names")
-            assert(type(func) == 'function', "anim bone values must be animation functions returning 6 values")
-        end
-
-        for mname, func in pairs(anim.manage) do
-            assert(type(mname) == 'string', "anim manager keys must be name strings")
-            assert(type(func) == 'function', "anim manager values must be ease functions returning 2 values")
-        end
-    end
+    assert(type(self.animation) == 'table', "animation must be a table")
+    assert(type(self.animation.init) == 'function', "animation.init must be a function with 1 argument")
+    assert(type(self.animation.draw) == 'function', "animation.draw must be a function with 3 arguments")
+    self.animation.__index = self.animation
 end
 
 
 
 voxel.AnimState = class{}
 
---Pool of temporary animation objects
---Prevents GC
-local animstate_pool = util.Pool{}
-
 function voxel.AnimState:new()
-    -- Map of active animations, indexed by animation name
-    self.active = {}
-end
+    assert(self.model, "expected a voxel model")
+    
+    self.state = setmetatable({}, self.model.animation)
+    self.state:init()
 
---Start an animation with the given time/weight manager, using `time` as a reference time.
---Optionally, a finisher time/weight manager can be given, which will run when the animation is
---stopped.
---IMPORTANT: If no finisher is supplied, the animation will be assumed to be short/finite, and it
---will not be stopped when stopping all animations.
-function voxel.AnimState:start(name, time, manage)
-    local state = self.active[name] or animstate_pool:dirty() or {}
-
-    print("starting animation "..name.." with manager "..(manage or 'go'))
-    state.ref1 = time
-    state.ref2 = time
-    state.manage = manage or 'go'
-    self.active[name] = state
-end
-
---Start the given animation only if an animation with the same manager is not currently running.
-function voxel.AnimState:start_lazy(name, time, manage)
-    manage = manage or 'go'
-    local state = self.active[name]
-    if not state or state.manage ~= manage then
-        self:start(name, time, manage)
-    end
-end
-
---Stop the given animation smoothly.
---If the animation has no 'stop' manager it will cause an error!
-function voxel.AnimState:stop(name, time)
-    local state = self.active[name]
-    if state and state.manage ~= 'stop' then
-        state.manage = 'stop'
-        state.ref2 = time
+    self.bones = {}
+    for name, bone in pairs(self.model.bones) do
+        self.bones[name] = {0, 0, 0,  0, 0, 0,  0, 0, 0}
     end
 end
 
@@ -268,17 +218,7 @@ do
     local function drawbone(self, bone)
         mvp:push()
 
-        local tx, ty, tz, rx, ry, rz, sx, sy, sz = 0, 0, 0, 0, 0, 0, 0, 0, 0
-        for name, state in pairs(self.active) do
-            local f = state.bones[bone.name]
-            if f then
-                local tx1, ty1, tz1, rx1, ry1, rz1, sx1, sy1, sz1 = f(state.t)
-                local w = state.w
-                tx, ty, tz = tx + tx1 * w, ty + ty1 * w, tz + tz1 * w
-                rx, ry, rz = rx + rx1 * w, ry + ry1 * w, rz + rz1 * w
-                sx, sy, sz = sx + sx1 * w, sy + sy1 * w, sz + sz1 * w
-            end
-        end
+        local tx, ty, tz, rx, ry, rz, sx, sy, sz = table.unpack(self.bones[bone.name])
 
         mvp:translate(bone.move:xyz())
         mvp:mul_right(bone.from_std)
@@ -308,23 +248,18 @@ do
         mvp:pop()
     end
 
-    function voxel.AnimState:draw(model, time, shader_, draw_params_, mvp_name_, mvp_)
-        for name, state in pairs(self.active) do
-            local anim = model.animations[name]
-            state.bones = anim.bones
-            state.t, state.w = anim.manage[state.manage](time - state.ref1, time - state.ref2)
-            if state.w then
-                state.t = state.t * anim.speed
-            else
-                animstate_pool:put(state)
-                self.active[name] = nil
-            end
+    function voxel.AnimState:draw(dt, shader_, draw_params_, mvp_name_, mvp_)
+        for name, bone in pairs(self.bones) do
+            bone[1], bone[2], bone[3] = 0, 0, 0
+            bone[4], bone[5], bone[6] = 0, 0, 0
+            bone[7], bone[8], bone[9] = 0, 0, 0
         end
+        self.state:draw(self.bones, dt)
         shader = shader_
         draw_params = draw_params_
         mvp_name = mvp_name_
         mvp = mvp_
-        drawbone(self, model.rootbone)
+        drawbone(self, self.model.rootbone)
     end
 end
 

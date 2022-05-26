@@ -66,7 +66,9 @@ function Player:new()
     self.visual_fall_time = 0
     self.draw_r = 1.1 * math.sqrt(3)
 
-    self.anim = voxel.AnimState{}
+    self.anim = voxel.AnimState{
+        model = voxel.models.player,
+    }
 
     self.jumps_left = 0
     self.jump_was_down = false
@@ -165,20 +167,14 @@ function Player:tick(world)
     if self.on_ground then
         if self.vel_x == 0 and self.vel_y == 0 then
             --Idle
-            self.anim:stop('run', world.tick_count)
-            self.anim:stop('air', world.tick_count)
-            self.anim:start_lazy('idle', world.tick_count)
+            self.anim.state:motion('idle', world.tick_count)
         else
             --Run
-            self.anim:stop('idle', world.tick_count)
-            self.anim:stop('air', world.tick_count)
-            self.anim:start_lazy('run', world.tick_count)
+            self.anim.state:motion('run', world.tick_count)
         end
     else
         --Airtime
-        self.anim:stop('run', world.tick_count)
-        self.anim:stop('idle', world.tick_count)
-        self.anim:start_lazy('air', world.tick_count)
+        self.anim.state:motion('air', world.tick_count)
     end
 
     --Apply velocity to position
@@ -212,7 +208,7 @@ function Player:draw(world)
     frame.mvp_world:translate(0, 0, -bbox_v/2)
     frame.mvp_world:scale(1/8)
 
-    self.anim:draw(voxel.models.player, frame.t, world.shaders.terrain, frame.params_world, 'mvp', frame.mvp_world)
+    self.anim:draw(frame.dt, world.shaders.terrain, frame.params_world, 'mvp', frame.mvp_world)
 end
 
 return Player

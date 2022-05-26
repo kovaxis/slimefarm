@@ -16,6 +16,7 @@ function World:new()
         terrain = util.Shader{
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
+            -- first 3 must be (in order) 'offset', 'color', 'light'
             uniforms = {'offset', 'color', 'light', 'mvp', 'mv', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
         portal = util.Shader{
@@ -413,7 +414,7 @@ function World:subdraw()
         self.shaders.terrain:set_matrix('mv', frame.mv_world)
         sky.lighting(self.shaders.terrain, cycle)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
-        self.shaders.terrain:draw_terrain(self.terrain, 'offset', 'color', 'light', frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
+        self.shaders.terrain:draw_terrain(self.terrain, frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end
     
     --Draw entities

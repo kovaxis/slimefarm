@@ -696,9 +696,6 @@ impl Terrain {
         &self,
         shader: &Program,
         uniforms: &crate::lua::gfx::UniformStorage,
-        offset_uniform: &str,
-        color_uniform: &str,
-        light_uniform: &str,
         origin: WorldPos,
         params: &DrawParameters,
         mvp: Mat4,
@@ -756,49 +753,46 @@ impl Terrain {
                 };
                 let offset = ((pos - center_chunk) << CHUNK_BITS).to_f32() + off_d;
                 let uniextra = [
-                    (offset_uniform, UniformValue::Vec3(offset.into())),
-                    (
-                        color_uniform,
-                        UniformValue::Texture2d(
-                            atlas,
-                            Some(SamplerBehavior {
-                                wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
-                                minify_filter: if self.color_linear {
-                                    Minify::Linear
-                                } else {
-                                    Minify::Nearest
-                                },
-                                magnify_filter: if self.color_linear {
-                                    Magnify::Linear
-                                } else {
-                                    Magnify::Nearest
-                                },
-                                ..default()
-                            }),
-                        ),
+                    // 'offset'
+                    UniformValue::Vec3(offset.into()),
+                    // 'color'
+                    UniformValue::Texture2d(
+                        atlas,
+                        Some(SamplerBehavior {
+                            wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+                            minify_filter: if self.color_linear {
+                                Minify::Linear
+                            } else {
+                                Minify::Nearest
+                            },
+                            magnify_filter: if self.color_linear {
+                                Magnify::Linear
+                            } else {
+                                Magnify::Nearest
+                            },
+                            ..default()
+                        }),
                     ),
-                    (
-                        light_uniform,
-                        UniformValue::Texture2d(
-                            atlas,
-                            Some(SamplerBehavior {
-                                wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
-                                minify_filter: if self.light_linear {
-                                    Minify::Linear
-                                } else {
-                                    Minify::Nearest
-                                },
-                                magnify_filter: if self.light_linear {
-                                    Magnify::Linear
-                                } else {
-                                    Magnify::Nearest
-                                },
-                                ..default()
-                            }),
-                        ),
+                    // 'light'
+                    UniformValue::Texture2d(
+                        atlas,
+                        Some(SamplerBehavior {
+                            wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+                            minify_filter: if self.light_linear {
+                                Minify::Linear
+                            } else {
+                                Minify::Nearest
+                            },
+                            magnify_filter: if self.light_linear {
+                                Magnify::Linear
+                            } else {
+                                Magnify::Nearest
+                            },
+                            ..default()
+                        }),
                     ),
                 ];
-                let uniref = crate::lua::gfx::UniformsRef::new(uniforms, &uniextra);
+                let uniref = crate::lua::gfx::UniformsOverride::new(uniforms, &uniextra);
                 frame.draw(&buf.vertex, &buf.index, &shader, &uniref, params)?;
                 if let Some((shader, BufferRef::Buf3d(buf))) = &self.dbg_chunkframe {
                     frame.draw(&buf.vertex, &buf.index, &shader.program, &uniref, params)?;

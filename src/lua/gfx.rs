@@ -155,22 +155,22 @@ impl Uniforms for UniformStorage {
     }
 }
 
-pub(crate) struct UniformsRef<'a> {
+pub(crate) struct UniformsOverride<'a> {
     store: &'a UniformStorage,
-    extra: &'a [(&'a str, UniformValue<'a>)],
+    over: &'a [UniformValue<'a>],
 }
-impl<'a> UniformsRef<'a> {
-    pub fn new(store: &'a UniformStorage, extra: &'a [(&'a str, UniformValue)]) -> Self {
-        Self { store, extra }
+impl<'a> UniformsOverride<'a> {
+    pub fn new(store: &'a UniformStorage, over: &'a [UniformValue]) -> Self {
+        Self { store, over }
     }
 }
-impl<'b> Uniforms for UniformsRef<'b> {
+impl<'b> Uniforms for UniformsOverride<'b> {
     fn visit_values<'a, F: FnMut(&str, UniformValue<'a>)>(&'a self, mut visit: F) {
-        for (name, val) in self.store.vars.iter() {
-            visit(name, val.as_uniform());
-        }
-        for &(name, val) in self.extra.iter() {
+        for ((name, _), &val) in self.store.vars.iter().zip(self.over.iter()) {
             visit(name, val);
+        }
+        for (name, val) in self.store.vars.iter().skip(self.over.len()) {
+            visit(name, val.as_uniform());
         }
     }
 }
