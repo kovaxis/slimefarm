@@ -17,7 +17,10 @@ void main() {
     float altitude = pow(max(dir.z, 0), 1);
     float decline = pow(max(-dir.z, 0), 1) * 0.4;
     float east = max(2 * dot(dir, sun_dir) - 4 * max(dir.z, -0.2), 0);
-    out_color = vec4(base + highest_d * altitude + lowest_d * decline + sunrise * east, 1);
+    float sun = max((dot(dir, sun_dir) - 0.9) * 10, 0);
+    sun = sun * sun;
+    vec3 sunball = vec3(1, 1, 1);
+    out_color = vec4(base + highest_d * altitude + lowest_d * decline + sunrise * east + sunball * sun, 1);
 
     // TODO: Change the sky appearance depending on the fog distance
     // Near fog should have a more monotone color

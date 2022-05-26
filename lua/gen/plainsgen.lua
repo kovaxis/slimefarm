@@ -53,7 +53,7 @@ local heightmap = native.heightmap {
     scale = 32,
     ground = blocks.register(texture {
         name = 'base.grass',
-        base = {0.43, 0.61, 0.10, 0.05},
+        base = {0.43, 0.61, 0.10, 0.224},
         noise = {0.116, 0.131, 0.053},
         octs = {0, 0, 0, 0, 0, 0.8},
         rough = false,
@@ -63,14 +63,14 @@ local heightmap = native.heightmap {
 
 blocks.register(texture {
     name = 'base.wood',
-    base = {0.31, 0.19, 0.13, 0.01},
+    base = {0.31, 0.19, 0.13, 0.1},
     noise = {0.136, 0.089, 0.065},
     octs = {0.2, 0.4},
     rough = true,
 })
 blocks.register(texture {
     name = 'base.leaf',
-    base = {0.03, 0.26, 0.13, 0.025},
+    base = {0.03, 0.26, 0.13, 0.158},
     noise = {0.045, 0.121, 0.116},
     octs = {0.1, 0, 0, 0.2},
     rough = true,

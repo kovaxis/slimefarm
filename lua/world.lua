@@ -17,7 +17,7 @@ function World:new()
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
             -- first 3 must be (in order) 'offset', 'color', 'light'
-            uniforms = {'offset', 'color', 'light', 'mvp', 'mv', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
+            uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
         },
         portal = util.Shader{
             vertex = 'portal.vert',
@@ -61,8 +61,8 @@ function World:new()
         params_sky = gfx.draw_params(),
         params_world = gfx.draw_params(),
         params_hud = gfx.draw_params(),
+        invp_world = system.matrix(),
         mvp_world = system.matrix(),
-        mv_world = system.matrix(),
         mvp_hud = system.matrix(),
         hfov = 1,
         vfov = 1,
@@ -264,9 +264,9 @@ do
     night = {.002, .008, .018}
     sky.base = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
 
-    dawn = {.14, .42, .77}
-    day = {.08, .52, .90}
-    eve = {.14, .42, .77}
+    dawn = {.07, .38, .77}
+    day = {.01, .48, .90}
+    eve = {.07, .38, .77}
     night = {.001, .005, .008}
     sky.highest = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.50, day, 0.73, eve, 0.77, night, 1, night }
 
@@ -375,13 +375,13 @@ function World:subdraw()
         end
         self.shaders.skybox:set_vec3('offset', dx, dy, dz)
 
-        frame.mv_world:push()
-        frame.mv_world:identity()
-        frame.mv_world:rotate_z(frame.cam_yaw)
-        frame.mv_world:rotate_x(frame.cam_pitch)
-        frame.mv_world:scale(math.tan(frame.hfov / 2), 1, math.tan(frame.vfov / 2))
-        self.shaders.skybox:set_matrix('view', frame.mv_world)
-        frame.mv_world:pop()
+        frame.mvp_world:push()
+        frame.mvp_world:identity()
+        frame.mvp_world:rotate_z(frame.cam_yaw)
+        frame.mvp_world:rotate_x(frame.cam_pitch)
+        frame.mvp_world:scale(math.tan(frame.hfov / 2), 1, math.tan(frame.vfov / 2))
+        self.shaders.skybox:set_matrix('view', frame.mvp_world)
+        frame.mvp_world:pop()
 
         frame.params_sky:set_stencil_ref(depth)
         sky.colors(self.shaders.skybox, cycle)
@@ -407,11 +407,14 @@ function World:subdraw()
         --specular = 0.03
         --dx, dy, dz = 2^-0.5, 0, -2^-0.5
         set_clip_planes(self.shaders.terrain, cam)
-        dx, dy, dz = frame.mv_world:transform_vec(dx, dy, dz)
+        frame.mvp_world:push()
+        frame.mvp_world:mul_left(frame.invp_world)
+        dx, dy, dz = frame.mvp_world:transform_vec(dx, dy, dz)
+        frame.mvp_world:pop()
         frame.params_world:set_stencil_ref(depth)
         self.shaders.terrain:set_float('fog', self.fog_current)
+        self.shaders.terrain:set_matrix('invp', frame.invp_world)
         self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
-        self.shaders.terrain:set_matrix('mv', frame.mv_world)
         sky.lighting(self.shaders.terrain, cycle)
         self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
         self.shaders.terrain:draw_terrain(self.terrain, frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
@@ -522,10 +525,10 @@ function World:draw()
         frame.vfov = vfov
         frame.mvp_world:reset()
         frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.2, 800)
-        frame.mv_world:reset()
-        frame.mv_world:rotate_x(-cam_pitch)
-        frame.mv_world:rotate_z(-cam_yaw)
-        frame.mvp_world:mul_right(frame.mv_world)
+        frame.invp_world:reset_from(frame.mvp_world)
+        frame.invp_world:invert()
+        frame.mvp_world:rotate_x(-cam_pitch)
+        frame.mvp_world:rotate_z(-cam_yaw)
 
         -- Update initial drawing conditions
         frame.cam_stack:reset(campos_buf, frame.mvp_world, nil, 0, 0, 0)

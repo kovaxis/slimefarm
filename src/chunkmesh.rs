@@ -611,6 +611,8 @@ pub struct Mesher2<D> {
     vertex_set: Vertset,
     /// A rectangle packer, to associate mesh quads with texture coordinates in the chunk atlas.
     packer: DensePacker,
+    /// Code encoding the normal direction.
+    normal_code: u8,
     /// The chunk atlas texture, storing color and lighting data for every quad.
     pub(crate) atlas: AtlasChunk,
     /// Stores the final mesh geometry.
@@ -626,6 +628,7 @@ impl<D: MesherKind> Mesher2<D> {
             quad_queue: vec![],
             vertex_set: Vertset::new(),
             mesh: default(),
+            normal_code: 0,
             atlas: AtlasChunk::new(cfg),
             packer: DensePacker::new(1, 1),
             cfg: cfg.clone(),
@@ -806,7 +809,7 @@ impl<D: MesherKind> Mesher2<D> {
         quadpos[axes[2]] += positive;
         let cflip = ((crect.width != w) as u16) << 15;
         let lflip = ((lrect.width != w + 1) as u16) << 15;
-        let quadaxes = axes[0] as u8 | ((axes[1] as u8) << 2);
+        let quadaxes = axes[0] as u8 | ((axes[1] as u8) << 2) | (self.normal_code << 4);
         self.quad_queue.push(PendingQuad {
             cuv: [crect.x as u16 | cflip, crect.y as u16],
             luv: [lrect.x as u16 | lflip, lrect.y as u16],
@@ -875,26 +878,32 @@ impl<D: MesherKind> Mesher2<D> {
 
     fn visit_layers(&mut self) {
         // X+
+        self.normal_code = 0;
         for x in 0..CHUNK_SIZE {
             self.layer(x, 1, [1, 2, 0]);
         }
         // X-
+        self.normal_code = 1;
         for x in 0..CHUNK_SIZE {
             self.layer(x, -1, [2, 1, 0]);
         }
         // Y+
+        self.normal_code = 2;
         for y in 0..CHUNK_SIZE {
             self.layer(y, 1, [2, 0, 1]);
         }
         // Y-
+        self.normal_code = 3;
         for y in 0..CHUNK_SIZE {
             self.layer(y, -1, [0, 2, 1]);
         }
         // Z+
+        self.normal_code = 4;
         for z in 0..CHUNK_SIZE {
             self.layer(z, 1, [0, 1, 2]);
         }
         // Z-
+        self.normal_code = 5;
         for z in 0..CHUNK_SIZE {
             self.layer(z, -1, [1, 0, 2]);
         }
@@ -953,6 +962,7 @@ impl<D: MesherKind> Mesher2<D> {
                 }};
             }
 
+            let normal_code = quad.axes >> 4;
             let vertex = |this: &mut Self, vert: Vert| {
                 let mut pos = qpos;
                 pos[axes[0]] += vert.off.x;
@@ -964,7 +974,7 @@ impl<D: MesherKind> Mesher2<D> {
                 luv[luv_axes[0]] += vert.off.x;
                 luv[luv_axes[1]] += vert.off.y;
                 this.mesh.add_vertex(VoxelVertex {
-                    pos: [pos.x as u8, pos.y as u8, pos.z as u8, 1],
+                    pos: [pos.x as u8, pos.y as u8, pos.z as u8, normal_code],
                     cuv: cuv.to_f32().into(),
                     luv: luv.to_f32().into(),
                 })

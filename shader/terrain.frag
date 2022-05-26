@@ -3,22 +3,51 @@
 uniform sampler2D color;
 uniform sampler2D light;
 
+uniform vec3 ambience;
+uniform vec3 specular;
+uniform vec3 diffuse;
+uniform float fog;
+
 smooth in vec2 v_cuv;
 smooth in vec2 v_luv;
+
+smooth in float v_diffuse;
+smooth in vec3 v_light_dir;
+smooth in vec3 v_pos;
 
 out vec4 out_color;
 
 void main() {
     float gamma = 2.2;
 
+    // Extract raw color and light from atlas textures
     vec4 rawc = texture2D(color, v_cuv);
     vec4 rawl = texture2D(light, v_luv);
 
-    vec3 col = rawc.rgb;
+    // Extract base color
+    vec3 basecolor = rawc.rgb;
+
+    // Extract shininess
+    float shininess = rawc.a * rawc.a;
+
+    // Extract ambient occlusion
     float ao = pow(rawl.x, gamma);
+
+    // Extract sky lighting
     float sky = pow(rawl.y, gamma);
 
-    out_color = vec4(col * ao * sky, 1);
+    // Compute fog alpha
+    float dist = length(v_pos);
+    float inv_dist = 1. / dist;
+    float alpha = pow(clamp((1 / 7.6) * (fog - dist), 0, 1), 2);
+
+    // Compute light color
+    float w_diffuse = v_diffuse;
+    float w_specular = max(pow(dot(v_pos * inv_dist, v_light_dir), 3), 0) * shininess;
+    vec3 lighting = (ambience + w_diffuse * diffuse + w_specular * specular) * sky;
+
+    // Compute final color
+    out_color = vec4(basecolor * ao * lighting, alpha);
 }
 
 
