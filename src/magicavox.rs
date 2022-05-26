@@ -34,7 +34,11 @@ impl VoxelModel {
     }
 }
 
-fn parse_model(vox: &dot_vox::DotVoxData, model: dot_vox::Model) -> Result<VoxelModel> {
+fn parse_model(
+    vox: &dot_vox::DotVoxData,
+    model: dot_vox::Model,
+    shininess: u8,
+) -> Result<VoxelModel> {
     let size = model.size;
     let size = Int3::new([size.x as i32, size.y as i32, size.z as i32]);
     let mut data = vec![0; (size.x * size.y * size.z) as usize];
@@ -42,6 +46,7 @@ fn parse_model(vox: &dot_vox::DotVoxData, model: dot_vox::Model) -> Result<Voxel
     for (i, color) in vox.palette.iter().enumerate() {
         let idx = (i as u8).wrapping_add(1);
         palette[idx as usize] = color.to_le_bytes();
+        palette[idx as usize][3] = shininess;
     }
     for v in model.voxels {
         ensure!(
@@ -58,14 +63,14 @@ fn parse_model(vox: &dot_vox::DotVoxData, model: dot_vox::Model) -> Result<Voxel
     })
 }
 
-pub fn load_vox(bytes: &[u8]) -> Result<Vec<VoxelModel>> {
+pub fn load_vox(bytes: &[u8], shininess: u8) -> Result<Vec<VoxelModel>> {
     let mut vox = dot_vox::load_bytes(bytes)
         .map_err(|e| anyhow!(e))
         .with_context(|| anyhow!("failed to load .vox file"))?;
     let models = mem::take(&mut vox.models);
     let models = models
         .into_iter()
-        .map(|m| parse_model(&vox, m))
+        .map(|m| parse_model(&vox, m, shininess))
         .collect::<Result<_>>()?;
     Ok(models)
 }

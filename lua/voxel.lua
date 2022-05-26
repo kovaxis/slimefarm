@@ -30,9 +30,9 @@ voxel.model_mesher_cfg = {
 voxel.mesher = gfx.mesher(voxel.model_mesher_cfg)
 
 -- Performs the entire process from a path to a `.vox` file to a list of voxel mesh buffers.
-function voxel.dot_vox(path)
+function voxel.dot_vox(path, shininess)
     local raw = util.read_file(path)
-    local models = system.dot_vox(raw)
+    local models = system.dot_vox(raw, shininess)
     for i = 1, #models do
         models[i] = voxel.mesher:mesh(models[i])
     end
@@ -70,7 +70,7 @@ voxel.Model = class{}
 
 function voxel.Model:new()
     local rawvox = util.read_file(self.path)
-    local rawmodels = system.dot_vox(rawvox)
+    local rawmodels = system.dot_vox(rawvox, self.shininess or 0.02)
     local models = {}
     self.bones = {}
 

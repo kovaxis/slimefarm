@@ -1056,8 +1056,9 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                     LuaImage::new(&path)?
                 }
 
-                fn dot_vox(raw: LuaString) {
-                    let models = crate::magicavox::load_vox(raw.as_bytes()).to_lua_err()?;
+                fn dot_vox((raw, shininess): (LuaString, Option<f32>)) {
+                    let shininess = shininess.map(|f| (f * 255.) as u8).unwrap_or(0);
+                    let models = crate::magicavox::load_vox(raw.as_bytes(), shininess).to_lua_err()?;
                     let models: Vec<LuaVoxelModel> = models.into_iter().map(|m| LuaVoxelModel(m)).collect();
                     models
                 }

@@ -8,17 +8,16 @@ local Player = class{}
 
 local bbox_h = 2
 local bbox_v = 1.8
-local gravity = 0.04
-local friction = 0.99
+local gravity = 0.025
+local friction = 0.97
 local walk_speed = 0.13
 local yaw_anim_factor = 0.004
 local yaw_anim_linear = 0.9
 
 local jump_charge = 5
-local jump_hvel = 0.17
-local jump_vvel = 0.7
+local jump_vvel = 0.5
 local jump_keepup = 0.014
-local jump_keepdown = 0.016
+local jump_keepdown = 0.005
 local jump_keepup_ticks = 14
 local jump_cooldown_start = 10
 local jump_cooldown_land = 0
@@ -90,7 +89,7 @@ function Player:tick(world)
         self.vel_y = 0
         self.vel_z = 0
         if self.jump_ticks < 0 or self.jump_ticks >= jump_charge then
-            self.jumps_left = 2
+            self.jumps_left = 1
         end
     else
         self.vel_x = self.vel_x * friction

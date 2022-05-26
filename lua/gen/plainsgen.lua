@@ -82,8 +82,8 @@ do
     local rng = math.rng(0)
     local leaves
 
-    local s = 2
-    local spread = 40 * s
+    local s = 0.8
+    local spread = 30 * s
     local margin = 40 * s
     local max_lentotal = 100 * s
     local min_area = 1 * s * s
@@ -201,6 +201,31 @@ do
     end
     local function tree(pos)
         leaves = {}
+
+        s = rng:normal(0.5, 1.4)
+        max_lentotal = 100 * s
+        min_area = 1 * s * s
+        max_depth = 100
+        initial_area = {35 * s * s, 40 * s * s}
+        initial_pitch = {0, math.rad(10)}
+        branch_dist = {{14 * s, 16 * s}}
+        half_dist = 13 * s
+        squiggle_dist = 4 * s
+        squiggle_angle = math.rad(40) / 10 * squiggle_dist / s
+        attract_p = 0.5
+        attract_f = math.rad(10) / 10 * squiggle_dist / s
+        area_per_len = -0.1 / s / s
+        off_angle = {math.rad(90), math.rad(60)}
+        off_attractor_angle = {math.rad(50), math.rad(35)}
+        off_area = {0.45, 0.55}
+        main_bias = {0.5, 0.5}
+        off_depth_incr = 1
+        main_depth_incr = 1
+        main_rotate = math.rad(133)
+        leaf_r = {4 * s, 7 * s}
+        subleaf_r = {1.5 * s, 2.5 * s}
+        subleaf_n = 30
+        leaf_join = 1.5 * s
 
         local area = rng:normal(initial_area[1], initial_area[2])
         local up = math.vec3(0, 0, 1)
