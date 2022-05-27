@@ -34,12 +34,12 @@ pub mod prelude {
         implement_vertex,
         index::{PrimitiveType, RawIndexPackage},
         program,
-        texture::{RawImage2d, RawTexturePackage},
+        texture::{RawImage2d, RawTexturePackage, SrgbTexture2d, Texture2d},
         uniforms::{
             MagnifySamplerFilter, MinifySamplerFilter, SamplerBehavior, UniformValue, Uniforms,
         },
         vertex::RawVertexPackage,
-        Display, DrawParameters, Frame, IndexBuffer, Program, Surface, Texture2d, VertexBuffer,
+        Display, DrawParameters, Frame, IndexBuffer, Program, Surface, VertexBuffer,
     };
     pub use glium_text_rusttype::{FontTexture, TextDisplay, TextSystem};
     pub use lazysort::{Sorted, SortedBy};

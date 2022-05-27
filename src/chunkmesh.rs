@@ -28,6 +28,10 @@ pub struct MesherCfg {
     /// The offset that is applied to light uv coordinates.
     /// 0.5 means "the center of each pixel" and is usually the right value.
     light_uv_offset: f32,
+    /// The offset applied to color texture coordinates.
+    /// Used to prevent bleeding.
+    /// In block units.
+    bleed_offset: f32,
 }
 
 pub struct MesherHandle {
@@ -407,7 +411,7 @@ impl AtlasChunk {
         self.size[1] = (self.size[1] as u32).next_power_of_two() as i32;
     }
 
-    pub fn make_texture(&self, gl_ctx: &Display) -> Texture2d {
+    pub fn make_texture(&self, gl_ctx: &Display) -> SrgbTexture2d {
         let [w, h] = self.size;
         let raw_img = RawImage2d {
             data: Cow::Borrowed(&self.data[..(w * h) as usize]),
@@ -415,7 +419,7 @@ impl AtlasChunk {
             height: h as u32,
             format: glium::texture::ClientFormat::U8U8U8U8,
         };
-        Texture2d::with_mipmaps(gl_ctx, raw_img, glium::texture::MipmapsOption::NoMipmap)
+        SrgbTexture2d::with_mipmaps(gl_ctx, raw_img, glium::texture::MipmapsOption::NoMipmap)
             .expect("failed to upload atlas texture for voxel data")
     }
 }
@@ -782,6 +786,8 @@ impl<D: MesherKind> Mesher2<D> {
 
         // Write the light atlas
         {
+            const RGB_TO_SRGB: &[u8; 256] = include_bytes!("srgb.bin");
+
             let mut bidx1 = bidx_base;
             let mut vpos_base = blockpos;
             vpos_base[axes[2]] += positive;
@@ -793,7 +799,12 @@ impl<D: MesherKind> Mesher2<D> {
                     vpos[axes[0]] += x;
                     vpos[axes[1]] += y;
                     let light = self.light(vpos, bidx0, axes, positive);
-                    self.atlas.data[lidx0 as usize] = (light[0], light[1], light[2], light[3]);
+                    self.atlas.data[lidx0 as usize] = (
+                        RGB_TO_SRGB[light[0] as usize],
+                        RGB_TO_SRGB[light[1] as usize],
+                        RGB_TO_SRGB[light[2] as usize],
+                        light[3],
+                    );
                     bidx0 += badv_x;
                     lidx0 += ladv_x;
                 }
@@ -963,19 +974,28 @@ impl<D: MesherKind> Mesher2<D> {
             }
 
             let normal_code = quad.axes >> 4;
+            let bleed_offset = self.cfg.bleed_offset;
             let vertex = |this: &mut Self, vert: Vert| {
                 let mut pos = qpos;
                 pos[axes[0]] += vert.off.x;
                 pos[axes[1]] += vert.off.y;
+
                 let mut cuv = qcuv;
                 cuv[cuv_axes[0]] += vert.off.x;
                 cuv[cuv_axes[1]] += vert.off.y;
+                let mut cuv_off = Int2::zero();
+                cuv_off[cuv_axes[0]] += (vert.off.x == 0) as i32;
+                cuv_off[cuv_axes[0]] -= (vert.off.x == quad.size[0] as i32) as i32;
+                cuv_off[cuv_axes[1]] += (vert.off.y == 0) as i32;
+                cuv_off[cuv_axes[1]] -= (vert.off.y == quad.size[1] as i32) as i32;
+
                 let mut luv = qluv;
                 luv[luv_axes[0]] += vert.off.x;
                 luv[luv_axes[1]] += vert.off.y;
+
                 this.mesh.add_vertex(VoxelVertex {
                     pos: [pos.x as u8, pos.y as u8, pos.z as u8, normal_code],
-                    cuv: cuv.to_f32().into(),
+                    cuv: (cuv.to_f32() + bleed_offset * cuv_off.to_f32()).into(),
                     luv: luv.to_f32().into(),
                 })
             };

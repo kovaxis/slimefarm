@@ -135,20 +135,20 @@ impl ChunkStorage {
     /// Iterates over nonexisting chunk positions too.
     pub fn iter_nearby<F>(
         &self,
-        seenbuf: &mut HashMap<ChunkPos, f32>,
+        seenbuf: &mut HashMap<ChunkPos, (f32, Int3)>,
         center: BlockPos,
         range: f32,
         mut f: F,
     ) -> Result<()>
     where
-        F: FnMut(ChunkPos, f32) -> Result<()>,
+        F: FnMut(ChunkPos, f32, Int3) -> Result<()>,
     {
         struct State<'a> {
             chunks: &'a ChunkStorage,
             sphere: &'a mut SphereBuf,
-            seen: &'a mut HashMap<ChunkPos, f32>,
+            seen: &'a mut HashMap<ChunkPos, (f32, Int3)>,
         }
-        fn explore(s: &mut State, center: BlockPos, range: f32, basedist: f32) {
+        fn explore(s: &mut State, center: BlockPos, range: f32, basedist: f32, basedelta: Int3) {
             use std::collections::hash_map::Entry;
             let epsilon = 4.;
             ChunkStorage::get_sphere(s.sphere, range);
@@ -160,6 +160,8 @@ impl ChunkStorage {
                 if dist > range {
                     break;
                 }
+                let dist = basedist + dist;
+                let delta = basedelta + (pos << CHUNK_BITS) - center.coords;
                 idx += 1;
 
                 let chunk_pos = ChunkPos {
@@ -168,13 +170,13 @@ impl ChunkStorage {
                 };
                 match s.seen.entry(chunk_pos) {
                     Entry::Occupied(mut prevdist) => {
-                        if dist >= *prevdist.get() - epsilon {
+                        if dist >= prevdist.get().0 - epsilon {
                             continue;
                         }
-                        prevdist.insert(dist);
+                        prevdist.insert((dist, delta));
                     }
                     Entry::Vacant(entry) => {
-                        entry.insert(dist);
+                        entry.insert((dist, delta));
                     }
                 }
                 let chunk = s.chunks.chunk_at(chunk_pos);
@@ -185,7 +187,8 @@ impl ChunkStorage {
                             continue;
                         }
                         let portal_center = (chunk_pos.coords << CHUNK_BITS) + portal_center;
-                        let pdist = ((portal_center - center.coords).mag_sq() as f32).sqrt();
+                        let pdelta = portal_center - center.coords;
+                        let pdist = (pdelta.mag_sq() as f32).sqrt();
                         // TODO: Perhaps do something about large portals?
                         // Approximating a portal as a point at its center only works
                         // for smallish portals.
@@ -197,6 +200,7 @@ impl ChunkStorage {
                             },
                             range - pdist,
                             basedist + pdist,
+                            basedelta + pdelta,
                         );
                     }
                 }
@@ -214,9 +218,10 @@ impl ChunkStorage {
                 center,
                 range,
                 0.,
+                Int3::zero(),
             );
-            for (&pos, &dist) in seenbuf.iter() {
-                f(pos, dist)?;
+            for (&pos, &(dist, delta)) in seenbuf.iter() {
+                f(pos, dist, delta)?;
             }
             let f = Instant::now();
 
@@ -451,8 +456,9 @@ pub(crate) struct Terrain {
     pub draw_stats: RefCell<TerrainDbgStats>,
     pub light_linear: bool,
     pub color_linear: bool,
+    pub relative_map: RefCell<HashMap<ChunkPos, Int3>>,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
-    tmp_seenbuf: RefCell<HashMap<ChunkPos, f32>>,
+    tmp_seenbuf: RefCell<HashMap<ChunkPos, (f32, Int3)>>,
     tmp_seenbuf_simple: RefCell<HashSet<Int4>>,
     tmp_posbuf: RefCell<Vec<Int4>>,
     tmp_sortbuf: RefCell<Vec<(f32, Int4)>>,
@@ -471,6 +477,7 @@ impl Terrain {
             draw_stats: default(),
             light_linear: true,
             color_linear: false,
+            relative_map: default(),
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
             tmp_seenbuf_simple: default(),
@@ -521,7 +528,7 @@ impl Terrain {
                 atlas: unsafe {
                     buf_pkg
                         .atlas
-                        .map(|raw| Texture2d::from_any(raw.unpack(&self.state.display)))
+                        .map(|raw| SrgbTexture2d::from_any(raw.unpack(&self.state.display)))
                 },
                 portals: {
                     buf_pkg
@@ -555,6 +562,8 @@ impl Terrain {
             let chunks = self.chunks.read();
             let mut visited = 0;
             let mut mindist = self.view_radius;
+            let mut relative_map = self.relative_map.borrow_mut();
+            relative_map.clear();
             // OPTIMIZE: Move this out into its own thread.
             // This chunkwalk alone is taking about 2.5ms
             chunks
@@ -562,7 +571,7 @@ impl Terrain {
                     &mut *self.tmp_seenbuf.borrow_mut(),
                     center,
                     self.view_radius,
-                    |pos, dist| {
+                    |pos, dist, delta| {
                         visited += 1;
                         if self.meshes.get(pos).is_none() {
                             if dist < mindist {
@@ -570,6 +579,7 @@ impl Terrain {
                             }
                             sortbuf.push((dist, pos));
                         }
+                        relative_map.insert(pos, delta);
                         Ok(())
                     },
                 )
@@ -585,6 +595,18 @@ impl Terrain {
 
             self.last_min_viewdist = (mindist - (CHUNK_SIZE / 2) as f32 * 3f32.sqrt()).max(0.);
         }
+    }
+
+    /// Transform an absolute 4D position to a 3D position relative to the center of the last call
+    /// to `bookkeep`.
+    /// This takes into account portals.
+    pub fn to_relative_pos(&self, pos: BlockPos) -> Option<Int3> {
+        let chunkpos = pos.block_to_chunk();
+        let subchunk = pos.coords.lowbits(CHUNK_BITS);
+        self.relative_map
+            .borrow()
+            .get(&chunkpos)
+            .map(|&r| r + subchunk)
     }
 
     pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {
@@ -756,7 +778,7 @@ impl Terrain {
                     // 'offset'
                     UniformValue::Vec3(offset.into()),
                     // 'color'
-                    UniformValue::Texture2d(
+                    UniformValue::SrgbTexture2d(
                         atlas,
                         Some(SamplerBehavior {
                             wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
@@ -774,7 +796,7 @@ impl Terrain {
                         }),
                     ),
                     // 'light'
-                    UniformValue::Texture2d(
+                    UniformValue::SrgbTexture2d(
                         atlas,
                         Some(SamplerBehavior {
                             wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
@@ -1320,7 +1342,7 @@ impl ops::DerefMut for MeshKeeper {
 pub(crate) struct ChunkMesh {
     pub mesh: Mesh<VoxelVertex>,
     pub buf: Option<GpuBuffer<VoxelVertex>>,
-    pub atlas: Option<Texture2d>,
+    pub atlas: Option<SrgbTexture2d>,
     pub portals: Vec<PortalMesh>,
 }
 

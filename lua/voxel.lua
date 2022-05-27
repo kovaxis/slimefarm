@@ -9,6 +9,7 @@ voxel.mesher_cfg = {
     -- clear, normal, blocked, blocked, base
     exposure_table = {64, 60, 40, 40, 0},
     light_uv_offset = 0.5,
+    bleed_offset = 1/64,
 }
 voxel.model_mesher_cfg = {
     cfg = voxel.mesher_cfg,

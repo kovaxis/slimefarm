@@ -27,7 +27,7 @@ impl LuaUserData for BufferRef {}
 pub(crate) struct LuaVoxelBuf {
     size: Int3,
     buf: Rc<GpuBuffer<VoxelVertex>>,
-    atlas: LuaTexture<Texture2d>,
+    atlas: LuaTexture<SrgbTexture2d>,
 }
 lua_type! {LuaVoxelBuf, lua, this,
     fn size() {
@@ -76,6 +76,7 @@ pub(crate) enum StaticUniform {
     Vec4([f32; 4]),
     Mat4([[f32; 4]; 4]),
     Texture2d(LuaTexture<Texture2d>),
+    SrgbTexture2d(LuaTexture<SrgbTexture2d>),
 }
 impl StaticUniform {
     fn as_uniform(&self) -> UniformValue {
@@ -86,6 +87,7 @@ impl StaticUniform {
             &Self::Vec4(v) => UniformValue::Vec4(v),
             &Self::Mat4(v) => UniformValue::Mat4(v),
             Self::Texture2d(tex) => UniformValue::Texture2d(&tex.tex, Some(tex.sampling)),
+            Self::SrgbTexture2d(tex) => UniformValue::SrgbTexture2d(&tex.tex, Some(tex.sampling)),
         }
     }
 }
@@ -139,7 +141,15 @@ lua_type! {UniformStorage, lua, this,
             .1 = StaticUniform::Mat4(top.into());
     }
 
-    mut fn set_texture_2d((idx, tex): (usize, LuaTexture<Texture2d>)) {
+    mut fn set_texture_2d((idx, tex): (usize, LuaTexture<SrgbTexture2d>)) {
+        this.vars
+            .get_mut(idx)
+            .ok_or("index out of range")
+            .to_lua_err()?
+            .1 = StaticUniform::SrgbTexture2d(tex);
+    }
+
+    mut fn set_linear_texture_2d((idx, tex): (usize, LuaTexture<Texture2d>)) {
         this.vars
             .get_mut(idx)
             .ok_or("index out of range")
@@ -298,7 +308,7 @@ macro_rules! lua_textures {
         }
     )*};
 }
-lua_textures!(Texture2d);
+lua_textures!(SrgbTexture2d, Texture2d);
 
 pub(crate) struct LuaMesher {
     state: Rc<State>,
@@ -645,6 +655,19 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
                     }
 
                     fn texture(img: LuaAnyUserData) {
+                        use glium::texture::RawImage2d;
+
+                        let img = img.borrow::<LuaImage>()?;
+                        let img = &img.img;
+                        let (w, h) = img.dimensions();
+                        let tex = SrgbTexture2d::new(
+                            &state.display,
+                            RawImage2d::from_raw_rgba(img.to_vec(), (w, h))
+                        ).unwrap();
+                        LuaTexture::new(tex)
+                    }
+
+                    fn linear_texture(img: LuaAnyUserData) {
                         use glium::texture::RawImage2d;
 
                         let img = img.borrow::<LuaImage>()?;

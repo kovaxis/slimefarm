@@ -609,7 +609,7 @@ fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) 
                 &mut seenbuf,
                 gen_area.center,
                 gen_area.gen_radius,
-                |pos, dist| {
+                |pos, dist, _delta| {
                     if chunks.get(pos).is_none() && !unsent.contains_key(&pos) {
                         gen_sortbuf.push((dist, pos));
                     }

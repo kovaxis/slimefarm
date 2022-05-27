@@ -121,6 +121,8 @@ function World:new()
         self.fog_last_minimums[i] = 0
     end
 
+    self.rng = math.rng(math.hash(os.clock()))
+
     self.tick_period = 1/64
     self.next_tick = os.clock()
     self.fps_counter = 0

@@ -53,7 +53,7 @@ local heightmap = native.heightmap {
     scale = 32,
     ground = blocks.register(texture {
         name = 'base.grass',
-        base = {0.43, 0.61, 0.10, 0.224},
+        base = {0.53, 0.71, 0.14, 0.224},
         noise = {0.116, 0.131, 0.053},
         octs = {0, 0, 0, 0, 0, 0.8},
         rough = false,
@@ -82,8 +82,8 @@ do
     local rng = math.rng(0)
     local leaves
 
-    local s = 0.8
-    local spread = 30 * s
+    local s = 1.4
+    local spread = 50 * s
     local margin = 40 * s
     local max_lentotal = 100 * s
     local min_area = 1 * s * s
@@ -202,7 +202,7 @@ do
     local function tree(pos)
         leaves = {}
 
-        s = rng:normal(0.5, 1.4)
+        s = rng:normal(1, 2.3)
         max_lentotal = 100 * s
         min_area = 1 * s * s
         max_depth = 100

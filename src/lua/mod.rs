@@ -232,6 +232,22 @@ lua_type! {TerrainRef, lua, this,
         this.rc.borrow_mut().bookkeep(pos.pos.get().block_pos());
     }
 
+    fn to_relative(pos: LuaWorldPos) {
+        let pos = pos.pos.get();
+        let rel = this.rc.borrow().to_relative_pos(pos.block_pos());
+        match rel {
+            Some(rel) => {
+                let rel = rel.to_f64();
+                (
+                    rel[0] + pos.coords[0].fract(),
+                    rel[1] + pos.coords[1].fract(),
+                    rel[2] + pos.coords[2].fract(),
+                )
+            }
+            None => (f64::NAN, f64::NAN, f64::NAN),
+        }
+    }
+
     fn set_view_distance((view, gen): (f32, f32)) {
         this.rc.borrow_mut().set_view_radius(view, gen)
     }

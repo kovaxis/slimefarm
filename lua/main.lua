@@ -2,7 +2,7 @@
 local input = require 'input'
 local World = require 'world'
 local Player = require 'player'
-local Enemy = require 'enemy'
+local Slime = require 'slime'
 local voxel = require 'voxel'
 
 voxel.load_models('models.lua')
@@ -10,6 +10,9 @@ voxel.load_models('models.lua')
 local world = World{}
 table.insert(world.entities, Player{
     pos = system.world_pos(0, 0, 100, 0),
+})
+table.insert(world.entities, Slime {
+    pos = system.world_pos(0, 20, 100),
 })
 --[[for x = -10, 10 do
     table.insert(world.entities, Enemy{
