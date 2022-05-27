@@ -124,7 +124,7 @@ local humanoid_animation = {
         do
             local t, w = self.t, self.moving
             local s = bumpcos(2*t) * .4
-            local nc = lerp(self.air, 0.40, 0.05 + 0.01 * sin(self.air_t))
+            local nc = lerp(self.air, 0.35, 0.05 + 0.01 * sin(self.air_t))
             local sp = lerp(self.air, 1.20, 1.45)
             move(b.body, w,  0, sin(2*t) * 0.20, 0,  nc, 0, 0,  0, 0, 0)
             move(b.head, w,  0, sin(2*t) * -0.00, 0,  0, 0, 0,  0, 0, 0)

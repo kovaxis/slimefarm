@@ -69,8 +69,8 @@ function Slime:ai(world)
     local dx, dy, dz = world.terrain:to_relative(self.pos)
     local n = dx * dx + dy * dy + dz * dz
     if n < view_dist * view_dist then
-        n = (dx * dx + dy * dy) ^ -0.5
-        return dx * n, dy * n, false
+        n = -(dx * dx + dy * dy) ^ -0.5
+        return dx * n, dy * n, true
     else
         if world.rng:uniform() < 0.005 then
             dx, dy = world.rng:normal(-1, 1), world.rng:normal(-1, 1)

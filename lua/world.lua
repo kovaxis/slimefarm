@@ -158,8 +158,8 @@ function World:tick()
     self.day_cycle = (self.day_cycle + 1 / (64*120)) % 1
     --self.day_cycle = (self.day_cycle + 1 / (64*30)) % 1
     --DEBUG: Advance day cycle quicker when in nighttime
-    if self.day_cycle < 0.3 or self.day_cycle > 0.6 then
-    --if self.day_cycle > 0.2 and self.day_cycle < 0.8 then
+    --if self.day_cycle < 0.3 or self.day_cycle > 0.6 then
+    if self.day_cycle > 0.2 and self.day_cycle < 0.8 then
         self.day_cycle = self.day_cycle + 1 / (64*5)
     end
 
@@ -210,8 +210,8 @@ function World:load_terrain()
         mesher = voxel.mesher_cfg,
     }
     self.terrain:set_interpolation(false, true)
-    --self.terrain:set_view_distance(32*12, 32*14)
-    self.terrain:set_view_distance(32*6, 32*8)
+    self.terrain:set_view_distance(32*12, 32*14)
+    --self.terrain:set_view_distance(32*6, 32*8)
 
     --Set chunkframe
     self:update_showchunkgrid(self.showchunkgrid)

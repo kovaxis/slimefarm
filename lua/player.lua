@@ -26,7 +26,7 @@ local lag_vel_z_add = 1.2
 local lag_vel_z_mul = 0.0012
 
 local air_maneuver = 0.011
-local air_maneuver_max = 0.17
+local air_maneuver_max = 0.13
 
 local function wasd_delta(yaw)
     local dx, dy = 0, 0
@@ -51,6 +51,7 @@ end
 
 function Player:new()
     assert(self.pos)
+    self.tmp_pos = self.pos:copy()
     self.mov_x = 0
     self.mov_y = 0
     self.mov_z = 0
@@ -63,6 +64,7 @@ function Player:new()
     self.idle_ticks = 0
     self.visual_lag_vel_z = 0
     self.visual_fall_time = 0
+    self.focus_height_lag = 0
     self.draw_r = 1.1 * math.sqrt(3)
 
     self.anim = voxel.AnimState{
@@ -176,23 +178,42 @@ function Player:tick(world)
         self.anim.state:motion('air', world.tick_count)
     end
 
+    --Smooth camera vertical jumps
+    self.focus_height_lag = util.approach(self.focus_height_lag, 0, 0.9, 0.05)
+
     --Apply velocity to position
+    world.cam_mov_x, world.cam_mov_y, world.cam_mov_z = 0, 0, 0
     do
         local radius_h = bbox_h / 2
         local radius_v = bbox_v / 2
-        local mov_x, mov_y, mov_z, cx, cy, cz = self.pos:move_box(world.terrain, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_h, radius_v, true)
+        self.tmp_pos:copy_from(self.pos)
+        local mx, my, mz, cx, cy, cz = self.pos:move_box(world.terrain, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_h, radius_v, true)
+        if self.vel_z < 0 and cz and (cx or cy) then
+            local mx1, my1, mz1, cx1, cy1, cz1 = self.tmp_pos:move_box(world.terrain, 0, 0, 1.001, radius_h, radius_h, radius_v, true)
+            if not cz1 then
+                local mx2, my2, mz2, cx2, cy2, cz2 = self.tmp_pos:move_box(world.terrain, self.vel_x, self.vel_y, self.vel_z, radius_h, radius_h, radius_v, true)
+                if (not cx2 or not cy2) and cz2 then
+                    mx, my, mz, cx, cy, cz = mx1 + mx2, my1 + my2, mz1 + mz2, cx2, cy2, cz2
+                    self.pos:copy_from(self.tmp_pos)
+                    self.focus_height_lag = self.focus_height_lag - 1
+                    world.cam_mov_z = world.cam_mov_z - 1
+                end
+            end
+        end
         self.on_ground = self.vel_z < 0 and cz
-        self.mov_x, self.mov_y, self.mov_z = mov_x, mov_y, mov_z
+        self.mov_x, self.mov_y, self.mov_z = mx, my, mz
     end
 
     --Move camera to point at player
     do
-        local focus_height = 2
+        local focus_height = 2 + self.focus_height_lag
         local focus_dist = 8
         local cam_wall_dist = 0.4
         world.cam_pos:copy_from(self.pos)
         world.cam_pos:move_box(world.terrain, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
-        world.cam_mov_x, world.cam_mov_y, world.cam_mov_z = self.mov_x, self.mov_y, self.mov_z
+        world.cam_mov_x = world.cam_mov_x + self.mov_x
+        world.cam_mov_y = world.cam_mov_y + self.mov_y
+        world.cam_mov_z = world.cam_mov_z + self.mov_z
         world.cam_rollback = focus_dist
     end
 end

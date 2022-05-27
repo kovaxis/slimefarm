@@ -182,6 +182,10 @@ lua_type! {LuaWorldPos, lua, this,
         )
     }
 
+    fn copy() {
+        this.clone()
+    }
+
     mut fn copy_from(other: LuaWorldPos) {
         this.pos.set(other.get());
     }
