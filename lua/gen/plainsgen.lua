@@ -82,8 +82,9 @@ do
     local rng = math.rng(0)
     local leaves
 
-    local s = 1.4
-    local spread = 50 * s
+    local base_s = 1.5
+    local s = base_s
+    local spread = 40 * s
     local margin = 40 * s
     local max_lentotal = 100 * s
     local min_area = 1 * s * s
@@ -202,7 +203,7 @@ do
     local function tree(pos)
         leaves = {}
 
-        s = rng:normal(1, 2.3)
+        s = rng:normal(base_s*0.5, base_s*1.5)
         max_lentotal = 100 * s
         min_area = 1 * s * s
         max_depth = 100

@@ -17,7 +17,7 @@ function World:new()
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
             -- first 3 must be (in order) 'offset', 'color', 'light'
-            uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog'},
+            uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle'},
         },
         portal = util.Shader{
             vertex = 'portal.vert',
@@ -32,7 +32,7 @@ function World:new()
         skybox = util.Shader{
             vertex = 'skybox.vert',
             fragment = 'skybox.frag',
-            uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir'},
+            uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle'},
         },
         dbgchunk = util.Shader{
             vertex = 'dbgchunk.vert',
@@ -158,8 +158,10 @@ function World:tick()
     self.day_cycle = (self.day_cycle + 1 / (64*120)) % 1
     --self.day_cycle = (self.day_cycle + 1 / (64*30)) % 1
     --DEBUG: Advance day cycle quicker when in nighttime
-    --if self.day_cycle < 0.3 or self.day_cycle > 0.6 then
-    if self.day_cycle > 0.2 and self.day_cycle < 0.8 then
+    --if self.day_cycle < 0.3 or self.day_cycle > 0.7 then -- Skip night
+    if self.day_cycle < 0.2 or self.day_cycle > 0.8 then -- Skip night but not sunset and sunrise
+    --if self.day_cycle > 0.2 and self.day_cycle < 0.8 then -- Skip day
+    --if self.day_cycle > 0.3 and self.day_cycle < 0.7 then -- Skip day but not sunset and sunrise
         self.day_cycle = self.day_cycle + 1 / (64*5)
     end
 
@@ -285,13 +287,13 @@ do
     sky.sunrise = util.Curve{ 0, night, 0.20, night, 0.25, dawn, 0.30, day, 0.70, day, 0.75, eve, 0.77, night, 1, night }
 
     lo, hi = 0.00, 0.75
-    sky.ambience = util.Curve{ 0, lo, 0.23, lo, 0.40, hi, 0.60, hi, 0.77, lo }
+    sky.ambience = util.Curve{ 0, lo, 0.22, lo, 0.40, hi, 0.60, hi, 0.78, lo }
 
     lo, hi = 0, 0.20
-    sky.diffuse  = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
+    sky.diffuse  = util.Curve{ 0, lo, 0.22, lo, 0.27, hi, 0.73, hi, 0.78, lo }
 
     lo, hi = 0, 1
-    sky.specular = util.Curve{ 0, lo, 0.23, lo, 0.27, hi, 0.73, hi, 0.77, lo }
+    sky.specular = util.Curve{ 0, lo, 0.22, lo, 0.27, hi, 0.73, hi, 0.78, lo }
     
     local colors = {'base', 'highest', 'lowest', 'sunrise'}
     local lighting = {'ambience', 'diffuse', 'specular'}
@@ -300,6 +302,8 @@ do
             local r, g, b = sky[colors[i]]:at(cycle)
             shader:set_vec3(colors[i], r, g, b)
         end
+        shader:set_float('cycle', cycle)
+        shader:set_vec3('sun_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
     end
     function sky.lighting(shader, cycle)
         for i = 1, #lighting do
@@ -387,7 +391,6 @@ function World:subdraw()
 
         frame.params_sky:set_stencil_ref(depth)
         sky.colors(self.shaders.skybox, cycle)
-        self.shaders.skybox:set_vec3('sun_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
         self.shaders.skybox:draw(skybuf, frame.params_sky)
     end
     
@@ -403,22 +406,17 @@ function World:subdraw()
     --Draw terrain
     do
         local cycle = self.day_cycle
-        local dx, dy, dz = -math.cos((cycle - 0.25) * 2 * math.pi), 0, -math.sin((cycle - 0.25) * 2 * math.pi)
         --ambience = 0
         --diffuse = 0.2
         --specular = 0.03
         --dx, dy, dz = 2^-0.5, 0, -2^-0.5
         set_clip_planes(self.shaders.terrain, cam)
-        frame.mvp_world:push()
-        frame.mvp_world:mul_left(frame.invp_world)
-        dx, dy, dz = frame.mvp_world:transform_vec(dx, dy, dz)
-        frame.mvp_world:pop()
         frame.params_world:set_stencil_ref(depth)
         self.shaders.terrain:set_float('fog', self.fog_current)
         self.shaders.terrain:set_matrix('invp', frame.invp_world)
         self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
+        sky.colors(self.shaders.terrain, cycle)
         sky.lighting(self.shaders.terrain, cycle)
-        self.shaders.terrain:set_vec3('l_dir', dx, dy, dz)
         self.shaders.terrain:draw_terrain(self.terrain, frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end
     
@@ -527,10 +525,10 @@ function World:draw()
         frame.vfov = vfov
         frame.mvp_world:reset()
         frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.2, 800)
-        frame.invp_world:reset_from(frame.mvp_world)
-        frame.invp_world:invert()
         frame.mvp_world:rotate_x(-cam_pitch)
         frame.mvp_world:rotate_z(-cam_yaw)
+        frame.invp_world:reset_from(frame.mvp_world)
+        frame.invp_world:invert()
 
         -- Update initial drawing conditions
         frame.cam_stack:reset(campos_buf, frame.mvp_world, nil, 0, 0, 0)
