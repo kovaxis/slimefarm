@@ -51,16 +51,18 @@ local heightmap = native.heightmap {
     noise = perlin(256, 0.8, 3),
     offset = 0,
     scale = 32,
-    ground = blocks.register(texture {
-        name = 'base.grass',
-        base = {0.53, 0.71, 0.14, 0.224},
-        noise = {0.116, 0.131, 0.053},
-        octs = {0, 0, 0, 0, 0, 0.8},
-        rough = false,
-    }),
-    air = blocks.lookup 'base.air',
+    ground = blocks.solid(0.53, 0.71, 0.14),
+    air = blocks.air,
 }
 
+--[[
+blocks.register(texture {
+    name = 'base.grass',
+    base = {0.53, 0.71, 0.14, 0.224},
+    noise = {0.116, 0.131, 0.053},
+    octs = {0, 0, 0, 0, 0, 0.8},
+    rough = false,
+})
 blocks.register(texture {
     name = 'base.wood',
     base = {0.31, 0.19, 0.13, 0.1},
@@ -75,12 +77,22 @@ blocks.register(texture {
     octs = {0.1, 0, 0, 0.2},
     rough = true,
 })
+]]
 
 local structs, genstruct
 do
     local bbuf = native.action_buf()
     local rng = math.rng(0)
     local leaves
+
+    local leaf_paint = native.paint.noisy(
+        0.31, 0.19, 0.13,
+        0.136, 0.089, 0.065
+    )
+    local wood_paint = native.paint.noisy(
+        0.31, 0.19, 0.13,
+        0.136, 0.089, 0.065
+    )
 
     local base_s = 1.5
     local s = base_s
@@ -128,9 +140,9 @@ do
                 r,
                 subleaf_r[1], subleaf_r[2],
                 rng:integer(1000000),
-                blocks['base.leaf'],
                 subleaf_n
             )
+            bbuf:paint(leaf_paint)
             return
         end
 
@@ -154,9 +166,9 @@ do
                 --Paint this squiggle segment
                 bbuf:cylinder(
                     pos:x(), pos:y(), pos:z(), math.sqrt(area),
-                    top:x(), top:y(), top:z(), math.sqrt(nxt_area),
-                    blocks['base.wood']
+                    top:x(), top:y(), top:z(), math.sqrt(nxt_area)
                 )
+                bbuf:paint(wood_paint)
                 --Set up for next squiggle
                 pos:set(top)
                 acc = nxt_acc
@@ -238,7 +250,7 @@ do
         norm:rotate_x(pitch) norm:rotate_z(yaw)
         branch(pos, up, norm, attractor, area, 0, 0)
 
-        bbuf:blobs(leaves, blocks['base.leaf'], leaf_join)
+        --bbuf:blobs(leaves, blocks['base.leaf'], leaf_join)
     end
     function genstruct(rx, ry, sx, sy)
         local bx, by = math.floor(rx), math.floor(ry)
@@ -253,6 +265,7 @@ do
         seed = math.hash(gen.seed, "plains_structs"),
         cell_size = math.floor(spread + .5),
         margin = math.floor(margin + .5),
+        dim = 0,
     }
 end
 
@@ -265,12 +278,12 @@ lightconf:reset(0, 0, 0)
 local sky_light = 1
 function plainsgen.generate(x, y, z, w)
     if z >= 6 then
-        return native.chunk(blocks['base.air'], lightmodes['base.std'], sky_light):into_raw()
+        return native.chunk(blocks.air, lightmodes['base.std'], sky_light):into_raw()
     end
-    local chunk = native.chunk(blocks['base.air'], lightmodes['base.std'])
+    local chunk = native.chunk(blocks.air, lightmodes['base.std'])
     heightmap:fill_chunk(x, y, z, chunk)
     structs:fill_chunk(x, y, z, chunk, genstruct)
-    lightconf:transfer(0, 0, 0, chunk)
+    lightconf:transfer(0, 0, 0, 0, chunk)
     return chunk:into_raw()
 end
 

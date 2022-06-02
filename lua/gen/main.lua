@@ -9,21 +9,6 @@ gen.seed = assert(gen.k.seed, "no seed!")
 
 local filler = require(gen.k.kind)
 
-blocks.register {
-    name = 'base.air',
-    style = 'Clear',
-}
-
-blocks.register {
-    name = 'base.empty',
-    style = 'Clear',
-}
-
-blocks.register {
-    name = 'base.portal',
-    style = 'Portal',
-}
-
 lightmodes.register {
     name = 'base.std',
     -- 1/4 per block
@@ -47,6 +32,10 @@ end
 
 function gen.lightmodes()
     lightmodes.seal()
+    print("lightmodes:")
+    for k, v in pairs(lightmodes.modes) do
+        print("  "..tostring(k)..": "..tostring(v))
+    end
     return lightmodes.modes
 end
 

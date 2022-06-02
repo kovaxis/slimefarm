@@ -155,11 +155,11 @@ fn empty_chunk_buf(chunks: &mut ChunkStorage, unsent: &mut HashMap<ChunkPos, Chu
     chunks.maybe_gc();
 }
 
-fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
+fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox) {
     // Attempt to exploit the fact that some chunks are all-empty or all-full
     if chunk.is_homogeneous() {
         let block = chunk.homogeneous_block();
-        if block.is_solid(style) {
+        if block.is_solid() {
             // All dark. Ready
             return;
         }
@@ -207,7 +207,7 @@ fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
                     let mut idx_3d = idx_2d + (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
                     for _z in (0..CHUNK_SIZE).rev() {
                         idx_3d -= (CHUNK_SIZE * CHUNK_SIZE) as usize;
-                        if chunk.blocks[idx_3d].is_solid(style) {
+                        if chunk.blocks[idx_3d].is_solid() {
                             break;
                         }
                         chunk.skylight[idx_3d] = light;
@@ -231,7 +231,7 @@ fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
                 let mut idx_3d = idx_2d + (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
                 for _z in 0..CHUNK_SIZE {
                     idx_3d -= (CHUNK_SIZE * CHUNK_SIZE) as usize;
-                    if chunk.blocks[idx_3d].is_solid(style) {
+                    if chunk.blocks[idx_3d].is_solid() {
                         break;
                     }
                     chunk.skylight[idx_3d] = light;
@@ -344,7 +344,6 @@ fn process_lighting(
     chunks: &ChunkStorage,
     unsent: &mut HashMap<ChunkPos, ChunkBox>,
     spreader: &mut LightSpreader,
-    style: &StyleTable,
 ) {
     // This function does 2 things:
     // - Propagate skylight down for all unsent chunks
@@ -364,7 +363,7 @@ fn process_lighting(
                 .map(|(_, ab)| ab)
                 .or_else(|| chunks.chunk_at(above_pos));
             if let Some(above) = above {
-                skylight_fall(above, chunk, style);
+                skylight_fall(above, chunk);
             } else {
                 println!("no above-chunk found for chunk at {:?}!", pos);
             }
@@ -538,14 +537,6 @@ fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) 
         let luagen = lua.globals().get::<_, LuaTable>("gen")?;
 
         let mut info: Box<WorldInfo> = default();
-        let luatex = luagen
-            .get::<_, LuaFunction>("textures")?
-            .call::<_, LuaTable>(())?;
-        for res in luatex.pairs::<u8, LuaValue>() {
-            let (k, v) = res?;
-            let v = rlua_serde::from_value::<BlockTexture>(v)?;
-            info.blocks[k as usize] = v;
-        }
         let lualight = luagen
             .get::<_, LuaFunction>("lightmodes")?
             .call::<_, LuaTable>(())?;
@@ -571,7 +562,6 @@ fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) 
     let lua_gc = lua_gc.unwrap();
 
     // Pass world info back to the main game
-    let style = StyleTable::new(&world_info);
     let mut light_spreader = LightSpreader::new(&world_info);
     info_send
         .send(world_info)
@@ -659,7 +649,7 @@ fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) 
             // If the chunk is not shiny or solid, generate more chunks above it until the sky is
             // reached, so shadows can be computed
             if !(chunk.is_homogeneous()
-                && (chunk.homogeneous_shinethrough() || chunk.homogeneous_block().is_solid(&style)))
+                && (chunk.homogeneous_shinethrough() || chunk.homogeneous_block().is_solid()))
             {
                 let mut above = pos;
                 above.coords.z += 1;
@@ -683,13 +673,7 @@ fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) 
         }
 
         // Process sky lighting
-        process_lighting(
-            &gen.shared,
-            &chunks,
-            &mut unsent,
-            &mut light_spreader,
-            &style,
-        );
+        process_lighting(&gen.shared, &chunks, &mut unsent, &mut light_spreader);
 
         // Try harder to send back chunks
         if !unsent.is_empty() {

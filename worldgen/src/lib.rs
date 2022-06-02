@@ -27,7 +27,7 @@ lua_type! {LuaChunkBox, lua, this,
         }
     }
 
-    mut fn fill((shinethrough, block, light, lightdecay): (bool, u8, f64, f64)) {
+    mut fn fill((shinethrough, block, light, lightdecay): (bool, i16, f64, f64)) {
         let light = (light * 255.) as u8;
         let lightdecay = (lightdecay * 255.) as u8;
         this.chunk.make_homogeneous(shinethrough, BlockData { data: block }, light, lightdecay);
@@ -44,6 +44,7 @@ struct BufGridCfg {
     seed: i64,
     cell_size: i32,
     margin: i32,
+    dim: u32,
 }
 
 struct BufGrid2 {
@@ -51,6 +52,7 @@ struct BufGrid2 {
     cellsize: i32,
     margin: i32,
     spread: Spread2d,
+    dim: u32,
 }
 impl BufGrid2 {
     fn new(k: BufGridCfg) -> Self {
@@ -58,6 +60,7 @@ impl BufGrid2 {
             grid: default(),
             cellsize: k.cell_size,
             margin: k.margin,
+            dim: k.dim,
             spread: Spread2d::new(k.seed as u64),
         }
     }
@@ -91,11 +94,18 @@ impl BufGrid2 {
         let mn = mn / self.cellsize;
         let mx = mx / self.cellsize;
         // Apply actionbufs from all touching cells
+        let dim = self.dim;
         for y in mn.y..=mx.y {
             for x in mn.x..=mx.x {
                 let cellpos = Int2::new([x, y]);
                 let cellbuf = self.gen_col(gen, cellpos)?;
-                cellbuf.transfer(chunk_pos, chunk);
+                cellbuf.transfer(
+                    ChunkPos {
+                        coords: chunk_pos,
+                        dim,
+                    },
+                    chunk,
+                );
             }
         }
         Ok(())
@@ -238,7 +248,7 @@ lua_type! {HeightMap, lua, this,
 fn open_lib(lua: LuaContext) -> Result<LuaTable> {
     let state = ();
     let lib = lua_lib! {lua, state,
-        fn chunk((block, lightmode, shinelight): (u8, u8, Option<f64>)) {
+        fn chunk((block, lightmode, shinelight): (i16, u8, Option<f64>)) {
             let (shinethrough, light) = match shinelight {
                 None => (false, 0),
                 Some(light) => (true, (light * 255.) as u8),
@@ -274,6 +284,7 @@ fn open_lib(lua: LuaContext) -> Result<LuaTable> {
             BufGrid2::new(cfg)
         }
     };
+    lib.raw_set("paint", crate::actionbuf::painter_constructors(lua)?)?;
     Ok(lib)
 }
 

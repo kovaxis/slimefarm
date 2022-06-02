@@ -290,9 +290,8 @@ macro_rules! light_spreader {
             }
 
             pub struct $name {
-                pub light_modes: [LightingConf; 256],
+                pub light_modes: [LightingConf; 64],
                 pub mode: usize,
-                pub style: StyleTable,
                 pub queue: VecDeque<[u8; 3]>,
                 pub dirty: DirtyBits,
                 pub decay: u8,
@@ -300,8 +299,7 @@ macro_rules! light_spreader {
             impl $name {
                 pub fn new(info: &WorldInfo) -> Self {
                     Self {
-                        style: StyleTable::new(info),
-                        light_modes: arr![i => info.light_modes[i].clone(); 256],
+                        light_modes: arr![i => info.light_modes[i].clone(); 64],
                         mode: 0,
                         queue: default(),
                         dirty: DirtyBits::new(),
@@ -328,7 +326,7 @@ macro_rules! light_spreader {
                     l: u8,
                 ) -> bool {
                     let to_idx = (to.x + SIZE * to.y + SIZE * SIZE * to.z) as usize;
-                    if !blocks[to_idx].is_clear(&self.style) {
+                    if !blocks[to_idx].is_clear() {
                         // Cannot spread to a non-clear block
                         return false;
                     }
@@ -443,7 +441,6 @@ pub(crate) struct TerrainDbgStats {
 }
 
 pub(crate) struct Terrain {
-    pub style: StyleTable,
     pub mesher: MesherHandle,
     pub generator: GeneratorHandle,
     pub state: Rc<State>,
@@ -469,7 +466,6 @@ impl Terrain {
         let generator = GeneratorHandle::new(gen_cfg, &state.global, chunks.clone())?;
         let info = generator.take_world_info()?;
         Ok(Terrain {
-            style: StyleTable::new(&info),
             state: state.clone(),
             meshes: MeshKeeper::new(),
             mesher: MesherHandle::new(state, chunks.clone(), cfg.mesher, *info),
@@ -917,28 +913,23 @@ impl Terrain {
         let mut last = cur;
         cur.coords[axis] += dir;
         for i in 0..delta * dir {
-            match self
-                .block_at(cur)
-                .map(|b| self.style.lookup(b))
-                .unwrap_or(BlockStyle::Solid)
-            {
-                BlockStyle::Clear => {
-                    last = cur;
-                    cur.coords[axis] += dir;
+            let behaviour = self.block_at(cur).unwrap_or(BlockData { data: 0 });
+            if behaviour.is_clear() {
+                // Advance normally
+                last = cur;
+                cur.coords[axis] += dir;
+            } else if behaviour.is_solid() {
+                // Stop moving
+                *abspos = last;
+                return (i * dir, true);
+            } else if behaviour.is_portal() {
+                // Cross portal
+                let mut ppos = cur;
+                ppos.coords[axis] += 1 - binary;
+                if let Some(portal) = self.chunks.read().portal_at(ppos, axis) {
+                    cur.coords += portal.jump;
+                    cur.dim = portal.dim;
                 }
-                BlockStyle::Solid => {
-                    *abspos = last;
-                    return (i * dir, true);
-                }
-                BlockStyle::Portal => {
-                    let mut ppos = cur;
-                    ppos.coords[axis] += 1 - binary;
-                    if let Some(portal) = self.chunks.read().portal_at(ppos, axis) {
-                        cur.coords += portal.jump;
-                        cur.dim = portal.dim;
-                    }
-                }
-                BlockStyle::Custom => unimplemented!(),
             }
         }
         *abspos = cur;
@@ -972,32 +963,28 @@ impl Terrain {
             };
             let mut block = col_int;
             block.coords[axis] += binary - 1;
-            match self
-                .block_at(block)
-                .map(|b| self.style.lookup(b))
-                .unwrap_or(BlockStyle::Solid)
-            {
-                BlockStyle::Clear => next_block[axis] += dir,
-                BlockStyle::Solid => {
-                    limit = next_block[axis] - Self::SAFE_GAP * dir;
-                    crashed = true;
-                    break;
-                }
-                BlockStyle::Portal => {
-                    if let Some(portal) = self.chunks.read().portal_at(col_int, axis) {
-                        for i in 0..3 {
-                            cur.coords[i] += portal.jump[i] as f64;
-                            next_block[i] += portal.jump[i] as f64;
-                        }
-                        cur.dim = portal.dim;
-                        limit += portal.jump[axis] as f64;
-                    } else {
-                        // Should never happen with proper portals!
-                        next_block[axis] += dir;
+            let behaviour = self.block_at(block).unwrap_or(BlockData { data: 0 });
+            if behaviour.is_clear() {
+                // Advance normally
+                next_block[axis] += dir;
+            } else if behaviour.is_portal() {
+                // Cross portal
+                if let Some(portal) = self.chunks.read().portal_at(col_int, axis) {
+                    for i in 0..3 {
+                        cur.coords[i] += portal.jump[i] as f64;
+                        next_block[i] += portal.jump[i] as f64;
                     }
+                    cur.dim = portal.dim;
+                    limit += portal.jump[axis] as f64;
+                } else {
+                    // Should never happen with proper portals!
+                    next_block[axis] += dir;
                 }
-
-                BlockStyle::Custom => unimplemented!(),
+            } else if behaviour.is_solid() {
+                // Stop movement
+                limit = next_block[axis] - Self::SAFE_GAP * dir;
+                crashed = true;
+                break;
             }
         }
         *abspos = cur;
@@ -1111,7 +1098,7 @@ impl Terrain {
                     let real_pos = to_real_pos(&portalplanes, cur);
                     if self
                         .block_at(real_pos)
-                        .map(|b| b.is_portal(&self.style))
+                        .map(|b| b.is_portal())
                         .unwrap_or(false)
                     {
                         add_portal(&mut portalplanes, cur, axis);
@@ -1159,44 +1146,37 @@ impl Terrain {
             }
 
             //Check whether there is a collision
-            let mut style = BlockStyle::Custom as u8;
+            let mut behaviour = BlockData { data: i16::MIN };
             for z in min_block.z..max_block.z {
                 for y in min_block.y..max_block.y {
                     for x in min_block.x..max_block.x {
                         let pos = Int3::new([x, y, z]);
                         let real_pos = to_real_pos(&portalplanes, pos);
-                        let s = self
-                            .block_at(real_pos)
-                            .map(|b| self.style.lookup(b))
-                            .unwrap_or(BlockStyle::Solid);
-                        style = style.min(s as u8);
+                        let s = self.block_at(real_pos).map(|b| b.data).unwrap_or(0);
+                        behaviour.data = behaviour.data.max(s);
                     }
                 }
             }
-            let style = BlockStyle::from_raw(style);
 
-            match style {
-                BlockStyle::Clear => {}
-                BlockStyle::Solid => {
-                    //If there is collision, start ignoring this axis
-                    if eager {
-                        //Unless we're raycasting
-                        //In this case, abort immediately
-                        limit = frontier;
-                        break;
-                    }
-                    limit[closest_axis] =
-                        frontier[closest_axis] - Self::SAFE_GAP * dir[closest_axis];
-                    delta[closest_axis] = 0.;
-                    crashed[closest_axis] = true;
-                    if delta == [0., 0., 0.] {
-                        break;
-                    }
+            if behaviour.is_clear() {
+                // Nothing to do
+            } else if behaviour.is_portal() {
+                // Cross portal
+                add_portal(&mut portalplanes, min_block, closest_axis);
+            } else if behaviour.is_solid() {
+                //If there is collision, start ignoring this axis
+                if eager {
+                    //Unless we're raycasting
+                    //In this case, abort immediately
+                    limit = frontier;
+                    break;
                 }
-                BlockStyle::Portal => {
-                    add_portal(&mut portalplanes, min_block, closest_axis);
+                limit[closest_axis] = frontier[closest_axis] - Self::SAFE_GAP * dir[closest_axis];
+                delta[closest_axis] = 0.;
+                crashed[closest_axis] = true;
+                if delta == [0., 0., 0.] {
+                    break;
                 }
-                BlockStyle::Custom => unimplemented!(),
             }
         }
 

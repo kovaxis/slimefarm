@@ -501,17 +501,11 @@ crate::terrain::light_spreader! {
 }
 
 struct TerrainMesherKind {
-    /// Knows which blocks are solid and which blocks are clear.
-    style: StyleTable,
-    /// Texture parameters for every block type.
-    block_textures: [BlockTexture; 256],
     /// A flat buffer containing all blocks in the current chunk and some margin of the neighboring
     /// chunks.
     block_buf: [BlockData; BBUF_LEN],
     /// A buffer equivalent to `block_buf`, but containing light values.
     light_buf: [u8; BBUF_LEN],
-    /// Stores the noise that is used to give block colors a little texture.
-    noise_buf: [f32; NOISE_LEN],
     /// Subsystem responsible for spreading light correctly.
     light_spread: LightSpreader,
 }
@@ -520,20 +514,17 @@ impl TerrainMesherKind {
         Self {
             block_buf: [BlockData { data: 0 }; BBUF_LEN],
             light_buf: [0; BBUF_LEN],
-            style: StyleTable::new(&info),
-            block_textures: arr![i => info.blocks[i].clone(); 256],
-            noise_buf: [0.; NOISE_LEN],
             light_spread: LightSpreader::new(&info),
         }
     }
 }
 impl MesherKind for TerrainMesherKind {
     fn is_solid(&self, idx: i32) -> bool {
-        self.block_buf[idx as usize].is_solid(&self.style)
+        self.block_buf[idx as usize].is_solid()
     }
 
     fn is_clear(&self, idx: i32) -> bool {
-        self.block_buf[idx as usize].is_clear(&self.style)
+        self.block_buf[idx as usize].is_clear()
     }
 
     fn light_conf(&self) -> &LightingConf {
@@ -546,49 +537,12 @@ impl MesherKind for TerrainMesherKind {
 
     fn color(this: &mut Mesher2<Self>, blockidx: i32, blockpos: Int3, _airpos: Int3) -> [u8; 4] {
         let block = this.kind.block_buf[blockidx as usize];
-        // Get the noise value at a particular location
-        let noise_at = |pos: [i32; 3]| {
-            this.kind.noise_buf
-                [(pos[0] + NOISE_SIZE * pos[1] + NOISE_SIZE * NOISE_SIZE * pos[2]) as usize]
-        };
-        // Snap to the nearest grid-aligned integer points
-        let snap = |x: i32, i: usize| {
-            let mask = (!0) << i;
-            (x & mask, (x & mask) + (1 << i))
-        };
-        // Texture parameters for this block
-        let tex = &this.kind.block_textures[block.data as usize];
-        // Color accumulator, starting with the base color
-        let mut color = Vec4::from(tex.base);
-        // Add the first layer of noise, which can be computed using a single noise lookup
-        color += Vec4::from(tex.noise[0]) * noise_at(*blockpos);
-        // Go through all noise layers
-        for i in 1..BlockTexture::NOISE_LEVELS {
-            // Get the 8 noise points
-            let (x0, x1) = snap(blockpos.x, i);
-            let (y0, y1) = snap(blockpos.y, i);
-            let (z0, z1) = snap(blockpos.z, i);
-            // Interpolate these 8 points using bilinear interpolation
-            let f = blockpos.lowbits(i as i32).to_f32() * (1. / (1 << i) as f32);
-            let s = Lerp::lerp(
-                &Lerp::lerp(
-                    &Lerp::lerp(&noise_at([x0, y0, z0]), noise_at([x1, y0, z0]), f.x),
-                    Lerp::lerp(&noise_at([x0, y1, z0]), noise_at([x1, y1, z0]), f.x),
-                    f.y,
-                ),
-                Lerp::lerp(
-                    &Lerp::lerp(&noise_at([x0, y0, z1]), noise_at([x1, y0, z1]), f.x),
-                    Lerp::lerp(&noise_at([x0, y1, z1]), noise_at([x1, y1, z1]), f.x),
-                    f.y,
-                ),
-                f.z,
-            );
-            // Add the color offset
-            color += Vec4::from(tex.noise[i]) * s;
-        }
-        // Quantize the color
-        let q = |f: f32| (f * 255.) as u8;
-        [q(color.x), q(color.y), q(color.z), q(color.w)]
+        [
+            block.data as u8 & 0x1f,
+            (block.data >> 5) as u8 & 0x1f,
+            (block.data >> 10) as u8 & 0x1f,
+            50,
+        ]
     }
 }
 
@@ -1159,19 +1113,13 @@ impl Mesher2<TerrainMesherKind> {
         // Check homogeneous chunk hints
         if near_chunks[13].is_homogeneous() {
             // If the center is clear, nothing to do
-            if near_chunks[13]
-                .homogeneous_block()
-                .is_clear(&self.kind.style)
-            {
+            if near_chunks[13].homogeneous_block().is_clear() {
                 return Some(false);
             }
             // If the center and the 6 chunks around it are solid, nothing to do
             const SOLID_REQ: &[usize] = &[13, 4, 10, 12, 14, 16, 22];
             if SOLID_REQ.iter().all(|&idx| {
-                near_chunks[idx].is_homogeneous()
-                    && near_chunks[idx]
-                        .homogeneous_block()
-                        .is_solid(&self.kind.style)
+                near_chunks[idx].is_homogeneous() && near_chunks[idx].homogeneous_block().is_solid()
             }) {
                 return Some(false);
             }
@@ -1252,24 +1200,6 @@ impl Mesher2<TerrainMesherKind> {
             .spread_pending(&mut self.kind.light_buf, &self.kind.block_buf);
     }
 
-    /// Generate texture noise.
-    fn texture_noise(&mut self, chunk_pos: ChunkPos) {
-        // OPTIMIZE: Generate noise rows by hashing hashes
-        let mut idx = 0;
-        let base_pos = chunk_pos.coords << CHUNK_BITS;
-        for z in 0..=CHUNK_SIZE {
-            for y in 0..=CHUNK_SIZE {
-                for x in 0..=CHUNK_SIZE {
-                    let rnd = fxhash::hash32(&(base_pos + [x, y, z]));
-                    let val = 0x3f800000 | (rnd >> 9);
-                    let val = f32::from_bits(val) * 2. - 3.;
-                    self.kind.noise_buf[idx] = val;
-                    idx += 1;
-                }
-            }
-        }
-    }
-
     fn make_chunk_mesh<'a>(
         &mut self,
         chunk_pos: ChunkPos,
@@ -1300,9 +1230,6 @@ impl Mesher2<TerrainMesherKind> {
         {*/
         self.spread_light();
         // }
-
-        // Generate block texture noise
-        self.texture_noise(chunk_pos);
 
         // Turn voxels into a list of quads
         self.visit_layers();

@@ -45,9 +45,9 @@ impl<'a> ChunkRef<'a> {
     const FLAG_HOMOGENEOUS: usize = 0b1;
 
     const PACKED_SHINETHROUGH: usize = 1;
-    const PACKED_BLOCK: usize = 8;
-    const PACKED_SKYLIGHT: usize = 16;
-    const PACKED_LIGHTMODE: usize = 24;
+    const PACKED_LIGHTMODE: usize = 2;
+    const PACKED_SKYLIGHT: usize = 8;
+    const PACKED_BLOCK: usize = 16;
 
     #[inline]
     pub fn new_homogeneous(
@@ -56,6 +56,7 @@ impl<'a> ChunkRef<'a> {
         skylight: u8,
         lightmode: u8,
     ) -> ChunkRef<'static> {
+        let lightmode = lightmode % 64;
         ChunkRef {
             ptr: unsafe {
                 NonNull::new_unchecked(
@@ -97,7 +98,7 @@ impl<'a> ChunkRef<'a> {
     #[inline]
     pub fn homogeneous_block(self) -> BlockData {
         BlockData {
-            data: (self.raw() >> Self::PACKED_BLOCK) as u8,
+            data: (self.raw() >> Self::PACKED_BLOCK) as i16,
         }
     }
 
@@ -112,7 +113,7 @@ impl<'a> ChunkRef<'a> {
     /// anyway.
     #[inline]
     pub fn homogeneous_lightmode(self) -> u8 {
-        (self.raw() >> Self::PACKED_LIGHTMODE) as u8
+        ((self.raw() >> Self::PACKED_LIGHTMODE) as u8) % 64
     }
 
     #[inline]
@@ -171,19 +172,19 @@ impl<'a> ChunkRef<'a> {
     }
 
     #[inline]
-    pub fn is_clear(self, style: &StyleTable) -> bool {
+    pub fn is_clear(self) -> bool {
         if !self.is_homogeneous() {
             return false;
         }
-        style.is_clear(self.homogeneous_block())
+        self.homogeneous_block().is_clear()
     }
 
     #[inline]
-    pub fn is_solid(self, style: &StyleTable) -> bool {
+    pub fn is_solid(self) -> bool {
         if !self.is_homogeneous() {
             return false;
         }
-        style.is_solid(self.homogeneous_block())
+        self.homogeneous_block().is_solid()
     }
 
     pub fn into_raw(self) -> *const ChunkData {
@@ -330,13 +331,11 @@ impl ChunkBox {
             let lightmode = self.homogeneous_lightmode();
             unsafe {
                 *self = ChunkBox::new_uninit();
-                ptr::write_bytes(&mut self.blocks_mut_unchecked().blocks, block.data, 1);
-                ptr::write_bytes(&mut self.blocks_mut_unchecked().skylight, skylight, 1);
-                ptr::write_bytes(
-                    &mut self.blocks_mut_unchecked().shinethrough,
-                    if shinethrough { 0xff } else { 0x00 },
-                    1,
-                );
+                self.blocks_mut_unchecked().blocks.fill(block);
+                self.blocks_mut_unchecked().skylight.fill(skylight);
+                self.blocks_mut_unchecked()
+                    .shinethrough
+                    .fill(if shinethrough { !0 } else { 0 });
                 self.blocks_mut_unchecked().light_mode = lightmode;
             }
         }
@@ -534,30 +533,32 @@ impl WorldPos {
     }
 }
 
-/// Represents a single block id.
+/// Represents a single 2-byte block id.
 ///
-/// Currently a single byte, and the same byte always represents the same block anywhere in the
-/// world.
-/// In the future, however, the byte might represent a different block depending on context (ie.
-/// position or dimension).
-/// Alternatively, at some point block ids might become 2 bytes.
+/// Positive IDs indicate a solid colored block.
+/// The remaining 15 bits are divided into 5 bits per RGB channel.
+///
+/// Negative IDs indicate a special block.
+/// Currently, ID -1 is the portal block and the remaining IDs are considered clear air.
+/// In the future, water and other liquids might be added to these negative IDs.
+/// Different types of air too.
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
 #[serde(transparent)]
 pub struct BlockData {
-    pub data: u8,
+    pub data: i16,
 }
 impl BlockData {
     #[inline]
-    pub fn is_clear(self, table: &StyleTable) -> bool {
-        table.is_clear(self)
+    pub fn is_clear(self) -> bool {
+        self.data < -1
     }
     #[inline]
-    pub fn is_solid(self, table: &StyleTable) -> bool {
-        table.is_solid(self)
+    pub fn is_solid(self) -> bool {
+        self.data >= 0
     }
     #[inline]
-    pub fn is_portal(self, table: &StyleTable) -> bool {
-        table.is_portal(self)
+    pub fn is_portal(self) -> bool {
+        self.data == -1
     }
 }
 
@@ -838,118 +839,13 @@ pub struct LightingConf {
     pub decay: BlendConf,
 }
 
-#[derive(Default, Clone, Deserialize)]
-pub struct BlockTexture {
-    /// What are the physical and visual properties of the block.
-    #[serde(default)]
-    pub style: BlockStyle,
-    /// Whether to set color at the vertices or per-block.
-    /// If smooth, color is per-vertex, and therefore blocks represent a color gradient.
-    #[serde(default = "default_true")]
-    pub smooth: bool,
-    /// Constant base block color.
-    /// Red, Green, Blue, Specularity.
-    /// Other texture effects are added onto this base color.
-    #[serde(default)]
-    pub base: [f32; 4],
-    /// How much value noise to add of each scale.
-    /// 0 -> per-block value noise
-    /// 1 -> 2-block interpolated value noise
-    /// K -> 2^K-block interpolated value noise
-    #[serde(default)]
-    pub noise: [[f32; 4]; Self::NOISE_LEVELS],
-}
-impl BlockTexture {
-    pub const NOISE_LEVELS: usize = 6;
-}
-
-#[derive(Copy, Clone, Deserialize, PartialEq, Eq)]
-#[repr(u8)]
-pub enum BlockStyle {
-    Solid,
-    Clear,
-    Portal,
-    Custom,
-}
-impl Default for BlockStyle {
-    fn default() -> Self {
-        Self::Solid
-    }
-}
-impl BlockStyle {
-    #[inline]
-    pub fn from_raw(raw: u8) -> Self {
-        unsafe { mem::transmute::<u8, Self>(raw & 0b11) }
-    }
-
-    #[inline]
-    pub fn as_raw(self) -> u8 {
-        self as u8
-    }
-
-    #[inline]
-    pub fn is_clear(self) -> bool {
-        self == Self::Clear
-    }
-    #[inline]
-    pub fn is_solid(self) -> bool {
-        self == Self::Solid
-    }
-    #[inline]
-    pub fn is_portal(self) -> bool {
-        self == Self::Portal
-    }
-}
-
 pub struct WorldInfo {
-    pub blocks: [BlockTexture; 256],
-    pub light_modes: [LightingConf; 256],
+    pub light_modes: [LightingConf; 64],
 }
 impl Default for WorldInfo {
     fn default() -> Self {
         Self {
-            blocks: arr![default(); 256],
-            light_modes: arr![default(); 256],
+            light_modes: arr![default(); 64],
         }
-    }
-}
-
-pub struct StyleTable {
-    words: [usize; Self::TOTAL_WORDS],
-}
-impl StyleTable {
-    const BITS: usize = mem::size_of::<usize>() * 8;
-    const BITS_PER_BLOCK: usize = 2;
-    const BLOCKS_PER_WORD: usize = Self::BITS / Self::BITS_PER_BLOCK;
-    const TOTAL_WORDS: usize = 256 / Self::BLOCKS_PER_WORD;
-
-    pub fn new(info: &WorldInfo) -> Self {
-        let mut words = [0; Self::TOTAL_WORDS];
-        for i in 0..256 {
-            let tx = &info.blocks[i];
-            words[i / Self::BLOCKS_PER_WORD] |=
-                (tx.style as u8 as usize) << (i % Self::BLOCKS_PER_WORD * Self::BITS_PER_BLOCK);
-        }
-        Self { words }
-    }
-
-    #[inline]
-    pub fn lookup(&self, id: BlockData) -> BlockStyle {
-        let raw = self.words[id.data as usize / Self::BLOCKS_PER_WORD]
-            >> (id.data as usize % Self::BLOCKS_PER_WORD * Self::BITS_PER_BLOCK);
-        BlockStyle::from_raw(raw as u8)
-    }
-
-    #[inline]
-    pub fn is_clear(&self, id: BlockData) -> bool {
-        self.lookup(id).is_clear()
-    }
-    #[inline]
-    pub fn is_solid(&self, id: BlockData) -> bool {
-        self.lookup(id).is_solid()
-    }
-    #[inline]
-    pub fn is_portal(&self, id: BlockData) -> bool {
-        self.lookup(id).is_portal()
     }
 }
