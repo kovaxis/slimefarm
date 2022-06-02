@@ -156,6 +156,12 @@ lua_type! {MatrixStack, lua, this,
         mat[4 * i + 2] = z;
         mat[4 * i + 3] = w;
     }
+
+    fn raw() {
+        let (_, top) = &*this.stack.borrow();
+        let ptr = top as *const Mat4 as *mut Mat4;
+        LuaLightUserData(ptr as *mut _)
+    }
 }
 
 #[derive(Clone)]
