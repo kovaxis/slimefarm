@@ -145,8 +145,9 @@ actionbuf_lua! {
     portal,
     cube,
     sphere,
-    oval,
+    ellipsoid,
     cylinder,
     blobs,
     cloud,
+    rock,
 }

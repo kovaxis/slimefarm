@@ -274,8 +274,9 @@ local function reload(w)
     print("loading file '"..w.path.."'")
     local ms, as = dofile(w.path)
     for name, model in pairs(ms) do
-        voxel.models[name] = voxel.Model(model)
+        ms[name] = voxel.Model(model)
     end
+    voxel.models = util.merge(ms, voxel.models)
 end
 
 function voxel.load_models(path)

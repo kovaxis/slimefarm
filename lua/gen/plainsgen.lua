@@ -75,6 +75,13 @@ blocks.register(texture {
     octs = {0.1, 0, 0, 0.2},
     rough = true,
 })
+blocks.register(texture {
+    name = 'base.stone',
+    base = {0.475, 0.475, 0.475, 0.158},
+    noise = {0.169, 0.169, 0.169},
+    octs = {0.1, 0.2, 0.3},
+    rough = true,
+})
 
 local structs, genstruct
 do
@@ -82,9 +89,9 @@ do
     local rng = math.rng(0)
     local leaves
 
-    local base_s = 1.5
+    local base_s = 0.7
     local s = base_s
-    local spread = 40 * s
+    local spread = 80 * s
     local margin = 40 * s
     local max_lentotal = 100 * s
     local min_area = 1 * s * s
@@ -240,13 +247,17 @@ do
 
         bbuf:blobs(leaves, blocks['base.leaf'], leaf_join)
     end
+    local function rock(pos)
+        bbuf:rock(pos:x(), pos:y(), pos:z() + s * 4, s * 16, rng:integer(1000000), 16, 0.4, blocks['base.stone'])
+    end
     function genstruct(rx, ry, sx, sy)
         local bx, by = math.floor(rx), math.floor(ry)
         local bz = heightmap:height_at(bx, by)
         local fx, fy = rx - bx, ry - by
         bbuf:reset(bx, by, bz)
         rng:reseed(math.hash(gen.seed, "plains_tree", sx, sy))
-        tree(math.vec3(fx, fy, 0))
+        --tree(math.vec3(fx, fy, 0))
+        rock(math.vec3(fx, fy, 0))
         return bbuf
     end
     structs = native.gridbuf_2d {

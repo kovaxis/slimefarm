@@ -22,6 +22,12 @@ local jump_keepup_ticks = 14
 local jump_cooldown_start = 10
 local jump_cooldown_land = 0
 
+local roll_pre = 10
+local roll_immune = 40
+local roll_end = 10
+local roll_cooldown_start = 10
+local roll_cooldown_end = 20
+
 local lag_vel_z_add = 1.2
 local lag_vel_z_mul = 0.0012
 
@@ -71,15 +77,18 @@ function Player:new()
         model = voxel.models.player,
     }
 
-    self.jumps_left = 0
-    self.jump_was_down = false
-
     --Jumping mechanics
     self.jump_cooldown = 0
     self.jump_ticks = -1
-    self.jump_dx = 0
-    self.jump_dy = 0
-    self.jump_yaw = 0
+    self.jumps_left = 0
+    self.jump_was_down = false
+
+    --Roll mechanics
+    self.roll_cooldown = 0
+    self.roll_ticks = -1
+    self.roll_dx = 0
+    self.roll_dy = 0
+    self.roll_was_down = false
 
     self.is_player = true
 end
@@ -122,8 +131,27 @@ function Player:tick(world)
         end
     end
 
+    --Roll
+    if self.roll_cooldown <= 0 and self.on_ground and input.mouse_down.right and not self.roll_was_down and self.jump_ticks < 0 then
+        self.roll_ticks = 0
+        self.roll_cooldown = roll_cooldown_start
+        self.anim.state:action('roll', true)
+    end
+    self.roll_was_down = input.mouse_down.right
+    if self.roll_cooldown > 0 then
+        self.roll_cooldown = self.roll_cooldown - 1
+    end
+    if self.roll_ticks >= 0 then
+        --Advance roll ticks
+        self.roll_ticks = self.roll_ticks + 1
+        if self.roll_ticks >= roll_pre + roll_immune + roll_end then
+            self.roll_ticks = -1
+            self.roll_cooldown = roll_cooldown_end
+        end
+    end
+
     --Jump
-    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and (self.on_ground or not self.jump_was_down) then
+    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and (self.on_ground or not self.jump_was_down) and self.roll_ticks < 0 then
         self.jump_ticks = 0
         self.jump_cooldown = jump_cooldown_start
         self.jumps_left = self.jumps_left - 1
@@ -168,14 +196,17 @@ function Player:tick(world)
     if self.on_ground then
         if self.vel_x == 0 and self.vel_y == 0 then
             --Idle
-            self.anim.state:motion('idle', world.tick_count)
+            self.anim.state:motion('idle')
         else
             --Run
-            self.anim.state:motion('run', world.tick_count)
+            self.anim.state:motion('run')
         end
     else
         --Airtime
-        self.anim.state:motion('air', world.tick_count)
+        self.anim.state:motion('air')
+    end
+    if self.roll_ticks >= 0 then
+        self.anim.state:action('roll')
     end
 
     --Smooth camera vertical jumps

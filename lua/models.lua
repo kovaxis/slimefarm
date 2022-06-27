@@ -67,26 +67,29 @@ local models = {}
 
 local humanoid_animation = {
     init = function(self)
-        self.state = 'idle'
+        self.motion_state = 'idle'
         self.moving = 0
         self.air = 0
-        self.t = 0
+        self.run_t = 0
         self.idle_t = 0
         self.air_t = 0
     end,
     motion = function(self, name)
-        self.state = name
+        self.motion_state = name
+    end,
+    action = function(self, name, force)
+        
     end,
     draw = function(self, b, dt)
         self.moving = approach(
             self.moving,
-            self.state == 'idle' and 0 or 1,
+            self.motion_state == 'idle' and 0 or 1,
             0.001, 0.2,
             dt
         )
         self.air = approach(
             self.air,
-            self.state == 'air' and 1 or 0,
+            self.motion_state == 'air' and 1 or 0,
             0.004, 0.2,
             dt
         )
@@ -98,11 +101,11 @@ local humanoid_animation = {
         end
         local move_speed = 14
         if self.moving == 0 then
-            self.t = 0
-        elseif self.state == 'run' then
-            self.t = self.t + dt * move_speed
+            self.run_t = 0
+        elseif self.motion_state == 'run' then
+            self.run_t = self.run_t + dt * move_speed
         else
-            self.t = addsnap(self.t, dt * move_speed, pi, 0.5)
+            self.run_t = addsnap(self.run_t, dt * move_speed, pi, 0.5)
         end
         local air_speed = 3
         if self.air == 0 then
@@ -122,7 +125,7 @@ local humanoid_animation = {
         
         --Run/Air
         do
-            local t, w = self.t, self.moving
+            local t, w = self.run_t, self.moving
             local s = bumpcos(2*t) * .4
             local nc = lerp(self.air, 0.35, 0.05 + 0.01 * sin(self.air_t))
             local sp = lerp(self.air, 1.20, 1.45)

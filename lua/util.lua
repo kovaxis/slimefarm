@@ -254,6 +254,23 @@ function util.clone(v)
     return v
 end
 
+-- Deep merge a value into another value, reusing the `into` value if it is a table.
+function util.merge(from, into)
+    if type(into) == 'table' and type(from) == 'table' then
+        for k, v in pairs(from) do
+            into[k] = util.merge(v, into[k])
+        end
+        for k, v in pairs(into) do
+            if from[k] == nil then
+                into[k] = nil
+            end
+        end
+        setmetatable(into, util.merge(getmetatable(from), getmetatable(into)))
+        from = into
+    end
+    return from
+end
+
 
 util.Pool = class{}
 

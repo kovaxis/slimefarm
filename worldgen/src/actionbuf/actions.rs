@@ -7,6 +7,39 @@ fn block(b: u8) -> BlockData {
     BlockData { data: b }
 }
 
+// VERY UNSAFE: Only use when extracting matrices from light userdata.
+fn _matrix(mat: LuaLightUserData) -> Mat4 {
+    unsafe { *(mat.0 as *mut Mat4 as *const Mat4) }
+}
+
+// Transform a point using a matrix, ignoring perspective division.
+fn _transform(mat: &Mat4, p: Vec3) -> Vec3 {
+    let mut out = p.x * mat.cols[0];
+    out += p.y * mat.cols[1];
+    out += p.z * mat.cols[2];
+    out += mat.cols[3];
+    out.xyz()
+}
+
+// Transform a vector using a matrix, ignoring perspective division.
+fn _transform_vec3(mat: &Mat4, v: Vec3) -> Vec3 {
+    let mut out = v.x * mat.cols[0];
+    out += v.y * mat.cols[1];
+    out += v.z * mat.cols[2];
+    out.xyz()
+}
+
+fn invsqrt(x: f32) -> f32 {
+    // Taken from Wikipedia, which was taken from Quake, with the exact original comments
+    let i = x.to_bits(); // evil floating point bit level hacking
+    let i = 0x5f3759df - (i >> 1); // what the fuck?
+    let x2 = x * 0.5;
+    let mut y = f32::from_bits(i);
+    y = y * (1.5 - (x2 * y * y)); // 1st iteration
+                                  //	y = y * ( 1.5 - ( x2 * y * y ) );      // 2nd iteration, this can be removed
+    y
+}
+
 action! {
     fn portal((x, y, z, sx, sy, sz, jx, jy, jz, jw): (i32, i32, i32, i32, i32, i32, i32, i32, i32, u32)) -> bd {
         let u = Int3::new([x, y, z]);
@@ -33,6 +66,10 @@ action! {
 }
 
 action! {
+    // place an axis-aligned cuboid.
+    // `ux, uy, uz`: low vertex of the cuboid.
+    // `sx, sy, sz`: size of the cuboid.
+    // `b`: the block to fill with.
     fn cube((ux, uy, uz, sx, sy, sz, b): (f32, f32, f32, f32, f32, f32, u8)) -> bd {
         let u = Vec3::from([ux, uy, uz]);
         let s = Vec3::from([sx, sy, sz]);
@@ -55,6 +92,10 @@ action! {
 }
 
 action! {
+    // place a sphere at a location.
+    // `ux, uy, uz`: center of the sphere.
+    // `r`: radius of the sphere.
+    // `b`: the block to fill with.
     fn sphere((ux, uy, uz, r, b): (f32, f32, f32, f32, u8)) -> bd {
         let u = Vec3::new(ux, uy, uz);
         let b = block(b);
@@ -81,7 +122,11 @@ action! {
 }
 
 action! {
-    fn oval((ux, uy, uz, rx, ry, rz, b): (f32, f32, f32, f32, f32, f32, u8)) -> bd {
+    // place an axis-aligned ellipsoid at the given location.
+    // `ux, uy, uz`: center of the ellipsoid.
+    // `rx, ry, rz`: radius of the ellipsoid in the different directions.
+    // `b`: the block to fill with.
+    fn ellipsoid((ux, uy, uz, rx, ry, rz, b): (f32, f32, f32, f32, f32, f32, u8)) -> bd {
         let u = Vec3::new(ux, uy, uz);
         let r = Vec3::new(rx, ry, rz);
         let b = block(b);
@@ -108,6 +153,13 @@ action! {
 }
 
 action! {
+    // create a cylinder using two endpoints and a radius for each endpoint.
+    // the cylinder edges are rounded.
+    // `x0, y0, z0`: coordinates of the first endpoint.
+    // `r0`: radius of the first endpoint.
+    // `x1, y1, z1`: coordinates of the second endpoint.
+    // `r1`: radius of the second endpoint.
+    // `b`: the block to fill with.
     fn cylinder((x0, y0, z0, r0, x1, y1, z1, r1, b): (f32, f32, f32, f32, f32, f32, f32, f32, u8)) -> bd {
         let u0 = Vec3::new(x0, y0, z0);
         let u1 = Vec3::new(x1, y1, z1);
@@ -153,16 +205,6 @@ action! {
     // This blob mode is based on the sum of distances to the power of `-1`.
     fn blobs((bs, b, j): (Vec<f32>, u8, f32)) {
         type Data = Rc<RefCell<[f32; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize]>>;
-        fn invsqrt(x: f32) -> f32 {
-            // Taken from Wikipedia, which was taken from Quake, with the exact original comments
-            let i = x.to_bits();                        // evil floating point bit level hacking
-            let i  = 0x5f3759df - ( i >> 1 );           // what the fuck?
-            let x2 = x * 0.5;
-            let mut y  = f32::from_bits(i);
-            y = y * ( 1.5 - ( x2 * y * y ) );          // 1st iteration
-            //	y = y * ( 1.5 - ( x2 * y * y ) );      // 2nd iteration, this can be removed
-            y
-        }
 
         lua_assert!(bs.len() % 4 == 0, "blob coordinate count must be a multiple of 4");
         let b = block(b);
@@ -244,11 +286,12 @@ action! {
 }
 
 action! {
+    // draw a "cloud", basically a bunch of small spheres arranged in a sphere pattern.
     // `x, y, z`: center of the cloudsphere
     // `r`: radius of the cloudsphere
     // `r0, r1`: range of radii of the subspheres
     // `seed`: random seed for the subsphere sizes
-    // `b`: block to fill with
+    // `b`: the block to fill with
     // `n`: number of subspheres
     fn cloud((x, y, z, r, r0, r1, seed, b, n): (f32, f32, f32, f32, f32, f32, i64, u8, u32)) {
         let u = Vec3::new(x, y, z);
@@ -288,6 +331,61 @@ action! {
                     if d.mag_sq() <= r2 {
                         chunk.sub_set([x, y, z] - pos, b);
                     }
+                }
+            }
+        }
+    }
+}
+
+action! {
+    fn rock((x, y, z, r, seed, n, noisy, b): (f32, f32, f32, f32, i64, u32, f32, u8)) -> bd {
+        let u = Vec3::new(x, y, z);
+        let b = block(b);
+        let mut rng = FastRng::seed_from_u64(seed as u64);
+
+        let mn = Int3::from_f32((u - Vec3::broadcast(r * (1. + noisy))).map(f32::floor));
+        let mx = Int3::from_f32((u + Vec3::broadcast(r * (1. + noisy))).map(f32::floor)) + [1; 3];
+        bd = [mn, mx];
+
+        let phi = f32::PI * (3. - 5f32.sqrt());
+        let dz = 2. * r / n as f32;
+        let mut theta = rng.gen::<f32>() * (2. * f32::PI);
+        let mut z = -r + 0.36 * dz;
+        let noisy = noisy * r;
+        // n x <= r
+        // (n r / r^2) x <= 1
+        let points = (0..n).map(|_i| {
+            let rxy = (r * r - z * z).sqrt();
+            let mut p = Vec3::new(theta.cos() * rxy, theta.sin() * rxy, z);
+            p += Vec3::from(rng.gen::<[f32; 3]>()) * noisy;
+            p *= 1. / p.mag_sq();
+            p.x = 1. / p.x; // infinity if x = 0
+            theta += phi;
+            z += dz;
+            p
+        }).collect::<Vec<Vec3>>();
+    }
+    fn apply(pos, [mn, mx], chunk) {
+        let chunk = chunk.blocks_mut();
+        for az in mn.z..mx.z {
+            for ay in mn.y..mx.y {
+                let mut x0 = f32::NEG_INFINITY;
+                let mut x1 = f32::INFINITY;
+                let y = ay as f32 - u.y;
+                let z = az as f32 - u.z;
+                for p in &points {
+                    let x = p.x * (1. - p.y * y - p.z * z);
+                    if p.x >= 0. {
+                        if x < x1 { x1 = x; }
+                    }else{
+                        if x > x0 { x0 = x; }
+                    }
+                }
+
+                let x0 = (u.x + x0).max(mn.x as f32).floor() as i32;
+                let x1 = ((u.x + x1).floor()+1.).min(mx.x as f32) as i32;
+                for ax in x0..x1 {
+                    chunk.sub_set([ax, ay, az] - pos, b);
                 }
             }
         }
