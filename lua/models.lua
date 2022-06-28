@@ -61,83 +61,167 @@ local function bumpcos(t)
     return y * y
 end
 
------ Voxel models -----
+----- Animations -----
 
-local models = {}
-
-local humanoid_animation = {
-    init = function(self)
-        self.motion_state = 'idle'
-        self.moving = 0
-        self.air = 0
-        self.run_t = 0
-        self.idle_t = 0
-        self.air_t = 0
-    end,
-    motion = function(self, name)
-        self.motion_state = name
-    end,
-    action = function(self, name, force)
-        
-    end,
-    draw = function(self, b, dt)
-        self.moving = approach(
-            self.moving,
-            self.motion_state == 'idle' and 0 or 1,
-            0.001, 0.2,
-            dt
-        )
-        self.air = approach(
-            self.air,
-            self.motion_state == 'air' and 1 or 0,
-            0.004, 0.2,
-            dt
-        )
-        local idle_speed = 2
-        if self.moving == 1 then
-            self.idle_t = 0
-        else
-            self.idle_t = self.idle_t + dt * idle_speed
-        end
-        local move_speed = 14
-        if self.moving == 0 then
-            self.run_t = 0
-        elseif self.motion_state == 'run' then
-            self.run_t = self.run_t + dt * move_speed
-        else
-            self.run_t = addsnap(self.run_t, dt * move_speed, pi, 0.5)
-        end
-        local air_speed = 3
-        if self.air == 0 then
+local humanoid = {
+    runjump = {
+        name = 'runjump',
+        new = function(self, air)
+            self.go = 1
+            self.w = 0
+            self.go_air = air
+            self.air = air
             self.air_t = 0
-        else
-            self.air_t = self.air_t + dt * air_speed
-        end
+            self.run_t = 0
+        end,
+        triggers = {
+            motion = function(ctx, state)
+                if state == 'run' then
+                    return ctx:add('runjump', 0)
+                elseif state == 'air' then
+                    return ctx:add('runjump', 1)
+                end
+            end,
+        },
+        motion = function(self, state)
+            if state == 'run' or state == 'air' then
+                self.go = 1
+                self.go_air = state == 'air' and 1 or 0
+            else
+                self.go = 0
+            end
+            return self.go
+        end,
+        draw = function(self, b, dt)
+            self.w = approach(self.w, self.go, 0.001, 0.2, dt)
+            self.air = approach(self.air, self.go_air, 0.004, 0.2, dt)
+            local move_speed = 14
+            if self.go_air == 1 or self.go == 0 then
+                self.run_t = addsnap(self.run_t, dt * move_speed, pi, 0.5)
+            else
+                self.run_t = self.run_t + dt * move_speed
+            end
+            local air_speed = 3
+            if self.air == 0 then
+                self.air_t = 0
+            else
+                self.air_t = self.air_t + dt * air_speed
+            end
 
-        --Idle
-        do
-            local t, w = self.idle_t, 1 - self.moving
-            move(b.body, w,  0, sin(t) * 0.2, 0,  0, 0, 0,  0, 0, 0)
-            move(b.head, w,  0, sin(t) * 0.05, 0,  0, 0, 0,  0, 0, 0)
-            move(b.lhand, w,  0, 0, 0,  sin(t*.87) * 0.04, 0, 0,  0, 0, 0)
-            move(b.rhand, w,  0, 0, 0,  sin(t*-.87) * 0.04, 0, 0,  0, 0, 0)
-        end
-        
-        --Run/Air
-        do
-            local t, w = self.run_t, self.moving
+            local t, w = self.run_t, self.w
+            local air_t, air_w = self.air_t, self.air
+            self.t, self.w = t, w
             local s = bumpcos(2*t) * .4
-            local nc = lerp(self.air, 0.35, 0.05 + 0.01 * sin(self.air_t))
-            local sp = lerp(self.air, 1.20, 1.45)
+            local nc = lerp(air_w, 0.35, 0.05 + 0.01 * sin(air_t))
+            local sp = lerp(air_w, 1.20, 1.45)
             move(b.body, w,  0, sin(2*t) * 0.20, 0,  nc, 0, 0,  0, 0, 0)
             move(b.head, w,  0, sin(2*t) * -0.00, 0,  0, 0, 0,  0, 0, 0)
             move(b.lhand, w,  0, 0, 0,  sin(t) * sp, 0, 0,  0, 0, 0)
             move(b.rhand, w,  0, 0, 0,  sin(-t) * sp, 0, 0,  0, 0, 0)
-            move(b.lfoot, w,  0, 0, 0,  sin(t) * sp, 0, 0,  -s*.5, s, -s*.5)
-            move(b.rfoot, w,  0, 0, 0,  sin(-t) * sp, 0, 0,  -s*.5, s, -s*.5)
-        end
-    end,
+            move(b.lfoot, w,  0, 0, 0,  sin(-t) * sp, 0, 0,  -s*.5, s, -s*.5)
+            move(b.rfoot, w,  0, 0, 0,  sin(t) * sp, 0, 0,  -s*.5, s, -s*.5)
+            return self.w
+        end,
+    },
+    idle = {
+        name = 'idle',
+        new = function(self)
+            self.go = 1
+            self.t = 0
+            self.w = 0
+        end,
+        triggers = {
+            motion = function(ctx, state)
+                if state == 'idle' then
+                    return ctx:add('idle')
+                end
+            end,
+        },
+        motion = function(self, state)
+            self.go = state == 'idle' and 1 or 0
+            return self.go
+        end,
+        draw = function(self, b, dt)
+            self.w = approach(self.w, self.go, 0.001, 0.2, dt)
+            local idle_speed = 2
+            self.t = self.t + dt * idle_speed
+            local t, w = self.t, self.w
+            move(b.body, w,  0, sin(t) * 0.2, 0,  0, 0, 0,  0, 0, 0)
+            move(b.head, w,  0, sin(t) * 0.05, 0,  0, 0, 0,  0, 0, 0)
+            move(b.lhand, w,  0, 0, 0,  sin(t*.87) * 0.04, 0, 0,  0, 0, 0)
+            move(b.rhand, w,  0, 0, 0,  sin(t*-.87) * 0.04, 0, 0,  0, 0, 0)
+            return self.w
+        end,
+    },
+    roll = {
+        name = 'roll',
+        new = function(self)
+            self.go = 1
+            self.x = 0
+            self.w = 0
+        end,
+        triggers = {
+            motion = function(ctx, state)
+                if state == 'roll' then
+                    return ctx:add('roll')
+                end
+            end,
+        },
+        motion = function(self, state)
+            self.go = state == 'roll' and 1 or 0
+            return self.go
+        end,
+        roll = function(self, x)
+            self.x = x
+            return 0
+        end,
+        draw = function(self, b, dt)
+            local go = self.go
+            if self.x >= 1 then
+                go = 0
+            end
+            self.w = approach(self.w, go, 0.001, 0.2, dt)
+            local t, w = 2*pi*((self.x+.5)%1-.5), self.w
+            move(b.center, w,  0, 0, 0,  t, 0, 0,  0, 0, 0)
+            move(b.lhand, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)
+            move(b.rhand, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)
+            move(b.head, w,  0, -1, 0,  .42, 0, 0,  0, 0, 0)
+            move(b.lfoot, w,  0, -1, 0,  .53, 0, 0,  0, 0, 0)
+            move(b.rfoot, w,  0, -1, 0,  .53, 0, 0,  0, 0, 0)
+            return self.go == 1 and 1 or self.w
+        end,
+    },
 }
+
+local slimy = {
+    {
+        name = 'stretch',
+        new = function(self, stretch)
+            self.stretch = stretch
+            self.idle_t = 0
+        end,
+        triggers = {
+            stretch = function(ctx, stretch) return ctx:add('stretch', stretch) end,
+        },
+        stretch = function(self, stretch)
+            self.stretch = stretch
+            return 1
+        end,
+        draw = function(self, b, dt)
+            local idle_speed = 2
+            self.idle_t = self.idle_t + dt * idle_speed
+            local sz = self.stretch
+            sz = sz + sin(self.idle_t) * 0.017
+            local sxy = -sz / 2
+            move(b.body, 1,  0, 0, 0,  0, 0, 0,  sxy, sxy, sz)
+            return 1
+        end,
+    },
+}
+
+----- Voxel models -----
+
+local models = {}
 
 models.player = {
     path = 'voxel/player.vox',
@@ -148,41 +232,48 @@ models.player = {
 
         children = {
             {
-                name = 'body',
-                pos = {2, 5, 'y+'},
-                piece = 2,
+                name = 'center',
+                pos = {6, 'z+', 'y+'},
 
                 children = {
                     {
-                        name = 'head',
-                        pos = {6, 'z+', 'y+'},
-                        piece = 3,
+                        name = 'body',
+                        pos = {2, 5, 'y+'},
+                        piece = 2,
+
+                        children = {
+                            {
+                                name = 'head',
+                                pos = {6, 'z+', 'y+'},
+                                piece = 3,
+                            },
+                            {
+                                name = 'lhand',
+                                pos = {8, 'z-', 'y+'},
+                                piece = 4,
+                            },
+                            {
+                                name = 'rhand',
+                                pos = {7, 'z-', 'y+'},
+                                piece = 5,
+                            },
+                        },
                     },
                     {
-                        name = 'lhand',
-                        pos = {8, 'z-', 'y+'},
-                        piece = 4,
+                        name = 'lfoot',
+                        pos = {4, 'z-', 'y+'},
+                        piece = 6,
                     },
                     {
-                        name = 'rhand',
-                        pos = {7, 'z-', 'y+'},
-                        piece = 5,
+                        name = 'rfoot',
+                        pos = {3, 'z-', 'y+'},
+                        piece = 7,
                     },
                 },
             },
-            {
-                name = 'lfoot',
-                pos = {4, 'z+', 'y+'},
-                piece = 6,
-            },
-            {
-                name = 'rfoot',
-                pos = {3, 'z+', 'y+'},
-                piece = 7,
-            },
         },
     },
-    animation = humanoid_animation,
+    animations = { humanoid.runjump, humanoid.idle, humanoid.roll },
 }
 
 models.slime = {
@@ -193,23 +284,7 @@ models.slime = {
         pos = {{1, 0, 0, -.5}, 'z+', 'y+'},
         piece = 2,
     },
-    animation = {
-        init = function(self)
-            self.stretch = 0
-            self.idle_t = 0
-        end,
-        motion = function(self, stretch)
-            self.stretch = stretch
-        end,
-        draw = function(self, b, dt)
-            local idle_speed = 2
-            self.idle_t = self.idle_t + dt * idle_speed
-            sz = self.stretch
-            sz = sz + sin(self.idle_t) * 0.017
-            sxy = -sz / 2
-            move(b.body, 1,  0, 0, 0,  0, 0, 0,  sxy, sxy, sz)
-        end,
-    },
+    animations = { slimy.stretch },
 }
 
 return models

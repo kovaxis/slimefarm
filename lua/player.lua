@@ -22,11 +22,12 @@ local jump_keepup_ticks = 14
 local jump_cooldown_start = 10
 local jump_cooldown_land = 0
 
-local roll_pre = 10
-local roll_immune = 40
-local roll_end = 10
+local roll_pre = 5
+local roll_immune = 25
+local roll_end = 15
 local roll_cooldown_start = 10
 local roll_cooldown_end = 20
+local roll_speed = {0.17, 0.17, 0.10}
 
 local lag_vel_z_add = 1.2
 local lag_vel_z_mul = 0.0012
@@ -113,7 +114,17 @@ function Player:tick(world)
 
     --Horizontal movement
     local wx, wy = wasd_delta(world.cam_yaw)
-    if self.on_ground then
+    if self.roll_ticks >= 0 then
+        local speed
+        if self.roll_ticks < roll_pre then
+            speed = roll_speed[1]
+        elseif self.roll_ticks < roll_pre + roll_immune then
+            speed = roll_speed[2]
+        elseif self.roll_ticks < roll_pre + roll_immune + roll_end then
+            speed = roll_speed[3]
+        end
+        self.vel_x, self.vel_y = self.roll_dx * speed, self.roll_dy * speed
+    elseif self.on_ground then
         --Run around
         self.vel_x, self.vel_y = wx * walk_speed, wy * walk_speed
     else
@@ -132,10 +143,12 @@ function Player:tick(world)
     end
 
     --Roll
-    if self.roll_cooldown <= 0 and self.on_ground and input.mouse_down.right and not self.roll_was_down and self.jump_ticks < 0 then
+    if input.mouse_down.right and not self.roll_was_down and self.roll_cooldown <= 0
+            and self.roll_ticks < 0 and (wx ~= 0 or wy ~= 0)
+            and self.jump_cooldown <= 0 then
         self.roll_ticks = 0
         self.roll_cooldown = roll_cooldown_start
-        self.anim.state:action('roll', true)
+        self.roll_dx, self.roll_dy = wx, wy
     end
     self.roll_was_down = input.mouse_down.right
     if self.roll_cooldown > 0 then
@@ -193,20 +206,20 @@ function Player:tick(world)
     end
 
     --Set animation from movement
-    if self.on_ground then
+    if self.roll_ticks >= 0 then
+        self.anim:event('motion', 'roll')
+        self.anim:event('roll', self.roll_ticks / (roll_pre + roll_immune + roll_end))
+    elseif self.on_ground then
         if self.vel_x == 0 and self.vel_y == 0 then
             --Idle
-            self.anim.state:motion('idle')
+            self.anim:event('motion', 'idle')
         else
             --Run
-            self.anim.state:motion('run')
+            self.anim:event('motion', 'run')
         end
     else
         --Airtime
-        self.anim.state:motion('air')
-    end
-    if self.roll_ticks >= 0 then
-        self.anim.state:action('roll')
+        self.anim:event('motion', 'air')
     end
 
     --Smooth camera vertical jumps

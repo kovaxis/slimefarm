@@ -180,6 +180,8 @@ function voxel.Model:new()
         bone.move = move
 
         -- Compute matrices to bring bone to normalized manipulation space
+        -- Normalized bone space has the bone origin at the origin, bone forward direction in the
+        -- Y+ direction and bone up direction in the Z+ direction
         local norm = system.matrix()
         norm:look_at(0, 0, 0, delta:x(), delta:y(), delta:z(), up:x(), up:y(), up:z())
         local denorm = system.matrix()
@@ -190,21 +192,44 @@ function voxel.Model:new()
     end
     loadbone(self.rootbone, nil, nil)
 
-    assert(type(self.animation) == 'table', "animation must be a table")
-    assert(type(self.animation.init) == 'function', "animation.init must be a function with 1 argument")
-    assert(type(self.animation.draw) == 'function', "animation.draw must be a function with 3 arguments")
-    self.animation.__index = self.animation
+    assert(type(self.animations) == 'table', "`animations` must be a table")
+    local animations = {}
+    local triggers = {}
+    for i, animproto in ipairs(self.animations) do
+        self.animations[i] = nil
+        assert(type(animproto) == 'table', "animations must be tables")
+        assert(type(animproto.name) == 'string', "animation.name must be a string")
+        assert(not animations[animproto.name], "duplicate animations with name '"..animproto.name.."'")
+        animations[animproto.name] = animproto
+        assert(type(animproto.new) == 'function', "animation.new must be a function with at least 1 argument")
+        assert(type(animproto.draw) == 'function', "animation.draw must be a function with 3 arguments")
+        if animproto.triggers ~= nil then
+            assert(type(animproto.triggers) == 'table', "animation.triggers must be a table if present")
+            for ev, listen in pairs(animproto.triggers) do
+                assert(type(ev) == 'string', "animation.triggers keys must be event name strings")
+                assert(type(listen) == 'function', "animation.triggers elements must be event listener functions")
+                triggers[ev] = triggers[ev] or {}
+                table.insert(triggers[ev], listen)
+            end
+        end
+        animproto.__index = animproto
+    end
+    assert(next(self.animations) == nil, "animations is not a sequence")
+
+    self.animations = animations
+    self.triggers = triggers
 end
 
 
 
 voxel.AnimState = class{}
 
+local animpool = util.Pool{}
+
 function voxel.AnimState:new()
     assert(self.model, "expected a voxel model")
-    
-    self.state = setmetatable({}, self.model.animation)
-    self.state:init()
+
+    self.anims = {}
 
     self.bones = {}
     for name, bone in pairs(self.model.bones) do
@@ -249,13 +274,57 @@ do
         mvp:pop()
     end
 
+    function voxel.AnimState:event(name, ...)
+        local trig = true
+        for i, anim in ipairs(self.anims) do
+            if anim[name] then
+                local go = anim[name](anim, ...) + 0
+                if go ~= 0 then
+                    trig = false
+                end
+            end
+        end
+        if trig then
+            local ts = self.model.triggers[name]
+            if ts then
+                for i, trigger in ipairs(ts) do
+                    trigger(self, ...)
+                end
+            end
+        end
+    end
+
+    function voxel.AnimState:add(name, ...)
+        local animproto = self.model.animations[name]
+        local anim = animpool:clean()
+        setmetatable(anim, animproto)
+        anim:new(...)
+        self.anims[#self.anims + 1] = anim
+        return anim
+    end
+
     function voxel.AnimState:draw(dt, shader_, draw_params_, mvp_name_, mvp_)
+        -- Reset bone positions
         for name, bone in pairs(self.bones) do
             bone[1], bone[2], bone[3] = 0, 0, 0
             bone[4], bone[5], bone[6] = 0, 0, 0
             bone[7], bone[8], bone[9] = 0, 0, 0
         end
-        self.state:draw(self.bones, dt)
+
+        -- Move bones
+        local anims, i = self.anims, 1
+        while anims[i] do
+            local w = anims[i]:draw(self.bones, dt) + 0
+            if w == 0 then
+                anims[i], anims[#anims] = anims[#anims], anims[i]
+                animpool:put(anims[#anims])
+                anims[#anims] = nil
+            else
+                i = i + 1
+            end
+        end
+        
+        -- Draw moved bones
         shader = shader_
         draw_params = draw_params_
         mvp_name = mvp_name_
@@ -271,7 +340,6 @@ voxel.models = {}
 voxel.watchers = {}
 
 local function reload(w)
-    print("loading file '"..w.path.."'")
     local ms, as = dofile(w.path)
     for name, model in pairs(ms) do
         ms[name] = voxel.Model(model)

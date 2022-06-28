@@ -256,9 +256,11 @@ end
 
 -- Deep merge a value into another value, reusing the `into` value if it is a table.
 function util.merge(from, into)
-    if type(into) == 'table' and type(from) == 'table' then
+    if type(into) == 'table' and type(from) == 'table' and from ~= into then
         for k, v in pairs(from) do
-            into[k] = util.merge(v, into[k])
+            local into_v = into[k]
+            into[k] = nil
+            into[k] = util.merge(v, into_v)
         end
         for k, v in pairs(into) do
             if from[k] == nil then
@@ -280,7 +282,7 @@ function util.Pool:clean()
     local n = #self
     local x = self[n] or {}
     self[n] = nil
-    for k in pairs(x) do
+    for k in next, x, nil do
         x[k] = nil
     end
     return x

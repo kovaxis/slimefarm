@@ -176,7 +176,7 @@ function Slime:tick(world)
         else
             s = math.abs(self.vel_z)
         end
-        self.anim.state:motion(s)
+        self.anim:event('stretch', s)
     end
 
     --Apply velocity to position

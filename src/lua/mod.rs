@@ -53,7 +53,14 @@ lua_type! {MatrixStack, lua, this,
     }
 
     // Right-multiplies the matrix by a "look-at matrix".
-    // This matrix takes any vector right-multiplied with it and takes it to camera coordinates.
+    //
+    // The look at matrix is defined by an eye position (x, y, z), a forward direction vector
+    // (fx, fy, fz) and an up vector (ux, uy, uz).
+    // Multiplying the look-at matrix by a vector in world space will bring it to camera
+    // coordinates, where the up vector is mapped into Z+ and the forward vector is mapped into Y+.
+    //
+    // Therefore, the camera is a right-handed coordinate system with X+ to the right, Y+ into the
+    // screen and Z+ upwards.
     fn look_at((x, y, z, fx, fy, fz, ux, uy, uz): (f32, f32, f32, f32, f32, f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();
         let eye = Vec3::new(x, y, z); // Position

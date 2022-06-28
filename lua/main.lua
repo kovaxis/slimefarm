@@ -1,4 +1,13 @@
 
+setmetatable(_G, {
+    __index = function(g, name)
+        error("attempt to access undefined global '"..tostring(name).."'", 2)
+    end,
+    __newindex = function(g, name, value)
+        error("attempt to set undefined global '"..tostring(name).."'", 2)
+    end,
+})
+
 local input = require 'input'
 local World = require 'world'
 local Player = require 'player'
