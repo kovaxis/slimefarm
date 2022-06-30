@@ -24,7 +24,13 @@ table.insert(world.entities, Player {
     pos = system.world_pos(0, 20, 100),
 })]]
 for x = -10, 10 do
-    table.insert(world.entities, slimes.Green {
+    local slime
+    if x % 2 == 0 then
+        slime = slimes.Green
+    else
+        slime = slimes.Red
+    end
+    table.insert(world.entities, slime {
         pos = system.world_pos(x*10, 20, 100),
     })
 end

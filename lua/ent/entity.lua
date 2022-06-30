@@ -29,6 +29,7 @@ function Entity:new()
     self.vel_z = 0
     self.on_ground = false
     self.visual_yaw = 0
+    self.yaw_x, self.yaw_y = 0, 0
     self.yaw = 0
 
     if self.model then
@@ -57,9 +58,12 @@ function Entity:pretick(world)
 end
 
 function Entity:tick(world)
-    --Set yaw if moving
-    if self.vel_x*self.vel_x + self.vel_y*self.vel_y > 0.02^2 then
-        self.yaw = util.pos_to_yaw(self.vel_x, self.vel_y)
+    --Set yaw from yaw direction
+    do
+        local x, y = self.yaw_x, self.yaw_y
+        if x*x + y*y > 0.02^2 then
+            self.yaw = util.pos_to_yaw(x, y)
+        end
     end
 
     --Apply velocity to position
@@ -91,6 +95,12 @@ function Entity:draw(world)
 end
 
 function Entity:set_bbox(x, y, z)
+    if not y then
+        y = x
+    end
+    if not z then
+        y, z = x, y
+    end
     x, y, z = x/2, y/2, z/2
     self.rad_x, self.rad_y, self.rad_z = x, y, z
     self.draw_r = (x*x + y*y + z*z)^0.5

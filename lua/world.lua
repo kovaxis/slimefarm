@@ -153,6 +153,7 @@ function World:tick()
     voxel.check_reload()
 
     --Tick entities
+    self.cam_mov_x, self.cam_mov_y, self.cam_mov_z = 0, 0, 0
     for _, ent in ipairs(self.entities) do
         ent:pretick(self)
         ent:tick(self)

@@ -11,10 +11,16 @@ Living.armor = 1
 Living.dmg_anim_factor = 0.01
 Living.dmg_anim_linear = 1
 
+Living.falldmg_minh = 10
+Living.falldmg_maxh = 100
+Living.falldmg_multiplier = 5
+
 function Living:new()
     super.new(self)
 
     self.hp = 1
+    self.fall_height = 0
+
     self.visual_dmg_r = 0
     self.visual_dmg_g = 0
     self.visual_dmg_b = 0
@@ -36,6 +42,23 @@ function Living:damage(dmg, kx, ky, kz)
     self.vel_x = self.vel_x + kx
     self.vel_y = self.vel_y + ky
     self.vel_z = self.vel_z + kz
+end
+
+function Living:tick(world)
+    super.tick(self, world)
+
+    if self.on_ground and self.fall_height > 0 then
+        local dmg = math.floor((math.min(self.fall_height, self.falldmg_maxh) - self.falldmg_minh) * self.falldmg_multiplier)
+        if dmg > 0 then
+            self:damage(dmg)
+        end
+    end
+
+    if self.mov_z >= 0 or self.on_ground then
+        self.fall_height = 0
+    else
+        self.fall_height = self.fall_height - self.mov_z
+    end
 end
 
 function Living:draw(world)

@@ -397,4 +397,15 @@ models.green_slime = {
     animations = { slimy.stretch },
 }
 
+models.red_slime = {
+    path = 'voxel/red_slime.vox',
+    rootbone = {
+        ref = 1,
+        name = 'body',
+        pos = {{1, 0, 0, -.5}, 'z+', 'y+'},
+        piece = 2,
+    },
+    animations = { slimy.stretch },
+}
+
 return models

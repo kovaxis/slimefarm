@@ -36,7 +36,7 @@ Humanoid.atk_hitbox_x = 3
 Humanoid.atk_hitbox_y = 3
 Humanoid.atk_hitbox_z = 2
 Humanoid.atk_damage = 20
-Humanoid.atk_knockback = 2
+Humanoid.atk_knockback = 1
 Humanoid.atk_knockback_lift = 0.5
 
 function Humanoid:new()
@@ -80,15 +80,18 @@ function Humanoid:tick(world)
             speed = self.roll_speed[3]
         end
         self.vel_x, self.vel_y = self.roll_dx * speed, self.roll_dy * speed
+        self.yaw_x, self.yaw_y = self.vel_x, self.vel_y
     elseif self.atk_ticks >= 0 then
         self.vel_x, self.vel_y = self.atk_dx, self.atk_dy
         local d = self.atk_lounge_decay
         self.atk_dx = self.atk_dx * d
         self.atk_dy = self.atk_dy * d
+        self.yaw_x, self.yaw_y = self.atk_dy, self.atk_dx
     elseif self.on_ground then
         --Run around
         local sp = self.walk_speed
         self.vel_x, self.vel_y = wx * sp, wy * sp
+        self.yaw_x, self.yaw_y = self.vel_x, self.vel_y
     else
         --Maneuver in the air
         local cur_norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
@@ -102,6 +105,7 @@ function Humanoid:tick(world)
             self.vel_x = self.vel_x * mul_by
             self.vel_y = self.vel_y * mul_by
         end
+        self.yaw_x, self.yaw_y = wx, wy
     end
 
     --Roll
@@ -263,6 +267,13 @@ function Humanoid:apply_vel(world)
     end
     self.on_ground = self.vel_z < 0 and cz
     self.mov_x, self.mov_y, self.mov_z = mx, my, mz
+end
+
+function Humanoid:damage(...)
+    if self.roll_ticks >= self.roll_pre and self.roll_ticks < self.roll_immune then
+        return
+    end
+    return super.damage(self, ...)
 end
 
 return Humanoid

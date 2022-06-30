@@ -7,7 +7,9 @@ local Humanoid = require 'ent.humanoid'
 
 local Player, super = class{ super = Humanoid }
 
-Player:set_bbox(2, 2, 1.8)
+Player:set_bbox(10/8, 15/8)
+
+Player.atk_lounge = 0.1
 
 local controls = {
     forward = 'w',
@@ -31,6 +33,32 @@ function Player:new()
 end
 
 function Player:tick(world)
+    --Check to see if colliding with entities
+    do
+        local buf = world.relpos_buf
+        local baserad = math.max(self.rad_x, self.rad_y, self.rad_z) + 20
+        for i, ent in ipairs(world.entities) do
+            if ent.on_player_collision then
+                local rad = baserad + math.max(ent.rad_x, ent.rad_y, ent.rad_z)
+                --Get approximate relative position
+                local dx, dy, dz = world.terrain:to_relative(ent.pos)
+                if dx*dx + dy*dy + dz*dz <= rad*rad then
+                    --Candidate to collision
+                    local rx, ry, rz = self.rad_x + ent.rad_x, self.rad_y + ent.rad_y, self.rad_z + ent.rad_z
+                    world.terrain:get_relative_positions(ent.pos, ent.rad_x, ent.rad_y, ent.rad_z, self.pos, buf)
+                    for i = 1, #buf, 3 do
+                        local dx, dy, dz = buf[i], buf[i+1], buf[i+2]
+                        if dx >= -rx and dx <= rx and dy >= -ry and dy <= ry and dz >= -rz and dz <= rz then
+                            --Collides with entity
+                            ent:on_player_collision(world, self, dx, dy, dz)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     --Walk
     do
         local dx, dy = 0, 0
@@ -95,7 +123,6 @@ function Player:tick(world)
 end
 
 function Player:apply_vel(world)
-    world.cam_mov_x, world.cam_mov_y, world.cam_mov_z = 0, 0, 0
     local rx, ry, rz = self.rad_x, self.rad_y, self.rad_z
     self.tmp_pos:copy_from(self.pos)
     local mx, my, mz, cx, cy, cz = self.pos:move_box(world.terrain, self.vel_x, self.vel_y, self.vel_z, rx, ry, rz, true)
