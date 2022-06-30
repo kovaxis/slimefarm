@@ -17,9 +17,10 @@ function class.make(cl)
             self:new(...)
             return self
         end,
+        __index = cl.super,
     }
     setmetatable(cl, class_metatable)
-    return cl
+    return cl, cl.super
 end
 
 return class

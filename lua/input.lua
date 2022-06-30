@@ -68,15 +68,14 @@ do
 end
 
 input.mouse_buttons = {
-	[0] = 'left',
-	[1] = 'right',
-	[2] = 'middle',
-	left = 0,
-	right = 1,
-	middle = 2,
+	[0] = 'mouse_left',
+	[1] = 'mouse_right',
+	[2] = 'mouse_middle',
+	mouse_left = 0,
+	mouse_right = 1,
+	mouse_middle = 2,
 }
 
-input.key_down = {}
-input.mouse_down = {}
+input.is_down = {}
 
 return input

@@ -386,8 +386,8 @@ models.player = {
     animations = { humanoid.runjump, humanoid.idle, humanoid.roll, humanoid.atk },
 }
 
-models.slime = {
-    path = 'voxel/slime.vox',
+models.green_slime = {
+    path = 'voxel/green_slime.vox',
     rootbone = {
         ref = 1,
         name = 'body',

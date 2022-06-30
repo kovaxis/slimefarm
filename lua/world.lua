@@ -124,6 +124,7 @@ function World:new()
     self.rng = math.rng(math.hash(os.clock()))
 
     self.tick_period = 1/64
+    self.max_catchup = 5
     self.next_tick = os.clock()
     self.fps_counter = 0
     self.fps_next_reset = os.clock()
@@ -153,6 +154,7 @@ function World:tick()
 
     --Tick entities
     for _, ent in ipairs(self.entities) do
+        ent:pretick(self)
         ent:tick(self)
     end
 
@@ -197,6 +199,9 @@ function World:update()
         local now = os.clock()
         if now < self.next_tick then
             break
+        end
+        if now - self.next_tick > self.max_catchup then
+            self.next_tick = now - self.max_catchup
         end
         self.next_tick = self.next_tick + self.tick_period
         self:tick()

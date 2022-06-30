@@ -10,21 +10,21 @@ setmetatable(_G, {
 
 local input = require 'input'
 local World = require 'world'
-local Player = require 'player'
-local Slime = require 'slime'
+local Player = require 'ent.player'
+local slimes = require 'ent.slimes'
 local voxel = require 'voxel'
 
 voxel.load_models('models.lua')
 
 local world = World{}
-table.insert(world.entities, Player{
+table.insert(world.entities, Player {
     pos = system.world_pos(0, 0, 100, 0),
 })
 --[[table.insert(world.entities, Slime {
     pos = system.world_pos(0, 20, 100),
 })]]
 for x = -10, 10 do
-    table.insert(world.entities, Slime{
+    table.insert(world.entities, slimes.Green {
         pos = system.world_pos(x*10, 20, 100),
     })
 end
@@ -38,14 +38,14 @@ while true do
         if has_focus then
             local scancode, state = input.scancodes[a], b
             if scancode then
-                if state ~= input.key_down[scancode] then
+                if state ~= input.is_down[scancode] then
                     if state then
                         world:keydown(scancode)
                     else
                         world:keyup(scancode)
                     end
                 end
-                input.key_down[scancode] = state
+                input.is_down[scancode] = state
                 if state then
                     if scancode == 'escape' then
                         coroutine.yield(true)
@@ -66,9 +66,9 @@ while true do
             local button, state = a, b
             local name = input.mouse_buttons[button]
             if name then
-                input.mouse_down[name] = state
+                input.is_down[name] = state
             end
-            input.mouse_down[button] = state
+            input.is_down[button] = state
         end
     elseif ev == 'update' then
         world:update()
