@@ -11,7 +11,7 @@ local bbox_v = 1.8
 local gravity = 0.025
 local friction = 0.97
 local walk_speed = 0.13
-local yaw_anim_factor = 0.004
+local yaw_anim_factor = 0.002
 local yaw_anim_linear = 0.9
 
 local jump_charge = 5
@@ -19,15 +19,22 @@ local jump_vvel = 0.5
 local jump_keepup = 0.014
 local jump_keepdown = 0.005
 local jump_keepup_ticks = 14
-local jump_cooldown_start = 10
+local jump_cooldown_start = 20
 local jump_cooldown_land = 0
 
 local roll_pre = 5
-local roll_immune = 25
-local roll_end = 15
+local roll_immune = 20
+local roll_end = 12
 local roll_cooldown_start = 10
-local roll_cooldown_end = 20
+local roll_cooldown_end = 5
 local roll_speed = {0.17, 0.17, 0.10}
+
+local atk_combo = 3
+local atk_duration = 16
+local atk_follow_duration = 2
+local atk_cooldown = 16
+local atk_lounge = .2
+local atk_lounge_decay = .85
 
 local lag_vel_z_add = 1.2
 local lag_vel_z_mul = 0.0012
@@ -79,17 +86,24 @@ function Player:new()
     }
 
     --Jumping mechanics
-    self.jump_cooldown = 0
     self.jump_ticks = -1
+    self.jump_cooldown = 0
     self.jumps_left = 0
     self.jump_was_down = false
 
     --Roll mechanics
-    self.roll_cooldown = 0
     self.roll_ticks = -1
+    self.roll_cooldown = 0
     self.roll_dx = 0
     self.roll_dy = 0
     self.roll_was_down = false
+
+    --Attack mechanics
+    self.atk_ticks = -1
+    self.atk_index = 1
+    self.atk_cooldown = 0
+    self.atk_was_down = false
+    self.atk_dx, self.atk_dy = 0, 0
 
     self.is_player = true
 end
@@ -124,6 +138,10 @@ function Player:tick(world)
             speed = roll_speed[3]
         end
         self.vel_x, self.vel_y = self.roll_dx * speed, self.roll_dy * speed
+    elseif self.atk_ticks >= 0 then
+        self.vel_x, self.vel_y = self.atk_dx, self.atk_dy
+        self.atk_dx = self.atk_dx * atk_lounge_decay
+        self.atk_dy = self.atk_dy * atk_lounge_decay
     elseif self.on_ground then
         --Run around
         self.vel_x, self.vel_y = wx * walk_speed, wy * walk_speed
@@ -143,14 +161,18 @@ function Player:tick(world)
     end
 
     --Roll
-    if input.mouse_down.right and not self.roll_was_down and self.roll_cooldown <= 0
-            and self.roll_ticks < 0 and (wx ~= 0 or wy ~= 0)
+    if self.roll_cooldown <= 0 and self.roll_ticks < 0 and (wx ~= 0 or wy ~= 0)
             and self.jump_cooldown <= 0 then
-        self.roll_ticks = 0
-        self.roll_cooldown = roll_cooldown_start
-        self.roll_dx, self.roll_dy = wx, wy
+        if input.mouse_down.right and not self.roll_was_down then
+            self.jump_ticks = -1
+            self.roll_ticks = 0
+            self.roll_cooldown = roll_cooldown_start
+            self.roll_dx, self.roll_dy = wx, wy
+        end
+        self.roll_was_down = input.mouse_down.right
+    else
+        self.roll_was_down = false
     end
-    self.roll_was_down = input.mouse_down.right
     if self.roll_cooldown > 0 then
         self.roll_cooldown = self.roll_cooldown - 1
     end
@@ -164,7 +186,9 @@ function Player:tick(world)
     end
 
     --Jump
-    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space and (self.on_ground or not self.jump_was_down) and self.roll_ticks < 0 then
+    if self.jumps_left > 0 and self.jump_cooldown <= 0 and input.key_down.space
+            and (self.on_ground or not self.jump_was_down) and self.roll_ticks < 0
+            and self.atk_ticks < 0 then
         self.jump_ticks = 0
         self.jump_cooldown = jump_cooldown_start
         self.jumps_left = self.jumps_left - 1
@@ -200,6 +224,41 @@ function Player:tick(world)
         end
     end
 
+    --Attack
+    if (self.atk_ticks < 0 or (
+                self.atk_ticks >= atk_duration
+                and self.atk_ticks < atk_duration + atk_follow_duration
+                and self.atk_index < 3
+            ))
+            and input.mouse_down.left and self.roll_ticks < 0 and self.atk_cooldown <= 0 then
+        if self.atk_ticks >= atk_duration then
+            self.atk_index = self.atk_index + 1
+        else
+            self.atk_index = 1
+        end
+        self.atk_ticks = 0
+        self.jump_ticks = -1
+        local dx, dy = wx, wy
+        if dx == 0 and dy == 0 then
+            dx, dy = util.rotate_yaw(0, 1, world.cam_yaw)
+        end
+        dx, dy = dx * atk_lounge, dy * atk_lounge
+        self.atk_dx, self.atk_dy = dx, dy
+    end
+    self.atk_was_down = input.mouse_down.left
+    if self.atk_cooldown > 0 then
+        self.atk_cooldown = self.atk_cooldown - 1
+    end
+    if self.atk_ticks >= 0 then
+        --Advance attack ticks
+        if self.atk_ticks < atk_duration + atk_follow_duration then
+            self.atk_ticks = self.atk_ticks + 1
+        else
+            self.atk_ticks = -1
+            self.atk_cooldown = atk_cooldown
+        end
+    end
+
     --Set yaw if moving
     if self.vel_x*self.vel_x + self.vel_y*self.vel_y > 0.02^2 then
         self.yaw = util.pos_to_yaw(self.vel_x, self.vel_y)
@@ -207,8 +266,13 @@ function Player:tick(world)
 
     --Set animation from movement
     if self.roll_ticks >= 0 then
-        self.anim:event('motion', 'roll')
-        self.anim:event('roll', self.roll_ticks / (roll_pre + roll_immune + roll_end))
+        self.anim:event('motion', 'roll', self.roll_ticks / (roll_pre + roll_immune + roll_end))
+    elseif self.atk_ticks >= 0 then
+        if self.atk_ticks >= atk_duration + atk_follow_duration then
+            self.anim:event('motion', 'atk', 0)
+        else
+            self.anim:event('motion', 'atk', self.atk_index)
+        end
     elseif self.on_ground then
         if self.vel_x == 0 and self.vel_y == 0 then
             --Idle

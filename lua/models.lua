@@ -116,8 +116,8 @@ local humanoid = {
             local sp = lerp(air_w, 1.20, 1.45)
             move(b.body, w,  0, sin(2*t) * 0.20, 0,  nc, 0, 0,  0, 0, 0)
             move(b.head, w,  0, sin(2*t) * -0.00, 0,  0, 0, 0,  0, 0, 0)
-            move(b.lhand, w,  0, 0, 0,  sin(t) * sp, 0, 0,  0, 0, 0)
-            move(b.rhand, w,  0, 0, 0,  sin(-t) * sp, 0, 0,  0, 0, 0)
+            move(b.larm, w,  0, 0, 0,  sin(t) * sp, 0, 0,  0, 0, 0)
+            move(b.rarm, w,  0, 0, 0,  sin(-t) * sp, 0, 0,  0, 0, 0)
             move(b.lfoot, w,  0, 0, 0,  sin(-t) * sp, 0, 0,  -s*.5, s, -s*.5)
             move(b.rfoot, w,  0, 0, 0,  sin(t) * sp, 0, 0,  -s*.5, s, -s*.5)
             return self.w
@@ -148,8 +148,8 @@ local humanoid = {
             local t, w = self.t, self.w
             move(b.body, w,  0, sin(t) * 0.2, 0,  0, 0, 0,  0, 0, 0)
             move(b.head, w,  0, sin(t) * 0.05, 0,  0, 0, 0,  0, 0, 0)
-            move(b.lhand, w,  0, 0, 0,  sin(t*.87) * 0.04, 0, 0,  0, 0, 0)
-            move(b.rhand, w,  0, 0, 0,  sin(t*-.87) * 0.04, 0, 0,  0, 0, 0)
+            move(b.larm, w,  0, 0, 0,  sin(t*.87) * 0.04, 0, 0,  0, 0, 0)
+            move(b.rarm, w,  0, 0, 0,  sin(t*-.87) * 0.04, 0, 0,  0, 0, 0)
             return self.w
         end,
     },
@@ -167,13 +167,12 @@ local humanoid = {
                 end
             end,
         },
-        motion = function(self, state)
+        motion = function(self, state, x)
             self.go = state == 'roll' and 1 or 0
+            if state == 'roll' then
+                self.x = x
+            end
             return self.go
-        end,
-        roll = function(self, x)
-            self.x = x
-            return 0
         end,
         draw = function(self, b, dt)
             local go = self.go
@@ -183,12 +182,110 @@ local humanoid = {
             self.w = approach(self.w, go, 0.001, 0.2, dt)
             local t, w = 2*pi*((self.x+.5)%1-.5), self.w
             move(b.center, w,  0, 0, 0,  t, 0, 0,  0, 0, 0)
-            move(b.lhand, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)
-            move(b.rhand, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)
+            move(b.larm, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)
+            move(b.rarm, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)
             move(b.head, w,  0, -1, 0,  .42, 0, 0,  0, 0, 0)
             move(b.lfoot, w,  0, -1, 0,  .53, 0, 0,  0, 0, 0)
             move(b.rfoot, w,  0, -1, 0,  .53, 0, 0,  0, 0, 0)
             return self.go == 1 and 1 or self.w
+        end,
+    },
+    atk = {
+        name = 'atk',
+        new = function(self)
+            self.go = 1
+            self.w = 0
+            self.idx = 1
+            self.t = 0
+
+            self.xbody = 0
+            self.xhead = 0
+            self.xlfoot = 0
+            self.xrfoot = 0
+            self.xlarm = 0
+            self.dyarm = 0
+            self.xarm = 0
+            self.yarm = 0
+            self.zarm = 0
+            self.xwrist = 0
+            self.ywrist = 0
+            self.zwrist = 0
+        end,
+        triggers = {
+            motion = function(ctx, state)
+                if state == 'atk' then
+                    return ctx:add('atk')
+                end
+            end,
+        },
+        motion = function(self, state, idx)
+            self.go = state == 'atk' and 1 or 0
+            if self.go == 1 then
+                if idx ~= self.idx then
+                    self.t = 0
+                end
+                self.idx = idx
+            end
+            return self.go
+        end,
+        draw = function(self, b, dt)
+            self.t = self.t + dt
+            -- xbody+: lean forward
+            -- xhead+: lean head forward
+            -- xlfoot+: bring left foot up
+            -- xrfoot+: bring right foot up
+            -- xlarm+: bring left hand up
+            -- dyarm+: bring right hand out
+            -- xarm+: bring right arm up
+            -- yarm+: turn swing plane clockwise
+            -- zarm+: swing left
+            -- xwrist+: raise wrist toward self
+            -- ywrist+: swing weapon to the right
+            -- zwrist+: rotate weapon in its axis clockwise
+            local xbody, xhead, xlfoot, xrfoot, xlarm, dyarm, xarm, yarm, zarm, xwrist, ywrist, zwrist
+            local bmp = 1 + 2^(self.t * -5) * 2
+            if self.idx == 1 then
+                xbody, xhead, xlfoot, xrfoot, xlarm = .04*bmp, -.02*bmp, -.35, .35, -.3
+                dyarm, xarm, yarm, zarm = 7, .7, .10, .4
+                xwrist, ywrist, zwrist = -.5, -.3, .5
+            elseif self.idx == 2 then
+                xbody, xhead, xlfoot, xrfoot, xlarm = .04*bmp, -.02*bmp, .35, -.35, .05
+                dyarm, xarm, yarm, zarm = 0, .65, -.3, -.3
+                xwrist, ywrist, zwrist = -.5, .2, -.5
+            elseif self.idx == 3 then
+                xbody, xhead, xlfoot, xrfoot, xlarm = .04*bmp, -.02*bmp, -.40, .40, -.4
+                dyarm, xarm, yarm, zarm = 7, .7, -.1, .4
+                xwrist, ywrist, zwrist = -.5, -.4, .5
+            else
+                xbody, xhead, xlfoot, xrfoot, xlarm = self.xbody, self.xhead, 0, 0, self.xlarm
+                dyarm, xarm, yarm, zarm = 0, .0, .0, .0
+                xwrist, ywrist, zwrist = .0, .0, .0
+            end
+            local sp = 0.0005
+            self.xbody = approach(self.xbody, xbody, sp, 0.6, dt)
+            self.xhead = approach(self.xhead, xhead, sp, 0.6, dt)
+            self.xlfoot = approach(self.xlfoot, xlfoot, sp, 0.6, dt)
+            self.xrfoot = approach(self.xrfoot, xrfoot, sp, 0.6, dt)
+            self.xlarm = approach(self.xlarm, xlarm, sp, 0.6, dt)
+            self.dyarm = approach(self.dyarm, dyarm, sp, 0.6, dt)
+            self.xarm = approach(self.xarm, xarm, sp, 0.6, dt)
+            self.yarm = approach(self.yarm, yarm, sp, 0.6, dt)
+            self.zarm = approach(self.zarm, zarm, sp, 0.6, dt)
+            self.xwrist = approach(self.xwrist, xwrist, sp, 0.6, dt)
+            self.ywrist = approach(self.ywrist, ywrist, sp, 0.6, dt)
+            --self.zwrist = approach(self.zwrist, zwrist, sp, 0.6, dt)
+            self.zwrist = zwrist
+
+            self.w = approach(self.w, self.go, 0.0001, 0.8, dt)
+            local w = self.w
+            move(b.body, w,  0, 0, 0,  self.xbody*pi, 0, 0,  0, 0, 0)
+            move(b.head, w,  0, 0, 0,  self.xhead*pi, 0, 0,  0, 0, 0)
+            move(b.lfoot, w,  0, 0, 0,  self.xlfoot*pi, 0, 0,  0, 0, 0)
+            move(b.rfoot, w,  0, 0, 0,  self.xrfoot*pi, 0, 0,  0, 0, 0)
+            move(b.larm, w,  0, 0, 0,  self.xlarm*pi, 0, 0,  0, 0, 0)
+            move(b.rarm, w,  0, self.dyarm, 0,  self.xarm*pi, self.yarm*pi, self.zarm*pi,  0, 0, 0)
+            move(b.rwrist, w,  0, 0, 0,  self.xwrist*pi, self.ywrist*pi, self.zwrist*pi,  0, 0, 0)
+            return self.w
         end,
     },
 }
@@ -230,50 +327,63 @@ models.player = {
         name = 'base',
         pos = {{1, 0, 0, -.5}, 'z+', 'y+'},
 
-        children = {
-            {
-                name = 'center',
-                pos = {6, 'z+', 'y+'},
+        child = {
+            name = 'center',
+            pos = {6, 'z+', 'y+'},
 
-                children = {
-                    {
-                        name = 'body',
-                        pos = {2, 5, 'y+'},
-                        piece = 2,
+            children = {
+                {
+                    name = 'body',
+                    pos = {2, 5, 'y+'},
+                    piece = 2,
 
-                        children = {
-                            {
-                                name = 'head',
-                                pos = {6, 'z+', 'y+'},
-                                piece = 3,
-                            },
-                            {
-                                name = 'lhand',
-                                pos = {8, 'z-', 'y+'},
+                    children = {
+                        {
+                            name = 'head',
+                            pos = {6, 'z+', 'y+'},
+                            order = 'zxy',
+                            piece = 3,
+                        },
+                        {
+                            name = 'larm',
+                            pos = {8, 'z-', 'y+'},
+                            order = 'xyz',
+                            child = {
+                                name = 'lwrist',
+                                pos = {10, 'z-', 'y+'},
+                                order = 'xyz',
                                 piece = 4,
                             },
-                            {
-                                name = 'rhand',
-                                pos = {7, 'z-', 'y+'},
+                        },
+                        {
+                            name = 'rarm',
+                            pos = {7, 'z-', 'y+'},
+                            order = 'xyz',
+                            child = {
+                                name = 'rwrist',
+                                pos = {9, 'z-', 'y+'},
+                                order = 'xyz',
                                 piece = 5,
                             },
                         },
                     },
-                    {
-                        name = 'lfoot',
-                        pos = {4, 'z-', 'y+'},
-                        piece = 6,
-                    },
-                    {
-                        name = 'rfoot',
-                        pos = {3, 'z-', 'y+'},
-                        piece = 7,
-                    },
+                },
+                {
+                    name = 'lfoot',
+                    pos = {4, 'z-', 'y+'},
+                    order = 'zxy',
+                    piece = 6,
+                },
+                {
+                    name = 'rfoot',
+                    pos = {3, 'z-', 'y+'},
+                    order = 'zxy',
+                    piece = 7,
                 },
             },
         },
     },
-    animations = { humanoid.runjump, humanoid.idle, humanoid.roll },
+    animations = { humanoid.runjump, humanoid.idle, humanoid.roll, humanoid.atk },
 }
 
 models.slime = {

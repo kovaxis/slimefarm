@@ -150,9 +150,20 @@ function voxel.Model:new()
         assert(not self.bones[bone.name], "duplicate bones with name '"..bone.name.."'")
         self.bones[bone.name] = bone
 
-        if bone.piece then
+        if bone.piece ~= nil then
             assert(type(bone.piece) == 'number', "bone.piece must be a model index")
             bone.piece = getmodel(bone.piece)
+        end
+
+        if bone.order == nil then
+            bone.order = 'zxy'
+        end
+        assert(type(bone.order) == 'string', "bone.order must be a string if present")
+        assert(#bone.order == 3, "bone.order must be 3 characters long")
+        for i = 1, 3 do
+            local axis = bone.order:byte(i, i) - ('x'):byte() + 1
+            assert(axis >= 1 and axis <= 3, "bone.order["..i.."] is not x, y or z")
+            bone['rot'..i] = axis
         end
 
         assert(type(bone.pos) == 'table' and #bone.pos == 3, "bone.pos must be a 3-element table")
@@ -162,10 +173,15 @@ function voxel.Model:new()
         local front, up = findref(ref, front, start)
         bone.abs_pos = start
         
-        if bone.children then
-            for i, sub in ipairs(bone.children) do
-                loadbone(sub, ref, finish)
-            end
+        if bone.child ~= nil then
+            assert(bone.children == nil, "bone.children cannot exist if bone.children is set")
+            bone.children = { bone.child }
+        elseif bone.children == nil then
+            bone.children = {}
+        end
+        assert(type(bone.children) == 'table', "bone.children must be a sequence")
+        for i, sub in ipairs(bone.children) do
+            loadbone(sub, ref, finish)
         end
         
         bone.delta = finish
@@ -240,24 +256,25 @@ end
 do
     -- Internal temporary state
     local shader, draw_params, mvp_name, mvp
+    local rotfuncs = {'rotate_x', 'rotate_y', 'rotate_z'}
 
     local function drawbone(self, bone)
         mvp:push()
 
-        local tx, ty, tz, rx, ry, rz, sx, sy, sz = table.unpack(self.bones[bone.name])
+        local b = self.bones[bone.name]
 
         mvp:translate(bone.move:xyz())
         mvp:mul_right(bone.from_std)
-        mvp:rotate_z(rz)
-        mvp:rotate_x(rx)
-        mvp:rotate_y(ry)
-        mvp:translate(tx, ty, tz)
+        mvp[rotfuncs[bone.rot1]](mvp, b[3 + bone.rot1])
+        mvp[rotfuncs[bone.rot2]](mvp, b[3 + bone.rot2])
+        mvp[rotfuncs[bone.rot3]](mvp, b[3 + bone.rot3])
+        mvp:translate(b[1], b[2], b[3])
         mvp:mul_right(bone.to_std)
 
         if bone.piece then
             local x, y, z = bone.abs_pos:xyz()
             mvp:push()
-            mvp:scale(2^sx, 2^sy, 2^sz)
+            mvp:scale(2^b[7], 2^b[8], 2^b[9])
             mvp:translate(-x, -y, -z)
             shader:set_matrix(mvp_name, mvp)
             shader:draw_voxel(bone.piece, draw_params)
@@ -265,10 +282,8 @@ do
         end
 
         mvp:translate(bone.delta:xyz())
-        if bone.children then
-            for i = 1, #bone.children do
-                drawbone(self, bone.children[i])
-            end
+        for i = 1, #bone.children do
+            drawbone(self, bone.children[i])
         end
 
         mvp:pop()
