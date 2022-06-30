@@ -1224,7 +1224,7 @@ impl Terrain {
     ///
     /// This function calculates exactly how many copies and what offset should be applied to each
     /// copy (as well as in which dimension each copy ends up in).
-    pub(crate) fn get_draw_positions(
+    pub(crate) fn get_equivalent_positions(
         &self,
         abspos: WorldPos,
         size: [f64; 3],

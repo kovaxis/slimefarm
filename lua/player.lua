@@ -35,6 +35,11 @@ local atk_follow_duration = 2
 local atk_cooldown = 16
 local atk_lounge = .2
 local atk_lounge_decay = .85
+local atk_hit_dist_forward = 3
+local atk_hit_dist_side = 3
+local atk_hit_dist_vdist = 2
+local atk_damage = 20
+local atk_knockback = 2
 
 local lag_vel_z_add = 1.2
 local lag_vel_z_mul = 0.0012
@@ -79,7 +84,13 @@ function Player:new()
     self.visual_lag_vel_z = 0
     self.visual_fall_time = 0
     self.focus_height_lag = 0
+
+    self.rad_x = bbox_h / 2
+    self.rad_y = bbox_h / 2
+    self.rad_z = bbox_v / 2
     self.draw_r = 1.1 * math.sqrt(3)
+
+    self.hp = 100
 
     self.anim = voxel.AnimState{
         model = voxel.models.player,
@@ -231,6 +242,7 @@ function Player:tick(world)
                 and self.atk_index < 3
             ))
             and input.mouse_down.left and self.roll_ticks < 0 and self.atk_cooldown <= 0 then
+        -- Start attack
         if self.atk_ticks >= atk_duration then
             self.atk_index = self.atk_index + 1
         else
@@ -238,12 +250,32 @@ function Player:tick(world)
         end
         self.atk_ticks = 0
         self.jump_ticks = -1
-        local dx, dy = wx, wy
-        if dx == 0 and dy == 0 then
-            dx, dy = util.rotate_yaw(0, 1, world.cam_yaw)
+        local lx, ly = util.rotate_yaw(0, 1, world.cam_yaw)
+        self.atk_dx, self.atk_dy = lx * atk_lounge, ly * atk_lounge
+        -- Make damage
+        for i, ent in ipairs(world.entities) do
+            if ent ~= self and ent.hp then
+                local w, h = math.max(ent.rad_x, ent.rad_y), ent.rad_z
+                local buf = world.relpos_buf
+                world.terrain:get_relative_positions(ent.pos, ent.rad_x, ent.rad_y, ent.rad_z, self.pos, buf)
+                local hit = false
+                for i = 1, #buf, 3 do
+                    local dx, dy, dz = buf[i], buf[i+1], buf[i+2]
+                    local dfw = dx * lx + dy * ly
+                    local drt = dx * ly - dy * lx
+                    if dfw >= -w and dfw <= atk_hit_dist_forward + w
+                            and drt >= -atk_hit_dist_side/2 - w and drt <= atk_hit_dist_side/2 + w
+                            and dz >= -atk_hit_dist_vdist/2 - h and dz <= atk_hit_dist_vdist/2 + h then
+                        -- Hit this entity
+                        local kx, ky, kz = lx, ly, 0.5
+                        local n = atk_knockback * (kx*kx + ky*ky + kz*kz)^-.5
+                        kx, ky, kz = kx*n, ky*n, kz*n
+                        ent:damage(atk_damage, kx, ky, kz)
+                        break
+                    end
+                end
+            end
         end
-        dx, dy = dx * atk_lounge, dy * atk_lounge
-        self.atk_dx, self.atk_dy = dx, dy
     end
     self.atk_was_down = input.mouse_down.left
     if self.atk_cooldown > 0 then

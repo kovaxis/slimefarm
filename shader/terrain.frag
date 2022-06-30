@@ -3,6 +3,7 @@
 uniform sampler2D color;
 uniform sampler2D light;
 
+uniform vec3 tint;
 uniform vec3 ambience;
 uniform vec3 specular;
 uniform vec3 diffuse;
@@ -80,7 +81,7 @@ void main() {
     vec3 lighting = (ambience + w_diffuse * diffuse + w_specular * specular) * sky;
 
     // Compute final color
-    vec3 color = basecolor * ao * lighting;
+    vec3 color = basecolor * ao * lighting + tint;
     vec3 fog_color = background(v_dir);
     color = mix(fog_color, color, alpha);
 

@@ -17,7 +17,7 @@ function World:new()
             vertex = 'terrain.vert',
             fragment = 'terrain.frag',
             -- first 3 must be (in order) 'offset', 'color', 'light'
-            uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle'},
+            uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle', 'tint'},
         },
         portal = util.Shader{
             vertex = 'portal.vert',
@@ -130,6 +130,8 @@ function World:new()
     self.fps = 0
     self.last_frame = os.clock()
 
+    self.relpos_buf = {}
+
     self.mouse_icon = Sprite{
         path = 'crosshair.png',
         w = 16,
@@ -152,6 +154,19 @@ function World:tick()
     --Tick entities
     for _, ent in ipairs(self.entities) do
         ent:tick(self)
+    end
+
+    --Remove dead entities
+    do
+        local ents, i = self.entities, 1
+        while i <= #ents do
+            if ents[i].remove then
+                ents[i], ents[#ents] = ents[#ents], ents[i]
+                ents[#ents] = nil
+            else
+                i = i + 1
+            end
+        end
     end
 
     --Advance day cycle
@@ -306,6 +321,7 @@ do
         shader:set_vec3('sun_dir', math.sin(2*math.pi*cycle), 0, -math.cos(2*math.pi*cycle))
     end
     function sky.lighting(shader, cycle)
+        shader:set_vec3('tint', 0, 0, 0)
         for i = 1, #lighting do
             local v = sky[lighting[i]]:at(cycle)
             shader:set_vec3(lighting[i], v, v, v)
@@ -427,7 +443,8 @@ function World:subdraw()
         local movx, movy, movz = ent.mov_x, ent.mov_y, ent.mov_z
         entpos_buf:copy_from(ent.pos)
         entpos_buf:move_box(self.terrain, movx * frame.s, movy * frame.s, movz * frame.s, 0.1, 0.1, 0.1) -- TODO: Replace with a raycast
-        self.terrain:get_draw_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, cam, entcopies)
+        cam:origin(campos_buf)
+        self.terrain:get_relative_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, campos_buf, entcopies)
         for i = 1, #entcopies, 3 do
             local dx, dy, dz = entcopies[i], entcopies[i+1], entcopies[i+2]
             if cam:can_view(dx, dy, dz, ent.draw_r) then

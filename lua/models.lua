@@ -229,7 +229,6 @@ local humanoid = {
             return self.go
         end,
         draw = function(self, b, dt)
-            self.t = self.t + dt
             -- xbody+: lean forward
             -- xhead+: lean head forward
             -- xlfoot+: bring left foot up
@@ -243,6 +242,7 @@ local humanoid = {
             -- ywrist+: swing weapon to the right
             -- zwrist+: rotate weapon in its axis clockwise
             local xbody, xhead, xlfoot, xrfoot, xlarm, dyarm, xarm, yarm, zarm, xwrist, ywrist, zwrist
+            self.t = self.t + dt
             local bmp = 1 + 2^(self.t * -5) * 2
             if self.idx == 1 then
                 xbody, xhead, xlfoot, xrfoot, xlarm = .04*bmp, -.02*bmp, -.35, .35, -.3
@@ -259,7 +259,7 @@ local humanoid = {
             else
                 xbody, xhead, xlfoot, xrfoot, xlarm = self.xbody, self.xhead, 0, 0, self.xlarm
                 dyarm, xarm, yarm, zarm = 0, .0, .0, .0
-                xwrist, ywrist, zwrist = .0, .0, .0
+                xwrist, ywrist, zwrist = .0, .0, self.zwrist
             end
             local sp = 0.0005
             self.xbody = approach(self.xbody, xbody, sp, 0.6, dt)

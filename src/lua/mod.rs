@@ -370,14 +370,13 @@ lua_type! {TerrainRef, lua, this,
         ).to_lua_err()?;
     }
 
-    fn get_draw_positions((entpos, sx, sy, sz, camstack, out): (LuaWorldPos, f64, f64, f64, LuaAnyUserData, LuaTable)) {
+    fn get_relative_positions((entpos, sx, sy, sz, origin, out): (LuaWorldPos, f64, f64, f64, LuaWorldPos, LuaTable)) {
         let this = this.rc.borrow();
         let entpos = entpos.get();
-        let camstack = camstack.borrow::<CameraStack>()?;
-        let origin = camstack.origin();
+        let origin = origin.get();
 
         let mut idx: usize = 0;
-        this.get_draw_positions(entpos, [sx, sy, sz], |_, jump| {
+        this.get_equivalent_positions(entpos, [sx, sy, sz], |_, jump| {
             if origin.dim == jump.dim {
                 let pos = [
                     entpos.coords[0] + jump.coords[0] as f64 - origin.coords[0],

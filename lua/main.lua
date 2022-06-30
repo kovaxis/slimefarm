@@ -20,16 +20,14 @@ local world = World{}
 table.insert(world.entities, Player{
     pos = system.world_pos(0, 0, 100, 0),
 })
-table.insert(world.entities, Slime {
+--[[table.insert(world.entities, Slime {
     pos = system.world_pos(0, 20, 100),
-})
---[[for x = -10, 10 do
-    table.insert(world.entities, Enemy{
-        x = x * 10,
-        y = 20,
-        z = 100,
+})]]
+for x = -10, 10 do
+    table.insert(world.entities, Slime{
+        pos = system.world_pos(x*10, 20, 100),
     })
-end]]
+end
 
 local has_focus = true
 while true do

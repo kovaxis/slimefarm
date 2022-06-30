@@ -23,6 +23,9 @@ local jump_keepup_ticks = 14
 local jump_cooldown_start = 10
 local jump_cooldown_land = 60
 
+local dmg_anim_factor = 0.01
+local dmg_anim_linear = 1
+
 local lag_vel_z_add = 1.2
 local lag_vel_z_mul = 0.0012
 
@@ -43,7 +46,14 @@ function Slime:new()
     self.idle_ticks = 0
     self.visual_lag_vel_z = 0
     self.visual_fall_time = 0
+    self.visual_dmg_indicator = 0
+
+    self.rad_x = bbox_h / 2
+    self.rad_y = bbox_h / 2
+    self.rad_z = bbox_v / 2
     self.draw_r = 1.1 * math.sqrt(3)
+
+    self.hp = 500
 
     self.wx, self.wy = 0, 0
 
@@ -69,7 +79,7 @@ function Slime:ai(world)
     local dx, dy, dz = world.terrain:to_relative(self.pos)
     local n = dx * dx + dy * dy + dz * dz
     if n < view_dist * view_dist then
-        n = (dx * dx + dy * dy) ^ -0.5
+        n = -(dx * dx + dy * dy) ^ -0.5
         return dx * n, dy * n, true
     else
         if world.rng:uniform() < 0.005 then
@@ -89,7 +99,7 @@ end
 
 function Slime:tick(world)
     --Apply friction
-    if self.on_ground then
+    if self.on_ground and self.vel_z < 0 then
         self.vel_x = 0
         self.vel_y = 0
         self.vel_z = 0
@@ -189,6 +199,20 @@ function Slime:tick(world)
     end
 end
 
+function Slime:damage(dmg, kx, ky, kz)
+    self.hp = self.hp - dmg
+    if self.hp <= 0 then
+        self.remove = true
+    end
+    self.visual_dmg_indicator = 1
+    kx = kx or 0
+    ky = ky or 0
+    kz = kz or 0
+    self.vel_x = self.vel_x + kx
+    self.vel_y = self.vel_y + ky
+    self.vel_z = self.vel_z + kz
+end
+
 function Slime:draw(world)
     local frame = world.frame
 
@@ -196,10 +220,19 @@ function Slime:draw(world)
     self.visual_yaw = util.approach(self.yaw - dyaw, self.yaw, yaw_anim_factor, yaw_anim_linear, frame.dt) % (2*math.pi)
     frame.mvp_world:rotate_z(self.visual_yaw)
 
+    self.visual_dmg_indicator = util.approach(self.visual_dmg_indicator, 0, dmg_anim_factor, dmg_anim_linear, frame.dt)
+
     frame.mvp_world:translate(0, 0, -bbox_v/2)
     frame.mvp_world:scale(1/8)
 
+    local l = self.visual_dmg_indicator
+    if l ~= 0 then
+        world.shaders.terrain:set_vec3('tint', l, l, l)
+    end
     self.anim:draw(frame.dt, world.shaders.terrain, frame.params_world, 'mvp', frame.mvp_world)
+    if l ~= 0 then
+        world.shaders.terrain:set_vec3('tint', 0, 0, 0)
+    end
 end
 
 return Slime

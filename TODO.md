@@ -1,6 +1,8 @@
 
 TODO:
 
+- Fix model mesh renderer, it does not handle large models?
+
 - Skylight occlusion.
 - Object-centered lighting.
 - Poll for events in a separate process and timestamp them for smoother input.
