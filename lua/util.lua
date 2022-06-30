@@ -10,17 +10,26 @@ function util.read_file(path)
     return str
 end
 
-function util.format_time(secs)
+function util.format_time(s, secs)
     if secs < 0.0001 then
-        return (math.ceil(secs * 10000000) / 10) .. "us"
+        s:push(math.ceil(secs * 10000000) / 10)
+        s:push("us")
     elseif secs < 0.25 then
-        return (math.ceil(secs * 10000) / 10) .. "ms"
+        s:push(math.ceil(secs * 10000) / 10)
+        s:push("ms")
     elseif secs < 60 then
-        return (math.ceil(secs * 10) / 10) .. "s"
+        s:push(math.ceil(secs * 10) / 10)
+        s:push("s")
     elseif secs < 3600 then
-        return (secs // 60) .. "m " .. math.ceil(secs % 60) .. "s"
+        s:push(secs // 60)
+        s:push("m ")
+        s:push(math.ceil(secs % 60))
+        s:push("s")
     else
-        return (secs // 3600) .."h " .. math.ceil(secs % 3600) .. "m"
+        s:push(secs // 3600)
+        s:push("h ")
+        s:push(math.ceil(secs % 3600))
+        s:push("m")
     end
 end
 

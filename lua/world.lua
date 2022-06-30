@@ -45,10 +45,12 @@ function World:new()
     self.worldgen_main = "gen/main.lua"
     self.worldgen_watcher = fs.watch(self.worldgen_path)
     self.showchunkgrid = false
+    self.show_debug_stats = false
     self:load_terrain()
 
     self.font_size = 6
     self.font = gfx.font(util.read_file("font/dogicapixel.ttf"), self.font_size)
+    self.textbuf = string.buffer()
 
     self.frame = {
         target_res = 240,
@@ -595,38 +597,73 @@ function World:draw()
     self:subdraw()
 
     --Draw HUD
-    frame.mvp_hud:push()
-    frame.mvp_hud:translate(-frame.w + 4, frame.h - 16, 0)
-    frame.mvp_hud:scale(self.font_size)
-    self.font:draw("FPS: "..self.fps, frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    if true then
-        -- chunk gen/mesh/upload average times
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("gen: "..util.format_time(self.terrain:get_stat("gentime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("light: "..util.format_time(self.terrain:get_stat("lighttime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("mesh: "..util.format_time(self.terrain:get_stat("meshtime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("upload: "..util.format_time(self.terrain:get_stat("uploadtime")), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    end
-    if true then
-        -- chunk draw stats
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("drawnchunks: "..self.terrain:get_stat('drawnchunks'), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("vertices: "..math.ceil(self.terrain:get_stat('vertbytes')/1024).."KB", frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("indices: "..math.ceil(self.terrain:get_stat('idxbytes')/1024).."KB", frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:translate(0, -1.25, 0)
-        self.font:draw("color: "..math.ceil(self.terrain:get_stat('colorbytes')/1024).."KB", frame.mvp_hud, frame.params_hud, 1, 1, 1)
-    end
-    if true then
-        -- absolute world coordinates
-        frame.mvp_hud:translate(0, -1.25, 0)
-        local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
-        self.font:draw("pos: "..math.floor(raw_x)..", "..math.floor(raw_y)..", "..math.floor(raw_z).." : "..math.floor(raw_w), frame.mvp_hud, frame.params_hud, 1, 1, 1)
-        frame.mvp_hud:pop()
+    do
+        local s = self.textbuf
+        frame.mvp_hud:push()
+        frame.mvp_hud:translate(-frame.w + 4, frame.h - 16, 0)
+        frame.mvp_hud:scale(self.font_size)
+
+        s:clear()
+        s:push("FPS: ", self.fps)
+        self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        
+        if self.show_debug_stats then
+            -- chunk gen/mesh/upload average times
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("gen: ")
+            util.format_time(s, self.terrain:get_stat("gentime"))
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("light: ")
+            util.format_time(s, self.terrain:get_stat("lighttime"))
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("mesh: ")
+            util.format_time(s, self.terrain:get_stat("meshtime"))
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("upload: ")
+            util.format_time(s, self.terrain:get_stat("uploadtime"))
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        end
+        if self.show_debug_stats then
+            -- chunk draw stats
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("drawnchunks: ", self.terrain:get_stat('drawnchunks'))
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+            
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("vertices: ", math.ceil(self.terrain:get_stat('vertbytes')/1024), "KB")
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+            
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("indices: ", math.ceil(self.terrain:get_stat('idxbytes')/1024), "KB")
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+            
+            frame.mvp_hud:translate(0, -1.25, 0)
+            s:clear()
+            s:push("color: ", math.ceil(self.terrain:get_stat('colorbytes')/1024), "KB")
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+        end
+        if true then
+            -- absolute world coordinates
+            frame.mvp_hud:translate(0, -1.25, 0)
+            local raw_x, raw_y, raw_z, raw_w = self.cam_pos:raw_difference(raw_origin)
+            s:clear()
+            s:push("pos: ", math.floor(raw_x), ", ", math.floor(raw_y), ", ", math.floor(raw_z), " : ", math.floor(raw_w))
+            self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
+            frame.mvp_hud:pop()
+        end
     end
 
     --Draw crosshair
@@ -675,6 +712,8 @@ end
 function World:keydown(key)
     if key == 'f7' then
         self:update_showchunkgrid(not self.showchunkgrid)
+    elseif key == 'f3' then
+        self.show_debug_stats = not self.show_debug_stats
     end
 end
 

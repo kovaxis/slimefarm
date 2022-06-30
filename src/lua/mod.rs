@@ -914,6 +914,37 @@ lua_type! {LuaVec3, lua, this,
     fn xyz() { (this.u.x, this.u.y, this.u.z) }
 }
 
+#[derive(Default)]
+struct LuaStringBuf {
+    text: Vec<u8>,
+}
+lua_type! {LuaStringBuf, lua, this,
+    mut fn clear() {
+        this.text.clear()
+    }
+
+    mut fn push(vals: LuaMultiValue) {
+        use std::io::Write;
+        use rlua::Value::*;
+        for x in vals {
+            match x {
+                Nil => this.text.extend_from_slice(b"nil"),
+                Boolean(b) => write!(this.text, "{}", b).unwrap(),
+                Integer(x) => write!(this.text, "{}", x).unwrap(),
+                Number(x) if x as i64 as f64 == x =>
+                    write!(this.text, "{}", x as i64).unwrap(),
+                Number(x) => write!(this.text, "{}", x).unwrap(),
+                String(s) => this.text.extend_from_slice(s.as_bytes()),
+                _ => lua_bail!("cannot stringify value {:?}", x),
+            }
+        }
+    }
+
+    fn build_string() {
+        lua.create_string(&this.text[..])
+    }
+}
+
 pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
     let os = lua.globals().get::<_, LuaTable>("os").unwrap();
     os.set(
@@ -976,7 +1007,6 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
         }),
     )
     .unwrap();
-
     math.set(
         "vec3",
         lua_func!(lua, state, fn(args: LuaMultiValue) {
@@ -1005,6 +1035,16 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
         }),
     )
     .unwrap();
+
+    let string = lua.globals().get::<_, LuaTable>("string").unwrap();
+    string
+        .set(
+            "buffer",
+            lua_func!(lua, state, fn(()) {
+                LuaStringBuf::default()
+            }),
+        )
+        .unwrap();
 }
 
 fn load_native_lib<'a>(lua: LuaContext<'a>, path: &str) -> Result<LuaValue<'a>> {

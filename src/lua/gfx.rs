@@ -1,6 +1,6 @@
 use crate::{
     chunkmesh::{Mesher2, MesherCfg, ModelMesherCfg, ModelMesherKind},
-    lua::{CameraFrame, CameraStack, LuaImage, LuaVoxelModel, MatrixStack},
+    lua::{CameraFrame, CameraStack, LuaImage, LuaStringBuf, LuaVoxelModel, MatrixStack},
     prelude::*,
 };
 use common::{lua_assert, lua_bail, lua_func, lua_lib, lua_type};
@@ -228,7 +228,14 @@ pub(crate) struct FontRef {
     pub rc: Rc<Font>,
 }
 lua_type! {FontRef, lua, this,
-    fn draw((text, mvp, draw_params, r, g, b, a): (LuaString, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
+    fn draw((text, mvp, draw_params, r, g, b, a): (LuaAnyUserData, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
+        let (_, mvp) = &*mvp.stack.borrow();
+        let text = text.borrow::<LuaStringBuf>()?;
+        let text = std::str::from_utf8(&text.text[..]).map_err(|_| "invalid utf-8").to_lua_err()?;
+        this.rc.draw(text, *mvp, [r, g, b, a.unwrap_or(1.)], &draw_params.params);
+    }
+
+    fn draw_static((text, mvp, draw_params, r, g, b, a): (LuaString, MatrixStack, LuaDrawParams, f32, f32, f32, Option<f32>)) {
         let (_, mvp) = &*mvp.stack.borrow();
         this.rc.draw(text.to_str()?, *mvp, [r, g, b, a.unwrap_or(1.)], &draw_params.params);
     }

@@ -86,7 +86,7 @@ function Humanoid:tick(world)
         local d = self.atk_lounge_decay
         self.atk_dx = self.atk_dx * d
         self.atk_dy = self.atk_dy * d
-        self.yaw_x, self.yaw_y = self.atk_dy, self.atk_dx
+        self.yaw_x, self.yaw_y = self.atk_dx, self.atk_dy
     elseif self.on_ground then
         --Run around
         local sp = self.walk_speed
