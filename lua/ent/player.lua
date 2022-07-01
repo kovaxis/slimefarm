@@ -8,6 +8,8 @@ local Humanoid = require 'ent.humanoid'
 local Player, super = class{ super = Humanoid }
 
 Player:set_bbox(10/8, 15/8)
+Player.model = voxel.models.player
+Player.max_hp = 10000000
 
 Player.atk_lounge = 0.1
 
@@ -22,9 +24,7 @@ local controls = {
 }
 
 function Player:new()
-    self.model = voxel.models.player
     super.new(self)
-    self.hp = 100
 
     self.jump_was_down = false
     

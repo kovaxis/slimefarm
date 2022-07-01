@@ -5,10 +5,14 @@ local util = require 'util'
 local voxel = {}
 
 voxel.mesher_cfg = {
+    -- width is a fixed value, but height is only a maximum value
     atlas_size = {64, 1024},
     -- clear, normal, blocked, blocked, base
     exposure_table = {64, 60, 40, 40, 0},
+    -- offset into the light texture uv coordinates
+    -- 0.5 is the only reasonable value apart from debug purposes
     light_uv_offset = 0.5,
+    -- offset to "zoom into" the quad textures, to avoid texture bleeding
     bleed_offset = 1/64,
 }
 voxel.model_mesher_cfg = {
@@ -380,5 +384,6 @@ function voxel.check_reload()
     end
 end
 
+voxel.load_models('models.lua')
 
 return voxel

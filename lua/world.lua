@@ -56,6 +56,8 @@ function World:new()
         target_res = 240,
         physical_w = 1,
         physical_h = 1,
+        aspect = 1,
+        scale = 1,
         w = 1,
         h = 1,
         params_portalopen = gfx.draw_params(),
@@ -135,11 +137,6 @@ function World:new()
 
     self.relpos_buf = {}
 
-    self.mouse_icon = Sprite{
-        path = 'crosshair.png',
-        w = 16,
-        h = 16,
-    }
     self.mouse_x = 0
     self.mouse_y = 0
 end
@@ -235,8 +232,8 @@ function World:load_terrain()
         mesher = voxel.mesher_cfg,
     }
     self.terrain:set_interpolation(false, true)
-    --self.terrain:set_view_distance(32*12, 32*14)
-    self.terrain:set_view_distance(32*6, 32*8)
+    self.terrain:set_view_distance(32*12, 32*14)
+    --self.terrain:set_view_distance(32*6, 32*8)
 
     --Set chunkframe
     self:update_showchunkgrid(self.showchunkgrid)
@@ -458,7 +455,7 @@ function World:subdraw()
             if cam:can_view(dx, dy, dz, ent.draw_r) then
                 frame.mvp_world:push()
                 frame.mvp_world:translate(dx, dy, dz)
-                ent:draw(self)
+                ent:draw(self, dx, dy, dz)
                 frame.mvp_world:pop()
             end
         end
@@ -509,9 +506,11 @@ function World:draw()
     do
         local pw, ph = gfx.dimensions()
         frame.physical_w, frame.physical_h = pw, ph
+        frame.aspect = pw / ph
         local scale = math.max(math.floor(math.min(pw, ph) / frame.target_res), 1)
         local w, h = math.floor(pw / scale / 2), math.floor(ph / scale / 2)
         frame.w, frame.h = w, h
+        frame.scale = scale
         frame.mvp_hud:reset()
         frame.mvp_hud:scale(2*scale/pw, 2*scale/ph, 1)
     end
@@ -545,11 +544,11 @@ function World:draw()
     --Setup model-view-projection matrix for world drawing
     do
         local vfov = 1.1
-        local hfov = vfov * frame.physical_w / frame.physical_h
+        local hfov = vfov * frame.aspect
         frame.hfov = hfov
         frame.vfov = vfov
         frame.mvp_world:reset()
-        frame.mvp_world:perspective(vfov, frame.physical_w / frame.physical_h, 0.2, 800)
+        frame.mvp_world:perspective(vfov, frame.aspect, 0.2, 800)
         frame.mvp_world:rotate_x(-cam_pitch)
         frame.mvp_world:rotate_z(-cam_yaw)
         frame.invp_world:reset_from(frame.mvp_world)
@@ -667,11 +666,14 @@ function World:draw()
     end
 
     --Draw crosshair
-    frame.mvp_hud:push()
-    frame.mvp_hud:translate(0.5, 0.5, 0)
-    frame.mvp_hud:scale(self.mouse_icon.w, self.mouse_icon.h, 1)
-    self.mouse_icon:draw(1, frame.mvp_hud, frame.params_hud)
-    frame.mvp_hud:pop()
+    do
+        local sprite, i = Sprite.sprites.crosshair, 1
+        frame.mvp_hud:push()
+        frame.mvp_hud:translate(0.5, 0.5, 0)
+        frame.mvp_hud:scale(sprite.w, sprite.h, 1)
+        sprite:draw(i, frame.mvp_hud, frame.params_hud)
+        frame.mvp_hud:pop()
+    end
 
     --DEBUG: Draw texture atlas of the current chunk
     if true then

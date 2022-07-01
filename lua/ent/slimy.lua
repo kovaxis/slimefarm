@@ -19,6 +19,7 @@ Slimy.jump_keepdown = 0.005
 Slimy.jump_keepup_ticks = 14
 Slimy.jump_cooldown_start = 10
 Slimy.jump_cooldown_land = 60
+Slimy.jump_cooldown_fudge = 25
 
 Slimy.atk_damage = 20
 Slimy.atk_knockback = 0.6
@@ -101,6 +102,9 @@ function Slimy:tick(world)
             if self.on_ground then
                 self.jump_ticks = -1
                 self.jump_cooldown = self.jump_cooldown_land
+                if self.jump_cooldown_fudge > 0 then
+                    self.jump_cooldown = self.jump_cooldown + world.rng:uniform(-self.jump_cooldown_fudge, self.jump_cooldown_fudge)
+                end
             else
                 if self.jump_ticks < self.jump_charge + self.jump_keepup_ticks then
                     if do_jump then

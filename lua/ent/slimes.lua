@@ -35,13 +35,9 @@ end
 local Green = class{ super = Slimy }
 slimes.Green = Green
 Green:set_bbox(16/8, 11/8)
-Green.view_dist = 40
-
-function Green:new()
-    self.model = voxel.models.green_slime
-    super.new(self)
-    self.hp = 500
-end
+Green.view_dist = 15
+Green.max_hp = 600
+Green.model = voxel.models.green_slime
 
 function Green:tick(world)
     local d = ai(self, world, self.view_dist)
@@ -56,12 +52,8 @@ local Red = class{ super = Slimy }
 slimes.Red = Red
 Red:set_bbox(14/8, 12/8)
 Red.view_dist = 25
-
-function Red:new()
-    self.model = voxel.models.red_slime
-    super.new(self)
-    self.hp = 600
-end
+Red.max_hp = 650
+Red.model = voxel.models.red_slime
 
 function Red:tick(world)
     ai(self, world, self.view_dist)

@@ -8,5 +8,9 @@ in vec2 tex_coords;
 out vec4 out_color;
 
 void main() {
-    out_color = texture2D(tex, tex_coords) * tint;
+    vec4 color = texture2D(tex, tex_coords) * tint;
+    if (color.a < 0.01) {
+        discard;
+    }
+    out_color = color;
 }

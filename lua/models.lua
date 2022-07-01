@@ -180,6 +180,7 @@ local humanoid = {
                 go = 0
             end
             self.w = approach(self.w, go, 0.001, 0.2, dt)
+            -- comenta tonto gil
             local t, w = 2*pi*((self.x+.5)%1-.5), self.w
             move(b.center, w,  0, 0, 0,  t, 0, 0,  0, 0, 0)
             move(b.larm, w,  0, 0, 0,  .75*pi, 0, 0,  0, 0, 0)

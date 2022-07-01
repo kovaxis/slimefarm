@@ -148,6 +148,11 @@ lua_type! {MatrixStack, lua, this,
         let (x, y, z) = top.transform_point3(Vec3::new(x, y, z)).into();
         (x, y, z)
     }
+    fn transform_vec4((x, y, z, w): (f32, f32, f32, f32)) {
+        let (_, top) = &*this.stack.borrow();
+        let (x, y, z, w) = (*top * Vec4::new(x, y, z, w)).into();
+        (x, y, z, w)
+    }
 
     fn set_col((i, x, y, z, w): (usize, f32, f32, f32, f32)) {
         let (_, top) = &mut *this.stack.borrow_mut();

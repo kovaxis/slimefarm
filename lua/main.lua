@@ -14,8 +14,6 @@ local Player = require 'ent.player'
 local slimes = require 'ent.slimes'
 local voxel = require 'voxel'
 
-voxel.load_models('models.lua')
-
 local world = World{}
 table.insert(world.entities, Player {
     pos = system.world_pos(0, 0, 100, 0),

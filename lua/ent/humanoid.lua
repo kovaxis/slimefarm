@@ -71,6 +71,7 @@ function Humanoid:tick(world)
     --Horizontal movement
     local wx, wy = self.wx, self.wy
     if self.roll_ticks >= 0 then
+        --Rodar sin deslizar
         local speed
         if self.roll_ticks < self.roll_pre then
             speed = self.roll_speed[1]
@@ -80,8 +81,9 @@ function Humanoid:tick(world)
             speed = self.roll_speed[3]
         end
         self.vel_x, self.vel_y = self.roll_dx * speed, self.roll_dy * speed
-        self.yaw_x, self.yaw_y = self.vel_x, self.vel_y
+        self.yaw_x, self.yaw_y = self.roll_dx, self.roll_dy
     elseif self.atk_ticks >= 0 then
+        --Lounge with attack
         self.vel_x, self.vel_y = self.atk_dx, self.atk_dy
         local d = self.atk_lounge_decay
         self.atk_dx = self.atk_dx * d
@@ -91,7 +93,7 @@ function Humanoid:tick(world)
         --Run around
         local sp = self.walk_speed
         self.vel_x, self.vel_y = wx * sp, wy * sp
-        self.yaw_x, self.yaw_y = self.vel_x, self.vel_y
+        self.yaw_x, self.yaw_y = wx, wy
     else
         --Maneuver in the air
         local cur_norm = (self.vel_x*self.vel_x + self.vel_y*self.vel_y)^0.5
@@ -129,7 +131,7 @@ function Humanoid:tick(world)
     end
 
     --Jump
-    if self.on_ground and self.vel_z < 0 and self.jump_ticks < 0 or self.jump_ticks >= self.jump_charge then
+    if self.on_ground and self.vel_z < 0 and (self.jump_ticks < 0 or self.jump_ticks >= self.jump_charge) then
         --Recharge jumps
         self.jumps_left = self.jump_count
     end
