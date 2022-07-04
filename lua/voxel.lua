@@ -14,6 +14,15 @@ voxel.mesher_cfg = {
     light_uv_offset = 0.5,
     -- offset to "zoom into" the quad textures, to avoid texture bleeding
     bleed_offset = 1/64,
+    -- whether to flush chunk atlas textures before sending them to the main thread.
+    -- fixes black textures on intel gpus.
+    -- possible values: 'Dont', 'Single', 'All'
+    -- `Single` reads a single pixel back.
+    atlas_readback = 'Single',
+    -- similar to `atlas_readback`, but with vertex buffers.
+    vertex_readback = 'Dont',
+    -- similar to `atlas_readback`, but with index buffers.
+    index_readback = 'Dont',
 }
 voxel.model_mesher_cfg = {
     cfg = voxel.mesher_cfg,

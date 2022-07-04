@@ -232,8 +232,8 @@ function World:load_terrain()
         mesher = voxel.mesher_cfg,
     }
     self.terrain:set_interpolation(false, true)
-    self.terrain:set_view_distance(32*12, 32*14)
-    --self.terrain:set_view_distance(32*6, 32*8)
+    --self.terrain:set_view_distance(32*12, 32*14)
+    self.terrain:set_view_distance(32*6, 32*8)
 
     --Set chunkframe
     self:update_showchunkgrid(self.showchunkgrid)

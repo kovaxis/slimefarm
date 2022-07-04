@@ -32,6 +32,20 @@ pub struct MesherCfg {
     /// Used to prevent bleeding.
     /// In block units.
     bleed_offset: f32,
+    /// Read atlas texture data right after creation.
+    /// A hack that makes Intel drivers work, otherwise the textures remain black.
+    atlas_readback: Readback,
+    /// Read chunk vertex data right after creation.
+    vertex_readback: Readback,
+    /// Read chunk index data right after creation.
+    index_readback: Readback,
+}
+
+#[derive(Copy, Clone, Deserialize)]
+enum Readback {
+    Dont,
+    Single,
+    All,
 }
 
 pub struct MesherHandle {
@@ -74,7 +88,7 @@ impl MesherHandle {
                     //send_atlas: send_atlas,
                     //recv_atlas: recv_recycleatlas,
                     mesher: Box::new(Mesher2::new(&cfg, TerrainMesherKind::new(info))),
-                    _cfg: cfg,
+                    cfg,
                 });
             })
         };
@@ -115,6 +129,25 @@ pub struct SharedState {
     pub avg_upload_time: AtomicCell<f32>,
 }
 
+fn readback_buf<T>(buf: &glium::buffer::Buffer<[T]>, readback: Readback)
+where
+    [T]: glium::buffer::Content,
+    T: Copy,
+{
+    match readback {
+        Readback::Dont => {}
+        Readback::Single => {
+            if let Some(buf) = buf.slice(0..1) {
+                buf.read()
+                    .expect("failed to read first buffer element back");
+            }
+        }
+        Readback::All => {
+            buf.read().expect("failed to read buffer back");
+        }
+    }
+}
+
 struct MesherState {
     shared: Arc<SharedState>,
     chunks: Option<Arc<RwLock<ChunkStorage>>>,
@@ -128,7 +161,7 @@ struct MesherState {
     //pending_atlas: Vec<Vec<AtlasChunk>>,
     mesher: Box<Mesher2<TerrainMesherKind>>,
     send_bufs: Sender<ChunkMeshPkg>,
-    _cfg: MesherCfg,
+    cfg: MesherCfg,
     //send_atlas: Sender<(usize, RawTexturePackage)>,
     //recv_atlas: Receiver<(usize, RawTexturePackage)>,
 }
@@ -151,6 +184,8 @@ impl MesherState {
             None
         } else {
             let buf = mesh.make_buffer(&self.gl_ctx);
+            readback_buf(&buf.vertex, self.cfg.vertex_readback);
+            readback_buf(&buf.index, self.cfg.index_readback);
             Some(RawBufPackage::pack(buf))
         };
 
@@ -159,6 +194,25 @@ impl MesherState {
             None
         } else {
             let tex = self.mesher.atlas.make_texture(&self.gl_ctx);
+            // Workaround: read atlas texture data to force flush it
+            let (rw, rh) = match self.cfg.atlas_readback {
+                Readback::Dont => (0, 0),
+                Readback::Single => (1, 1),
+                Readback::All => tex.dimensions(),
+            };
+            if rw != 0 && rh != 0 {
+                let _ = tex
+                    .main_level()
+                    .first_layer()
+                    .into_image(None)
+                    .unwrap()
+                    .raw_read::<RawImage2d<u8>, (u8, u8, u8, u8)>(&glium::Rect {
+                        left: 0,
+                        bottom: 0,
+                        width: rw,
+                        height: rh,
+                    });
+            }
             let tex = RawTexturePackage::pack(tex.into_any());
             Some(tex)
         };
@@ -412,6 +466,7 @@ impl AtlasChunk {
     }
 
     pub fn make_texture(&self, gl_ctx: &Display) -> SrgbTexture2d {
+        // Upload texture data
         let [w, h] = self.size;
         let raw_img = RawImage2d {
             data: Cow::Borrowed(&self.data[..(w * h) as usize]),
@@ -419,8 +474,13 @@ impl AtlasChunk {
             height: h as u32,
             format: glium::texture::ClientFormat::U8U8U8U8,
         };
-        SrgbTexture2d::with_mipmaps(gl_ctx, raw_img, glium::texture::MipmapsOption::NoMipmap)
-            .expect("failed to upload atlas texture for voxel data")
+        SrgbTexture2d::with_format(
+            gl_ctx,
+            raw_img,
+            glium::texture::SrgbFormat::U8U8U8U8,
+            glium::texture::MipmapsOption::NoMipmap,
+        )
+        .expect("failed to upload atlas texture for voxel data")
     }
 }
 

@@ -61,4 +61,11 @@ void main() {
 
     // Compute the position in screenspace
     gl_Position = mvp * posh;
+
+    // TODO: Apply clip planes
+    gl_ClipDistance[0] = 0;
+    gl_ClipDistance[1] = 0;
+    gl_ClipDistance[2] = 0;
+    gl_ClipDistance[3] = 0;
+    gl_ClipDistance[4] = 0;
 }
