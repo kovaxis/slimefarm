@@ -3,9 +3,13 @@ use std::f64::INFINITY;
 use crate::{
     chunkmesh::{MesherCfg, MesherHandle},
     gen::{GenArea, GenConfig},
-    lua::gfx::{BufferRef, ShaderRef},
+    lua::{
+        gfx::{LuaBuffer, LuaDrawParams, LuaShader, LuaUniforms, StaticUniform},
+        LogicState,
+    },
     mesh::RawBufPackage,
     prelude::*,
+    render::{RenderCommand, RenderHandle},
 };
 use common::terrain::GridKeeper4;
 
@@ -446,10 +450,10 @@ pub(crate) struct Terrain {
     pub style: StyleTable,
     pub mesher: MesherHandle,
     pub generator: GeneratorHandle,
-    pub state: Rc<State>,
+    pub state: Rc<LogicState>,
     pub chunks: Arc<RwLock<ChunkStorage>>,
     pub meshes: MeshKeeper,
-    pub dbg_chunkframe: Option<(ShaderRef, BufferRef)>,
+    pub dbg_chunkframe: Option<(LuaBuffer, LuaShader)>,
     pub view_radius: f32,
     pub gen_radius: f32,
     pub last_min_viewdist: f32,
@@ -464,7 +468,7 @@ pub(crate) struct Terrain {
     tmp_sortbuf: RefCell<Vec<(f32, Int4)>>,
 }
 impl Terrain {
-    pub fn new(state: &Rc<State>, cfg: TerrainCfg, gen_cfg: GenConfig) -> Result<Terrain> {
+    pub fn new(state: &Rc<LogicState>, cfg: TerrainCfg, gen_cfg: GenConfig) -> Result<Terrain> {
         let chunks = Arc::new(RwLock::new(ChunkStorage::new()));
         let generator = GeneratorHandle::new(gen_cfg, &state.global, chunks.clone())?;
         let info = generator.take_world_info()?;
@@ -472,7 +476,7 @@ impl Terrain {
             style: StyleTable::new(&info),
             state: state.clone(),
             meshes: MeshKeeper::new(),
-            mesher: MesherHandle::new(state, chunks.clone(), cfg.mesher, *info),
+            mesher: MesherHandle::new(&state.global, chunks.clone(), cfg.mesher, *info),
             dbg_chunkframe: None,
             draw_stats: default(),
             light_linear: true,
@@ -513,30 +517,27 @@ impl Terrain {
         //Receive buffers from mesher thread
         for buf_pkg in self.mesher.recv_bufs.try_iter() {
             let mesh = ChunkMesh {
-                mesh: buf_pkg.mesh,
-                buf: match buf_pkg.buf {
-                    None => {
-                        // A chunk with no geometry (ie. full air or full solid)
-                        None
-                    }
-                    Some(raw) => unsafe {
-                        // Deconstructed buffers
-                        // Construct them back
-                        Some(raw.unpack(&self.state.display))
-                    },
-                },
-                atlas: unsafe {
-                    buf_pkg
-                        .atlas
-                        .map(|raw| SrgbTexture2d::from_any(raw.unpack(&self.state.display)))
-                },
+                stats: buf_pkg.stats,
+                gpu: buf_pkg.buf_atlas.map(|(buf, atlas)| {
+                    self.state.render.new_obj(move |state| GpuChunk {
+                        buf: unsafe {
+                            // Deconstructed buffers
+                            // Construct them back
+                            buf.unpack(&state.display)
+                        },
+                        atlas: unsafe { SrgbTexture2d::from_any(atlas.unpack(&state.display)) },
+                    })
+                }),
                 portals: {
                     buf_pkg
                         .portals
                         .into_iter()
                         .map(|p| PortalMesh {
                             mesh: p.mesh.into(),
-                            buf: unsafe { Rc::new(p.buf.unpack(&self.state.display)) },
+                            buf: self
+                                .state
+                                .render
+                                .new_obj(move |state| unsafe { p.buf.unpack(&state.display) }),
                             bounds: p.bounds,
                             jump: p.jump,
                             dim: p.dim,
@@ -714,25 +715,25 @@ impl Terrain {
         })
     }
 
+    /// Called from the logic thread.
     pub fn draw(
         &self,
-        shader: &Program,
-        uniforms: &crate::lua::gfx::UniformStorage,
+        shader: &LuaShader,
+        uniforms: &LuaUniforms,
         origin: WorldPos,
-        params: &DrawParameters,
+        framedelta: Vec3,
+        params: &LuaDrawParams,
         mvp: Mat4,
         framequad: [Vec3; 4],
         stencil: u8,
         subdraw: &dyn Fn(
             &WorldPos,
             &[Vec3; 4],
-            &Rc<GpuBuffer<SimpleVertex>>,
+            &RenderObj<GpuBuffer<SimpleVertex>>,
             Vec3,
             u8,
         ) -> Result<()>,
     ) -> Result<()> {
-        let frame = &self.state.frame;
-
         // Calculate the frustum planes
         let (clip_planes, _) = Self::calc_clip_planes(&mvp, &framequad);
 
@@ -752,7 +753,6 @@ impl Terrain {
                 SamplerWrapFunction as Wrap,
             };
 
-            let mut frame = frame.borrow_mut();
             let mut drawn = 0;
             let mut bytes_v = 0;
             let mut bytes_i = 0;
@@ -765,64 +765,54 @@ impl Terrain {
                     Some(cnk) => cnk,
                     None => return Ok(()),
                 };
-                let buf = match chunk.buf.as_ref() {
-                    Some(buf) => buf,
-                    None => return Ok(()),
-                };
-                let atlas = match chunk.atlas.as_ref() {
-                    Some(atlas) => atlas,
+                let gpuchunk = match chunk.gpu.as_ref() {
+                    Some(gpu) => gpu,
                     None => return Ok(()),
                 };
                 let offset = ((pos - center_chunk) << CHUNK_BITS).to_f32() + off_d;
-                let uniextra = [
-                    // 'offset'
-                    UniformValue::Vec3(offset.into()),
-                    // 'color'
-                    UniformValue::SrgbTexture2d(
-                        atlas,
-                        Some(SamplerBehavior {
-                            wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
-                            minify_filter: if self.color_linear {
-                                Minify::Linear
-                            } else {
-                                Minify::Nearest
-                            },
-                            magnify_filter: if self.color_linear {
-                                Magnify::Linear
-                            } else {
-                                Magnify::Nearest
-                            },
-                            ..default()
-                        }),
-                    ),
-                    // 'light'
-                    UniformValue::SrgbTexture2d(
-                        atlas,
-                        Some(SamplerBehavior {
-                            wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
-                            minify_filter: if self.light_linear {
-                                Minify::Linear
-                            } else {
-                                Minify::Nearest
-                            },
-                            magnify_filter: if self.light_linear {
-                                Magnify::Linear
-                            } else {
-                                Magnify::Nearest
-                            },
-                            ..default()
-                        }),
-                    ),
-                ];
-                let uniref = crate::lua::gfx::UniformsOverride::new(uniforms, &uniextra);
-                frame.draw(&buf.vertex, &buf.index, &shader, &uniref, params)?;
-                if let Some((shader, BufferRef::Buf3d(buf))) = &self.dbg_chunkframe {
-                    frame.draw(&buf.vertex, &buf.index, &shader.program, &uniref, params)?;
+                self.state.render.push(RenderCommand::Chunk {
+                    shader: shader.clone(),
+                    params: params.clone(),
+                    uniforms: uniforms.clone(),
+                    offset,
+                    delta: -framedelta,
+                    chunk: gpuchunk.clone(),
+                    color_sampling: SamplerBehavior {
+                        wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+                        minify_filter: if self.color_linear {
+                            Minify::Linear
+                        } else {
+                            Minify::Nearest
+                        },
+                        magnify_filter: if self.color_linear {
+                            Magnify::Linear
+                        } else {
+                            Magnify::Nearest
+                        },
+                        ..default()
+                    },
+                    light_sampling: SamplerBehavior {
+                        wrap_function: (Wrap::Repeat, Wrap::Repeat, Wrap::Repeat),
+                        minify_filter: if self.light_linear {
+                            Minify::Linear
+                        } else {
+                            Minify::Nearest
+                        },
+                        magnify_filter: if self.light_linear {
+                            Magnify::Linear
+                        } else {
+                            Magnify::Nearest
+                        },
+                        ..default()
+                    },
+                });
+                if let Some((LuaBuffer::Buf3d(buf), shader)) = &self.dbg_chunkframe {
+                    unimplemented!();
                 }
                 drawn += 1;
-                bytes_v += chunk.mesh.vertices.len() * mem::size_of::<SimpleVertex>();
-                bytes_i += chunk.mesh.indices.len() * mem::size_of::<VertIdx>();
-                bytes_c += atlas.width() * atlas.height() * 4;
+                bytes_v += chunk.stats.0;
+                bytes_i += chunk.stats.1;
+                bytes_c += chunk.stats.2;
                 Ok(())
             })?;
             {
@@ -1340,15 +1330,19 @@ impl ops::DerefMut for MeshKeeper {
 }
 
 pub(crate) struct ChunkMesh {
-    pub mesh: Mesh<VoxelVertex>,
-    pub buf: Option<GpuBuffer<VoxelVertex>>,
-    pub atlas: Option<SrgbTexture2d>,
+    pub stats: (u32, u32, u32),
+    pub gpu: Option<RenderObj<GpuChunk>>,
     pub portals: Vec<PortalMesh>,
+}
+
+pub(crate) struct GpuChunk {
+    buf: GpuBuffer<VoxelVertex>,
+    atlas: SrgbTexture2d,
 }
 
 pub(crate) struct PortalMesh {
     pub mesh: Cell<Mesh<SimpleVertex>>,
-    pub buf: Rc<GpuBuffer<SimpleVertex>>,
+    pub buf: RenderObj<GpuBuffer<SimpleVertex>>,
     pub bounds: [Vec3; 4],
     pub jump: [f64; 3],
     pub dim: u32,

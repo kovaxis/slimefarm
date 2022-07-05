@@ -1,8 +1,12 @@
 use crate::{
     gen::GenConfig,
-    lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, StaticUniform, UniformStorage},
+    lua::gfx::{
+        LuaBuffer, LuaDrawParams, LuaShader, LuaUniforms, MatrixStack, StaticUniform,
+        UniformStorage,
+    },
     magicavox::VoxelModel,
     prelude::*,
+    render::RenderHandle,
     terrain::TerrainCfg,
 };
 use common::{lua::LuaValueStatic, lua_assert, lua_bail, lua_func, lua_lib, lua_type};
@@ -12,24 +16,24 @@ use rand_distr::StandardNormal;
 pub(crate) mod gfx;
 
 #[derive(Clone)]
-struct MatrixStack {
+struct LuaMatrix {
     stack: Rc<RefCell<(Vec<Mat4>, Mat4)>>,
 }
-impl From<Mat4> for MatrixStack {
-    fn from(mat: Mat4) -> MatrixStack {
-        MatrixStack {
+impl From<Mat4> for LuaMatrix {
+    fn from(mat: Mat4) -> LuaMatrix {
+        LuaMatrix {
             stack: Rc::new(RefCell::new((Vec::new(), mat))),
         }
     }
 }
-lua_type! {MatrixStack, lua, this,
+lua_type! {LuaMatrix, lua, this,
     fn reset() {
         let (stack, top) = &mut *this.stack.borrow_mut();
         stack.clear();
         *top = Mat4::identity();
     }
 
-    fn reset_from(other: MatrixStack) {
+    fn reset_from(other: LuaMatrix) {
         let (stack, top) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
         stack.clear();
@@ -41,12 +45,12 @@ lua_type! {MatrixStack, lua, this,
         *top = Mat4::identity();
     }
 
-    fn mul_right(other: MatrixStack) {
+    fn mul_right(other: LuaMatrix) {
         let (_, this) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
         *this = *this * *other;
     }
-    fn mul_left(other: MatrixStack) {
+    fn mul_left(other: LuaMatrix) {
         let (_, this) = &mut *this.stack.borrow_mut();
         let (_, other) = &*other.stack.borrow();
         *this = *other * *this;
@@ -208,8 +212,9 @@ lua_type! {LuaWorldPos, lua, this,
         this.pos.set(other.get());
     }
 
-    mut fn r#move((terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
-        let terrain = terrain.rc.borrow();
+    mut fn r#move((terrain, dx, dy, dz): (LuaAnyUserData, f64, f64, f64)) {
+        let terrain = terrain.borrow::<LuaTerrain>()?;
+        let terrain = &terrain.terr;
         let mut pos = this.get();
         let (mv, crash) = if dx == 0. && dy == 0. {
             terrain.raycast_aligned(&mut pos, 2, dz)
@@ -225,8 +230,9 @@ lua_type! {LuaWorldPos, lua, this,
         (mv, crash)
     }
 
-    mut fn move_box((terrain, dx, dy, dz, sx, sy, sz, slide): (TerrainRef, f64, f64, f64, f64, f64, f64, Option<bool>)) {
-        let terrain = terrain.rc.borrow();
+    mut fn move_box((terrain, dx, dy, dz, sx, sy, sz, slide): (LuaAnyUserData, f64, f64, f64, f64, f64, f64, Option<bool>)) {
+        let terrain = terrain.borrow::<LuaTerrain>()?;
+        let terrain = &terrain.terr;
         let mut pos = this.get();
         let (mv, crash) = terrain.boxcast(&mut pos, [dx, dy, dz], [sx, sy, sz], !slide.unwrap_or(false));
         this.pos.set(pos);
@@ -234,29 +240,28 @@ lua_type! {LuaWorldPos, lua, this,
     }
 }
 
-#[derive(Clone)]
-pub struct TerrainRef {
-    rc: Rc<RefCell<Terrain>>,
+pub struct LuaTerrain {
+    terr: Terrain,
 }
-impl TerrainRef {
+impl LuaTerrain {
     pub(crate) fn new(
-        state: &Rc<State>,
+        state: &Rc<LogicState>,
         cfg: TerrainCfg,
         gen_cfg: GenConfig,
-    ) -> Result<TerrainRef> {
-        Ok(TerrainRef {
-            rc: Rc::new(RefCell::new(Terrain::new(state, cfg, gen_cfg)?)),
+    ) -> Result<LuaTerrain> {
+        Ok(LuaTerrain {
+            terr: Terrain::new(state, cfg, gen_cfg)?,
         })
     }
 }
-lua_type! {TerrainRef, lua, this,
-    fn bookkeep(pos: LuaWorldPos) {
-        this.rc.borrow_mut().bookkeep(pos.pos.get().block_pos());
+lua_type! {LuaTerrain, lua, this,
+    mut fn bookkeep(pos: LuaWorldPos) {
+        this.terr.bookkeep(pos.pos.get().block_pos());
     }
 
     fn to_relative(pos: LuaWorldPos) {
         let pos = pos.pos.get();
-        let rel = this.rc.borrow().to_relative_pos(pos.block_pos());
+        let rel = this.terr.to_relative_pos(pos.block_pos());
         match rel {
             Some(rel) => {
                 let rel = rel.to_f64();
@@ -270,65 +275,53 @@ lua_type! {TerrainRef, lua, this,
         }
     }
 
-    fn set_view_distance((view, gen): (f32, f32)) {
-        this.rc.borrow_mut().set_view_radius(view, gen)
+    mut fn set_view_distance((view, gen): (f32, f32)) {
+        this.terr.set_view_radius(view, gen)
     }
 
     fn visible_radius() {
-        this.rc.borrow().last_min_viewdist
+        this.terr.last_min_viewdist
     }
 
     fn reset_draw_stats() {
-        this.rc.borrow().reset_draw_stats();
+        this.terr.reset_draw_stats();
     }
 
     fn get_stat(name: LuaString) {
         let name = name.as_bytes();
-        let this = this.rc.borrow();
-        let draw = this.draw_stats.borrow();
+        let terr = &this.terr;
+        let draw = terr.draw_stats.borrow();
         let val: LuaValue = match name {
             b"drawnchunks" => draw.drawnchunks.to_lua(lua),
             b"vertbytes" => draw.vertbytes.to_lua(lua),
             b"idxbytes" => draw.idxbytes.to_lua(lua),
             b"colorbytes" => draw.colorbytes.to_lua(lua),
-            b"gentime" => this.generator.avg_gen_time.load().to_lua(lua),
-            b"lighttime" => this.generator.avg_light_time.load().to_lua(lua),
-            b"meshtime" => this.mesher.avg_mesh_time.load().to_lua(lua),
-            b"uploadtime" => this.mesher.avg_upload_time.load().to_lua(lua),
+            b"gentime" => terr.generator.avg_gen_time.load().to_lua(lua),
+            b"lighttime" => terr.generator.avg_light_time.load().to_lua(lua),
+            b"meshtime" => terr.mesher.avg_mesh_time.load().to_lua(lua),
+            b"uploadtime" => terr.mesher.avg_upload_time.load().to_lua(lua),
             _ => lua_bail!("unknown terrain stat '{}'", String::from_utf8_lossy(name)),
         }?;
         val
     }
 
-    fn set_dbg_chunkframe((shader, buf): (Option<ShaderRef>, Option<BufferRef>)) {
+    mut fn set_dbg_chunkframe((shader, buf): (Option<LuaShader>, Option<LuaBuffer>)) {
         let chunkframe = match (shader, buf) {
             (None, None) => None,
-            (Some(shader), Some(BufferRef::Buf3d(buf))) => Some((shader, BufferRef::Buf3d(buf))),
+            (Some(shader), Some(LuaBuffer::Buf3d(buf))) => Some((LuaBuffer::Buf3d(buf), shader)),
             _ => lua_bail!("invalid parameters to dbg_chunkframe")
         };
-        this.rc.borrow_mut().dbg_chunkframe = chunkframe;
+        this.terr.dbg_chunkframe = chunkframe;
     }
 
-    fn set_interpolation((color, light): (bool, bool)) {
-        let mut t = this.rc.borrow_mut();
+    mut fn set_interpolation((color, light): (bool, bool)) {
+        let t = &mut this.terr;
         t.color_linear = color;
         t.light_linear = light;
     }
 
     fn atlas_at(pos: LuaWorldPos) {
-        let pos = pos.get();
-        let chunkpos = pos.block_pos().block_to_chunk();
-        let mut this = this.rc.borrow_mut();
-        let this = &mut *this;
-        if let Some(chunk) = this.meshes.get_mut(chunkpos) {
-            let atlas = mem::replace(&mut chunk.atlas, None);
-            if let Some(atlas) = atlas {
-                Some(crate::lua::gfx::LuaTexture {
-                    tex: Rc::new(atlas),
-                    sampling: default(),
-                })
-            }else{None}
-        }else{None}
+        lua_bail!("unimplemented");
     }
 
     fn draw((
@@ -339,14 +332,14 @@ lua_type! {TerrainRef, lua, this,
         camstack_raw,
         subdraw_callback
     ): (
-        ShaderRef,
-        LuaAnyUserData,
+        LuaShader,
+        LuaUniforms,
         LuaDrawParams,
         MatrixStack,
         LuaAnyUserData,
         LuaFunction
     )) {
-        let this = this.rc.borrow();
+        let this = &this.terr;
         let mvp = mvp.stack.borrow().1;
         let uniforms = uniforms.borrow::<UniformStorage>()?;
         let camstack = camstack_raw.borrow::<CameraStack>()?;
@@ -357,7 +350,7 @@ lua_type! {TerrainRef, lua, this,
             buf_off: Vec3,
             depth: u8
         | -> Result<()> {
-            camstack.push(&mvp, *origin, *framequad, BufferRef::Buf3d(buf.clone()), buf_off);
+            camstack.push(&mvp, *origin, *framequad, LuaBuffer::Buf3d(buf.clone()), buf_off);
             ensure!(camstack.depth() == depth, "invalid CameraStack depth");
             subdraw_callback.call(camstack_raw.clone())?;
             camstack.pop();
@@ -416,12 +409,29 @@ struct CameraFrame {
     proper: [bool; 4],
     /// The geometry that makes up the portal frame.
     /// Used to draw the portal into the stencil buffer and the skybox.
-    geometry: BufferRef,
+    geometry: LuaBuffer,
     /// The offset that the geometry buffer expects to be in the correct place.
     geometry_off: Vec3,
 }
 
-/// A camera stack, representing portal cameras.
+/// A camera stack, representing the different cameras used while rendering each frame.
+///
+/// A frame is the term unifying the main camera and the sub-portals. In other words, a frame is a
+/// point of view used to render the scene.
+///
+/// The camera stack stays *entirely* within the logic thread. The render thread is fed chunk render
+/// operations directly.
+///
+/// Because frame cameras are logic-side, the exact camera matrix is not known. It depends on the
+/// exact timing of each frame, and a single tick might use different cameras each frame (remember
+/// that frames interpolate between ticks, meaning that each tick may correspond to multiple
+/// slightly different frames).
+///
+/// However, we would like camera occlusion to happen on the logic side, to transfer less data
+/// and do less work overall. Therefore, for the purpose of occlusion we must compute a "blanket
+/// camera" that covers all areas that will be visible between the start of the tick and the end
+/// of the tick, so that any object that may be visible at some point in the tick is actually
+/// visible.
 struct CameraStack {
     /// A stack of cameras.
     stack: RefCell<Vec<CameraFrame>>,
@@ -437,7 +447,7 @@ impl CameraStack {
                 framequad: default(),
                 clip_planes: default(),
                 proper: default(),
-                geometry: BufferRef::NoBuf,
+                geometry: LuaBuffer::NoBuf,
                 geometry_off: Vec3::zero(),
             }]
             .into(),
@@ -460,7 +470,7 @@ impl CameraStack {
         self.stack.borrow().last().unwrap().proper
     }
 
-    fn geometry(&self) -> BufferRef {
+    fn geometry(&self) -> LuaBuffer {
         self.stack.borrow().last().unwrap().geometry.clone()
     }
 
@@ -472,7 +482,7 @@ impl CameraStack {
         (self.stack.borrow().len() - 1) as u8
     }
 
-    fn push(&self, mvp: &Mat4, origin: WorldPos, fq: [Vec3; 4], buf: BufferRef, buf_off: Vec3) {
+    fn push(&self, mvp: &Mat4, origin: WorldPos, fq: [Vec3; 4], buf: LuaBuffer, buf_off: Vec3) {
         let (clip_planes, proper) = Terrain::calc_clip_planes(mvp, &fq);
         self.stack.borrow_mut().push(CameraFrame {
             origin,
@@ -489,7 +499,7 @@ impl CameraStack {
     }
 }
 lua_type! {CameraStack, lua, this,
-    fn reset((origin, mvp, buf, offx, offy, offz): (LuaWorldPos, MatrixStack, Option<BufferRef>, f32, f32, f32)) {
+    fn reset((origin, mvp, buf, offx, offy, offz): (LuaWorldPos, LuaMatrix, Option<LuaBuffer>, f32, f32, f32)) {
         this.stack.borrow_mut().clear();
         let mvp = mvp.stack.borrow().1;
         let inv_mvp = mvp.inversed();
@@ -502,7 +512,7 @@ lua_type! {CameraStack, lua, this,
                 inv_mvp.transform_point3(Vec3::new(1., 1., -1.)),
                 inv_mvp.transform_point3(Vec3::new(-1., 1., -1.)),
             ],
-            buf.unwrap_or(BufferRef::NoBuf),
+            buf.unwrap_or(LuaBuffer::NoBuf),
             [offx, offy, offz].into(),
         );
     }
@@ -530,7 +540,7 @@ lua_type! {CameraStack, lua, this,
     }
 
     fn geometry(out: LuaAnyUserData) {
-        let mut out = out.borrow_mut::<BufferRef>()?;
+        let mut out = out.borrow_mut::<LuaBuffer>()?;
         *out = this.geometry();
     }
 
@@ -1091,13 +1101,13 @@ pub(crate) fn open_fs_lib(_state: &Arc<GlobalState>, lua: LuaContext) {
         .unwrap();
 }
 
-pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
+pub(crate) fn open_system_lib(state: &Rc<LogicState>, lua: LuaContext) {
     lua.globals()
         .set(
             "system",
             lua_lib! {lua, state,
                 fn matrix(()) {
-                    MatrixStack::from(Mat4::identity())
+                    LuaMatrix::from(Mat4::identity())
                 }
 
                 fn terrain(cfg: LuaTable) {
@@ -1113,7 +1123,8 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                         lua_main,
                         args,
                     };
-                    TerrainRef::new(state, cfg, gencfg).to_lua_err()?
+                    //TerrainRef::new(state, cfg, gencfg).to_lua_err()?
+                    todo!()
                 }
 
                 fn world_pos((raw_x, raw_y, raw_z, raw_dim): (Option<f64>, Option<f64>, Option<f64>, Option<u32>)) {
@@ -1139,6 +1150,27 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
                     let models: Vec<LuaVoxelModel> = models.into_iter().map(|m| LuaVoxelModel(m)).collect();
                     models
                 }
+
+                // Gets the next event from the window input event queue.
+                // If there are no events in the queue, returns nothing.
+                fn event() {
+                    if let Ok(ev) = state.evs.try_recv() {
+                        LuaMultiValue::from_vec(match ev {
+                            GameEvent::Key(scan, down) => vec!["key".to_lua(lua)?, scan.to_lua(lua)?, down.to_lua(lua)?],
+                            GameEvent::Click(btn, down) => vec!["click".to_lua(lua)?, btn.to_lua(lua)?, down.to_lua(lua)?],
+                            GameEvent::Close => vec!["close".to_lua(lua)?],
+                            GameEvent::Focus(focus) => vec!["focus".to_lua(lua)?, focus.to_lua(lua)?],
+                            GameEvent::MouseMove(dx, dy) => vec!["mouse".to_lua(lua)?, dx.to_lua(lua)?, dy.to_lua(lua)?],
+                        })
+                    }else{
+                        LuaMultiValue::new()
+                    }
+                }
+
+                // Quit the game loop.
+                fn quit() {
+                    state.global.running.store(false);
+                }
             },
         )
         .unwrap();
@@ -1147,4 +1179,47 @@ pub(crate) fn open_system_lib(state: &Rc<State>, lua: LuaContext) {
 pub(crate) fn open_generic_libs(state: &Arc<GlobalState>, lua: LuaContext) {
     modify_std_lib(state, lua);
     open_fs_lib(state, lua);
+}
+
+/// TODO: Rename to `InputEvent`.
+pub(crate) enum GameEvent {
+    Key(u32, bool),
+    Click(u16, bool),
+    Close,
+    Focus(bool),
+    MouseMove(f64, f64),
+}
+
+pub(crate) struct LogicState {
+    pub global: Arc<GlobalState>,
+    pub render: Arc<RenderHandle>,
+    pub evs: Receiver<GameEvent>,
+}
+
+pub(crate) fn game_logic(global: Arc<GlobalState>, render: RenderHandle, evs: Receiver<GameEvent>) {
+    let state = Rc::new(LogicState {
+        global,
+        render: Arc::new(render),
+        evs,
+    });
+
+    //Load main.lua
+    std::env::set_current_dir("lua").unwrap();
+    let lua_main = fs::read("main.lua").expect("could not find main.lua");
+
+    //Initialize lua environment and run main.lua
+    let lua = Lua::new();
+    lua.context(|lua| {
+        crate::lua::open_generic_libs(&state.global, lua);
+        crate::lua::open_system_lib(&state, lua);
+        crate::lua::gfx::open_gfx_lib(&state, lua);
+        let main_chunk = lua
+            .load(&lua_main)
+            .set_name("main.lua")
+            .unwrap()
+            .into_function()
+            .expect_lua("parsing main.lua");
+        // Lua game entry point
+        main_chunk.call::<_, ()>(()).expect_lua("uncaught error");
+    });
 }

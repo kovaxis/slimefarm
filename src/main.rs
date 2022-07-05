@@ -11,14 +11,17 @@
 use std::path::Path;
 
 use glium::uniforms::SamplerWrapFunction;
+use lua::LogicState;
+use render::RenderHandle;
 
-use crate::prelude::*;
+use crate::{lua::GameEvent, prelude::*, render::RenderState};
 
 #[macro_use]
 pub mod prelude {
     pub(crate) use crate::{
         gen::GeneratorHandle,
         mesh::Mesh,
+        render::RenderObj,
         terrain::{ChunkStorage, Terrain},
         GlobalState, GpuBuffer, SimpleVertex, State, TexturedVertex, VoxelVertex,
     };
@@ -181,11 +184,14 @@ mod gen;
 mod lua;
 mod magicavox;
 mod mesh;
+mod render;
 mod terrain;
 
 /// State shared by all threads.
 struct GlobalState {
     base_time: Instant,
+    running: AtomicCell<bool>,
+    sec_gl_ctx: Mutex<Option<glium::glutin::WindowedContext<glium::glutin::NotCurrent>>>,
 }
 
 /// Main thread state.
@@ -193,13 +199,6 @@ struct State {
     global: Arc<GlobalState>,
     display: Display,
     text_sys: TextSystem,
-    frame: RefCell<Frame>,
-    sec_gl_ctx: Cell<Option<glium::glutin::WindowedContext<glium::glutin::NotCurrent>>>,
-}
-impl Drop for State {
-    fn drop(&mut self) {
-        self.frame.borrow_mut().set_finish().unwrap();
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -306,61 +305,36 @@ fn main() {
     //Pack it all up
     let shared = Arc::new(GlobalState {
         base_time: Instant::now(),
+        running: true.into(),
+        sec_gl_ctx: Mutex::new(None),
     });
     let state = Rc::new(State {
         global: shared,
-        frame: RefCell::new(display.draw()),
         text_sys: TextSystem::new(&display),
         display,
-        sec_gl_ctx: Cell::new(None),
     });
 
-    //Load main.lua
-    std::env::set_current_dir("lua").unwrap();
-    let lua_main = fs::read("main.lua").expect("could not find main.lua");
+    //Communication with logic thread
+    let mut render = RenderState::new(state.clone());
+    let (ev_send, ev_recv) = channel::unbounded();
 
-    //Initialize lua environment
-    let lua = Lua::new();
-    let mut main_reg_key = None;
-    lua.context(|lua| {
-        crate::lua::open_generic_libs(&state.global, lua);
-        crate::lua::open_system_lib(&state, lua);
-        crate::lua::gfx::open_gfx_lib(&state, lua);
-        let main_chunk = lua
-            .load(&lua_main)
-            .set_name("main.lua")
-            .unwrap()
-            .into_function()
-            .expect_lua("parsing main.lua");
-        let main_co = lua.create_thread(main_chunk).unwrap();
-        main_reg_key = Some(lua.create_registry_value(main_co).unwrap());
-    });
-    let main_reg_key = main_reg_key.unwrap();
+    //Start game logic in a separate thread
+    {
+        let global = state.global.clone();
+        let render = render.handle();
+        thread::spawn(move || lua::game_logic(global, render, ev_recv));
+    }
 
     //Run game
-    macro_rules! run_event {
-        ($flow:ident, $($arg:tt)*) => {{
-            let mut exit = false;
-            lua.context(|lua| {
-                let co: LuaThread = lua.registry_value(&main_reg_key).unwrap();
-                exit = co.resume($($arg)*).unwrap_lua();
-            });
-            if exit {
-                *$flow = ControlFlow::Exit;
-            }
-        }};
-    }
     state.display.gl_window().window().set_cursor_visible(false);
     let _ = state.display.gl_window().window().set_cursor_grab(true);
     evloop.run(move |ev, evloop, flow| {
         *flow = ControlFlow::Poll;
         {
-            let sec_ctx = state.sec_gl_ctx.take();
-            if sec_ctx.is_some() {
-                state.sec_gl_ctx.set(sec_ctx);
-            } else {
+            let sec_ctx = state.global.sec_gl_ctx.lock();
+            sec_ctx.get_or_insert_with(|| {
                 //Create secondary context for parallel uploading
-                let sec_ctx = ContextBuilder::new()
+                ContextBuilder::new()
                     .with_shared_lists(&state.display.gl_window())
                     .build_windowed(
                         WindowBuilder::new()
@@ -368,9 +342,8 @@ fn main() {
                             .with_visible(false),
                         &evloop,
                     )
-                    .expect("failed to initialize secondary OpenGL context");
-                state.sec_gl_ctx.set(Some(sec_ctx));
-            }
+                    .expect("failed to initialize secondary OpenGL context")
+            });
         }
         match ev {
             Event::WindowEvent { event, .. } => match event {
@@ -380,7 +353,9 @@ fn main() {
                             scancode, state, ..
                         },
                     ..
-                } => run_event!(flow, ("key", scancode, elem_state_to_bool(state))),
+                } => {
+                    let _ = ev_send.try_send(GameEvent::Key(scancode, elem_state_to_bool(state)));
+                }
                 WindowEvent::MouseInput { button, state, .. } => {
                     use glium::glutin::event::MouseButton::*;
                     let button = match button {
@@ -389,25 +364,34 @@ fn main() {
                         Middle => 2,
                         Other(int) => int,
                     };
-                    run_event!(flow, ("click", button, elem_state_to_bool(state)));
+                    let _ = ev_send.try_send(GameEvent::Click(button, elem_state_to_bool(state)));
                 }
-                WindowEvent::CloseRequested => run_event!(flow, "quit"),
+                WindowEvent::CloseRequested => {
+                    let _ = ev_send.try_send(GameEvent::Close);
+                }
                 WindowEvent::Focused(focus) => {
                     if focus {
                         state.display.gl_window().window().set_cursor_visible(false);
                         let _ = state.display.gl_window().window().set_cursor_grab(true);
                     }
-                    run_event!(flow, ("focus", focus));
+                    let _ = ev_send.try_send(GameEvent::Focus(focus));
                 }
                 _ => {}
             },
             Event::DeviceEvent { event, .. } => match event {
                 DeviceEvent::MouseMotion { delta: (dx, dy) } => {
-                    run_event!(flow, ("mousemove", dx, dy))
+                    let _ = ev_send.try_send(GameEvent::MouseMove(dx, dy));
                 }
                 _ => {}
             },
-            Event::MainEventsCleared => run_event!(flow, "update"),
+            Event::MainEventsCleared => {
+                // Draw a single frame
+                render.draw();
+                // Quit if exit was requested
+                if !state.global.running.load() {
+                    *flow = ControlFlow::Exit;
+                }
+            }
             _ => {}
         }
     });

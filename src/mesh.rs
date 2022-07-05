@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{prelude::*, render::RenderHandle};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mesh<V, I = VertIdx> {
@@ -62,9 +62,34 @@ impl<V, I> Mesh<V, I> {
         self.indices.push(i2);
     }
 }
-impl<V: glium::Vertex, I: glium::index::Index> Mesh<V, I> {
+impl<V: glium::Vertex + Send, I: glium::index::Index + Send> Mesh<V, I> {
+    /// Upload mesh to GPU in main thread.
+    pub fn make_buffer<F: glium::backend::Facade + ?Sized>(
+        self,
+        render: &Arc<RenderHandle>,
+    ) -> RenderObj<GpuBuffer<V, I>> {
+        if self.vertices.len() > VertIdx::MAX as usize {
+            eprintln!(
+                "over {} vertices in mesh! graphic glitches may occur",
+                VertIdx::MAX
+            );
+        }
+        render.new_obj(move |state| GpuBuffer {
+            vertex: VertexBuffer::immutable(&state.display, &self.vertices).unwrap(),
+            index: IndexBuffer::immutable(
+                &state.display,
+                PrimitiveType::TrianglesList,
+                &self.indices,
+            )
+            .unwrap(),
+        })
+    }
+
     /// Upload mesh to GPU.
-    pub fn make_buffer<F: glium::backend::Facade + ?Sized>(&self, display: &F) -> GpuBuffer<V, I> {
+    pub fn make_buffer_now<F: glium::backend::Facade + ?Sized>(
+        self,
+        display: &F,
+    ) -> GpuBuffer<V, I> {
         if self.vertices.len() > VertIdx::MAX as usize {
             eprintln!(
                 "over {} vertices in mesh! graphic glitches may occur",

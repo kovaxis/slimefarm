@@ -2,6 +2,14 @@
 TODO:
 
 - Fix model mesh renderer, it does not handle large models?
+- Allow Lua to use custom vertex formats.
+
+Optimize:
+
+- Use generational indices for `RenderObj`, avoiding an atomic read/write and an allocation for
+    every object/chunk on screen.
+
+TODO 2:
 
 - Skylight occlusion.
 - Object-centered lighting.

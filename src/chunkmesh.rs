@@ -3,10 +3,9 @@ use rectpack::DensePacker;
 
 pub(crate) struct ChunkMeshPkg {
     pub pos: ChunkPos,
-    pub mesh: Mesh<VoxelVertex>,
-    pub buf: Option<RawBufPackage<VoxelVertex>>,
-    //pub atlas: usize,
-    pub atlas: Option<RawTexturePackage>,
+    /// Bytes of vertex, index and color.
+    pub stats: (u32, u32, u32),
+    pub buf_atlas: Option<(RawBufPackage<VoxelVertex>, RawTexturePackage)>,
     pub portals: Vec<RawPortalMesh>,
 }
 
@@ -57,7 +56,7 @@ pub struct MesherHandle {
 }
 impl MesherHandle {
     pub(crate) fn new(
-        state: &Rc<State>,
+        state: &Arc<GlobalState>,
         chunks: Arc<RwLock<ChunkStorage>>,
         cfg: MesherCfg,
         info: WorldInfo,
@@ -70,6 +69,7 @@ impl MesherHandle {
         });
         let gl_ctx = state
             .sec_gl_ctx
+            .lock()
             .take()
             .expect("no secondary opengl context available for mesher");
         let (send_bufs, recv_bufs) = channel::bounded(512);
@@ -178,22 +178,23 @@ impl MesherState {
         time!(store mesh self.shared.avg_mesh_time);
 
         time!(start upload);
-        // Upload mesh to GPU
-        let mesh = mem::take(&mut self.mesher.mesh);
-        let buf_pkg = if mesh.indices.is_empty() {
+        // Upload mesh and texture to GPU
+        let mesh = &self.mesher.mesh;
+        let mut stats = (0, 0, 0);
+        let buf_tex_pkg = if mesh.indices.is_empty() {
             None
         } else {
-            let buf = mesh.make_buffer(&self.gl_ctx);
+            // Upload mesh
+            stats.0 = (mesh.vertices.len() * mem::size_of::<VoxelVertex>()) as u32;
+            stats.1 = (mesh.indices.len() * mem::size_of::<VertIdx>()) as u32;
+            let buf = mesh.make_buffer_now(&self.gl_ctx);
             readback_buf(&buf.vertex, self.cfg.vertex_readback);
             readback_buf(&buf.index, self.cfg.index_readback);
-            Some(RawBufPackage::pack(buf))
-        };
+            let buf = RawBufPackage::pack(buf);
 
-        // Upload texture to GPU
-        let tex_pkg = if mesh.indices.is_empty() {
-            None
-        } else {
+            // Upload texture
             let tex = self.mesher.atlas.make_texture(&self.gl_ctx);
+            stats.2 = tex.width() * tex.height() * 4;
             // Workaround: read atlas texture data to force flush it
             let (rw, rh) = match self.cfg.atlas_readback {
                 Readback::Dont => (0, 0),
@@ -214,16 +215,17 @@ impl MesherState {
                     });
             }
             let tex = RawTexturePackage::pack(tex.into_any());
-            Some(tex)
+
+            // Join both
+            Some((buf, tex))
         };
         time!(store upload self.shared.avg_upload_time);
 
         // Package it all up
         Some(ChunkMeshPkg {
             pos,
-            mesh,
-            buf: buf_pkg,
-            atlas: tex_pkg,
+            stats,
+            buf_atlas: buf_tex_pkg,
             // TODO: Re-implement portals
             portals: Vec::new(),
         })
