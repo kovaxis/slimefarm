@@ -36,7 +36,7 @@ Humanoid.atk_hitbox_x = 3
 Humanoid.atk_hitbox_y = 3
 Humanoid.atk_hitbox_z = 2
 Humanoid.atk_damage = 20
-Humanoid.atk_knockback = 1
+Humanoid.atk_knockback = 0.2
 Humanoid.atk_knockback_lift = 0.5
 
 function Humanoid:new()
@@ -82,13 +82,6 @@ function Humanoid:tick(world)
         end
         self.vel_x, self.vel_y = self.roll_dx * speed, self.roll_dy * speed
         self.yaw_x, self.yaw_y = self.roll_dx, self.roll_dy
-    elseif self.atk_ticks >= 0 then
-        --Lounge with attack
-        self.vel_x, self.vel_y = self.atk_dx, self.atk_dy
-        local d = self.atk_lounge_decay
-        self.atk_dx = self.atk_dx * d
-        self.atk_dy = self.atk_dy * d
-        self.yaw_x, self.yaw_y = self.atk_dx, self.atk_dy
     elseif self.on_ground then
         --Run around
         local sp = self.walk_speed
@@ -108,6 +101,10 @@ function Humanoid:tick(world)
             self.vel_y = self.vel_y * mul_by
         end
         self.yaw_x, self.yaw_y = wx, wy
+    end
+    if self.atk_ticks >= 0 then
+        --Point to direction of attack
+        self.yaw_x, self.yaw_y = self.atk_dx, self.atk_dy
     end
 
     --Roll

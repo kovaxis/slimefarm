@@ -13,8 +13,8 @@ Entity.draw_r = 0
 Entity.gravity = 0.025
 Entity.friction = 0.97
 
-Entity.yaw_anim_factor = 0.004
-Entity.yaw_anim_linear = 0.9
+Entity.yaw_anim_factor = 0.0004
+Entity.yaw_anim_linear = 10
 
 Entity.visual_scale = 1/8
 

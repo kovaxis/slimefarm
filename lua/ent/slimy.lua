@@ -19,14 +19,14 @@ Slimy.jump_keepdown = 0.005
 Slimy.jump_keepup_ticks = 14
 Slimy.jump_cooldown_start = 10
 Slimy.jump_cooldown_land = 60
-Slimy.jump_cooldown_fudge = 25
+Slimy.jump_cooldown_fudge = 0.4
 
 Slimy.atk_damage = 20
-Slimy.atk_knockback = 0.6
+Slimy.atk_knockback = 0.2
 Slimy.atk_lift = 0.5
 Slimy.atk_damage_fall = 40
-Slimy.atk_knockback_fall = 1
-Slimy.atk_lift_fall = 1
+Slimy.atk_knockback_fall = 0.4
+Slimy.atk_lift_fall = 0.5
 Slimy.atk_cooldown_duration = 30
 
 function Slimy:new()
@@ -103,7 +103,7 @@ function Slimy:tick(world)
                 self.jump_ticks = -1
                 self.jump_cooldown = self.jump_cooldown_land
                 if self.jump_cooldown_fudge > 0 then
-                    self.jump_cooldown = self.jump_cooldown + world.rng:uniform(-self.jump_cooldown_fudge, self.jump_cooldown_fudge)
+                    self.jump_cooldown = self.jump_cooldown * world.rng:uniform(1-self.jump_cooldown_fudge, 1+self.jump_cooldown_fudge)
                 end
             else
                 if self.jump_ticks < self.jump_charge + self.jump_keepup_ticks then
@@ -146,7 +146,9 @@ function Slimy:on_player_collision(world, play, dx, dy, dz)
         dmg, knock, lift = self.atk_damage_fall, self.atk_knockback_fall, self.atk_lift_fall
     end
     local kx, ky, kz = -dx, -dy, lift
-    local n = knock * (kx*kx + ky*ky + kz*kz)^-.5
+    local n = (kx*kx + ky*ky)^-.5
+    kx, ky = n*kx, n*ky
+    n = knock * (kx*kx + ky*ky + kz*kz)^-.5
     kx, ky, kz = kx * n, ky * n, kz * n
     play:damage(dmg, kx, ky, kz)
 end

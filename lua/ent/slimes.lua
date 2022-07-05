@@ -37,6 +37,11 @@ slimes.Green = Green
 Green:set_bbox(16/8, 11/8)
 Green.view_dist = 15
 Green.max_hp = 600
+Green.jump_charge = 5
+Green.jump_hvel = 0.17
+Green.jump_vvel = 0.5
+Green.jump_keepup = 0.014
+Slimy.jump_cooldown_land = 60
 Green.model = voxel.models.green_slime
 
 function Green:tick(world)
@@ -53,6 +58,10 @@ slimes.Red = Red
 Red:set_bbox(14/8, 12/8)
 Red.view_dist = 25
 Red.max_hp = 650
+Red.jump_hvel = 0.09
+Red.jump_vvel = 0.38
+Red.jump_keepup = 0.015
+Red.jump_cooldown_land = 10
 Red.model = voxel.models.red_slime
 
 function Red:tick(world)
