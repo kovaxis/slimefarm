@@ -140,3 +140,20 @@ impl<'lua> ToLua<'lua> for LuaValueStatic {
         })
     }
 }
+
+pub struct LuaBytes {
+    pub bytes: Vec<u8>,
+}
+impl<'lua> FromLua<'lua> for LuaBytes {
+    fn from_lua(v: LuaValue<'lua>, lua: LuaContext<'lua>) -> LuaResult<Self> {
+        let s = LuaString::from_lua(v, lua)?;
+        Ok(Self{ bytes: s.as_bytes().to_vec() })
+    }
+}
+impl<'lua> ToLua<'lua> for LuaBytes {
+    fn to_lua(self, lua: LuaContext<'lua>) -> LuaResult<LuaValue<'lua>> {
+        Ok(LuaValue::String(
+            lua.create_string(&self.bytes[..])?
+        ))
+    }
+}

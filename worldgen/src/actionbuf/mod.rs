@@ -143,6 +143,7 @@ macro_rules! actionbuf_lua {
 
 actionbuf_lua! {
     portal,
+    entity,
     cube,
     sphere,
     ellipsoid,

@@ -3,6 +3,7 @@ local voxel = require 'voxel'
 local class = require 'class'
 local util = require 'util'
 local Slimy = require 'ent.slimy'
+local entreg = require 'ent.reg'
 
 local slimes = {}
 local super = Slimy
@@ -44,6 +45,12 @@ Green.jump_keepup = 0.014
 Slimy.jump_cooldown_land = 60
 Green.model = voxel.models.green_slime
 
+entreg.register {
+    name = 'GreenSlime',
+    class = Green,
+    fmt = '{hp=f4}',
+}
+
 function Green:tick(world)
     local d = ai(self, world, self.view_dist)
     if d < 1 / 0 then
@@ -63,6 +70,12 @@ Red.jump_vvel = 0.38
 Red.jump_keepup = 0.015
 Red.jump_cooldown_land = 10
 Red.model = voxel.models.red_slime
+
+entreg.register {
+    name = 'RedSlime',
+    class = Red,
+    fmt = '{hp=f4}',
+}
 
 function Red:tick(world)
     ai(self, world, self.view_dist)

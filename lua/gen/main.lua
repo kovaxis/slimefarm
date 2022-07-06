@@ -1,4 +1,13 @@
 
+setmetatable(_G, {
+    __index = function(g, name)
+        error("attempt to access undefined global '"..tostring(name).."'", 2)
+    end,
+    __newindex = function(g, name, value)
+        error("attempt to set undefined global '"..tostring(name).."'", 2)
+    end,
+})
+
 local native = require 'gen.native'
 local blocks = require 'gen.blocks'
 local lightmodes = require 'gen.lightmodes'

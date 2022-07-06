@@ -4,6 +4,7 @@ use crate::prelude::*;
 use common::lua::LuaValueStatic;
 
 pub struct GeneratorHandle {
+    pub entity_evs: Receiver<EntityEv>,
     shared: Arc<GenSharedState>,
     info_recv: Receiver<Box<WorldInfo>>,
     thread: Option<JoinHandle<Result<()>>>,
@@ -28,6 +29,7 @@ impl GeneratorHandle {
             avg_light_time: 0f32.into(),
         });
         let (tex_send, tex_recv) = channel::bounded(0);
+        let (ent_send, ent_recv) = channel::unbounded();
         //let (colorizer_send, colorizer_recv) = channel::bounded(0);
         let join_handle = {
             let shared = shared.clone();
@@ -40,6 +42,7 @@ impl GeneratorHandle {
                         chunks,
                         shared,
                         global,
+                        entity: EntityState::new(ent_send),
                     };
                     let res = gen_thread(state, tex_send, cfg);
                     if let Err(err) = &res {
@@ -59,6 +62,7 @@ impl GeneratorHandle {
         Ok(Self {
             shared,
             info_recv: tex_recv,
+            entity_evs: ent_recv,
             thread: Some(join_handle),
         })
         /*
@@ -144,15 +148,107 @@ struct GenState {
     shared: Arc<GenSharedState>,
     global: Arc<GlobalState>,
     chunks: Arc<RwLock<ChunkStorage>>,
+    entity: EntityState,
+}
+
+struct EntityState {
+    next_id: u64,
+    id_stride: u64,
+    id_map: HashMap<ChunkPos, u64>,
+    send: Sender<EntityEv>,
+}
+impl EntityState {
+    fn new(send: Sender<EntityEv>) -> Self {
+        Self {
+            // Go through the even ids to leave the odd ids to the main thread.
+            next_id: rand::random::<u64>() & (!1),
+            id_stride: rand::random::<u64>() & (!1),
+            id_map: default(),
+            send,
+        }
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(self.id_stride);
+        id
+    }
+}
+
+pub enum EntityEv {
+    Spawn {
+        id: u64,
+        pos: WorldPos,
+        data: Vec<u8>,
+    },
+    Despawn {
+        id: u64,
+    },
 }
 
 /// Transfer chunks from the local buffer to the game chunkstore.
 /// This is perhaps the only place in the entire codebase that `ChunkStorage` is modified.
-fn empty_chunk_buf(chunks: &mut ChunkStorage, unsent: &mut HashMap<ChunkPos, ChunkBox>) {
+fn empty_chunk_buf(
+    chunks: &mut ChunkStorage,
+    unsent: &mut HashMap<ChunkPos, ChunkBox>,
+    entity: &mut EntityState,
+) {
     for (pos, chunk) in unsent.drain() {
+        // Trigger entity spawn events
+        if let Some(data) = chunk.data() {
+            if data.entity_len != 0 {
+                entity.id_map.insert(pos, entity.next_id);
+                let mut i = 0;
+                while let Some((subpos, raw)) = data.next_entity(&mut i) {
+                    // Make position absolute
+                    let mut epos = pos.chunk_to_block().world_pos();
+                    epos.coords[0] += subpos.x as f64;
+                    epos.coords[1] += subpos.y as f64;
+                    epos.coords[2] += subpos.z as f64;
+                    // Generate a "unique" id for this entity
+                    let id = entity.next_id();
+                    // Send an open event to the main thread
+                    let e = entity.send.try_send(EntityEv::Spawn {
+                        id,
+                        pos: epos,
+                        data: raw.to_vec(),
+                    });
+                    if let Err(e) = e {
+                        eprintln!("failed to send entity spawn event: {}", e);
+                    }
+                }
+            }
+        }
+        // Insert the chunk directly into the chunk storage
         chunks.insert(pos, ChunkArc::new(chunk));
     }
-    chunks.maybe_gc();
+
+    // Remove untouched chunks in the main chunk storage
+    if chunks.should_gc() {
+        let old = chunks.count();
+        chunks.gc_with(|pos, chunk| {
+            if let Some(data) = chunk.data() {
+                if data.entity_len != 0 {
+                    if let Some(mut base_id) = entity.id_map.remove(pos) {
+                        let mut i = 0;
+                        while let Some(_) = data.next_entity(&mut i) {
+                            // Send entity despawn event
+                            let e = entity.send.try_send(EntityEv::Despawn { id: base_id });
+                            if let Err(e) = e {
+                                eprintln!("failed to send entity despawn event: {}", e);
+                            }
+                            // Advance to next id
+                            base_id = base_id.wrapping_add(entity.id_stride);
+                        }
+                    } else {
+                        eprintln!("could not find base entity id for chunk at {:?}!", pos);
+                    }
+                }
+            }
+        });
+        let new = chunks.count();
+        println!("reclaimed {}/{} chunks", old - new, old);
+    }
 }
 
 fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
@@ -163,7 +259,7 @@ fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
             // All dark. Ready
             return;
         }
-        match above.blocks() {
+        match above.data() {
             Some(above) => {
                 // Check whether the above lighting is uniform at the bottom layer
                 if above.shinethrough.iter().all(|&l| l == 0) {
@@ -196,8 +292,8 @@ fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
         }
     }
 
-    let chunk = chunk.blocks_mut();
-    if let Some(above) = above.blocks() {
+    let chunk = chunk.data_mut();
+    if let Some(above) = above.data() {
         let mut idx_2d = 0;
         for y in 0..CHUNK_SIZE as usize {
             for x in 0..CHUNK_SIZE as usize {
@@ -242,98 +338,6 @@ fn skylight_fall(above: ChunkRef, chunk: &mut ChunkBox, style: &StyleTable) {
         }
     }
 }
-
-/*
-
-fn propagate_light(chunk_pos: ChunkPos, chunk: &mut ChunkBox, style: &StyleTable) {
-    struct State<'a> {
-        data: &'a mut ChunkData,
-        dirty: VecDeque<[u8; 3]>,
-        is_dirty: [ChunkSizedInt; (CHUNK_SIZE * CHUNK_SIZE) as usize],
-    }
-
-    let data = match chunk.try_blocks_mut() {
-        Some(data) => data,
-        None => return,
-    };
-    let mut state = State {
-        data,
-        dirty: VecDeque::new(),
-        is_dirty: [0 as ChunkSizedInt; (CHUNK_SIZE * CHUNK_SIZE) as usize],
-    };
-    let light_decay = state.data.light_decay;
-
-    // Dithering
-    let dither = {
-        let mut dither = [0; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize];
-        let base_pos = chunk_pos.coords << CHUNK_BITS;
-        let mut idx = 0;
-        for z in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    let rnd = fxhash::hash32(&(base_pos + [x, y, z])) as u8;
-                    let rnd = ((rnd as u16 * light_decay as u16 + 1) >> 8) as u8;
-                    dither[idx] = light_decay + (rnd >> 0);
-                    idx += 1;
-                }
-            }
-        }
-        dither
-    };
-
-    let check = |state: &mut State, pos: Int3, l: u8| {
-        if pos.x as u32 >= CHUNK_SIZE as u32
-            || pos.y as u32 >= CHUNK_SIZE as u32
-            || pos.z as u32 >= CHUNK_SIZE as u32
-        {
-            return;
-        }
-        let idx = pos.to_index(CHUNK_BITS);
-        if !state.data.blocks[idx].is_clear(style) {
-            return;
-        }
-        if state.data.skylight[idx] < l {
-            state.data.skylight[idx] = l;
-            if (state.is_dirty[idx >> CHUNK_BITS] >> (idx & CHUNK_MASK as usize)) & 1 == 0 {
-                state
-                    .dirty
-                    .push_back([pos.x as u8, pos.y as u8, pos.z as u8]);
-                state.is_dirty[idx >> CHUNK_BITS] |= 1 << (idx & CHUNK_MASK as usize);
-            }
-        }
-    };
-
-    for z in 0..CHUNK_SIZE {
-        for y in 0..CHUNK_SIZE {
-            for x in 0..CHUNK_SIZE {
-                let pos = Int3::new([x, y, z]);
-                let idx = pos.to_index(CHUNK_BITS) as usize;
-                let l = state.data.skylight[idx].saturating_sub(dither[idx]);
-                check(&mut state, pos + [-1, 0, 0], l);
-                check(&mut state, pos + [1, 0, 0], l);
-                check(&mut state, pos + [0, -1, 0], l);
-                check(&mut state, pos + [0, 1, 0], l);
-                check(&mut state, pos + [0, 0, -1], l);
-                check(&mut state, pos + [0, 0, 1], l);
-            }
-        }
-    }
-
-    while let Some(pos) = state.dirty.pop_front() {
-        let pos = Int3::new([pos[0] as i32, pos[1] as i32, pos[2] as i32]);
-        let idx = pos.to_index(CHUNK_BITS);
-        state.is_dirty[idx >> CHUNK_BITS] &= !(1 << (idx & CHUNK_MASK as usize));
-        let l = state.data.skylight[idx].saturating_sub(dither[idx]);
-        check(&mut state, pos + [-1, 0, 0], l);
-        check(&mut state, pos + [1, 0, 0], l);
-        check(&mut state, pos + [0, -1, 0], l);
-        check(&mut state, pos + [0, 1, 0], l);
-        check(&mut state, pos + [0, 0, -1], l);
-        check(&mut state, pos + [0, 0, 1], l);
-    }
-}
-
-*/
 
 crate::terrain::light_spreader! {
     LightSpreader(CHUNK_SIZE);
@@ -384,7 +388,7 @@ fn process_lighting(
         time!(start lightspread);
 
         // Get chunk lighting data
-        let chunk = match chunk.try_blocks_mut() {
+        let chunk = match chunk.try_data_mut() {
             Some(chunk) => chunk,
             None => continue,
         };
@@ -404,120 +408,9 @@ fn process_lighting(
 
         time!(store lightspread shared.avg_light_time);
     }
-
-    /*
-    let full_light = |chunk: &mut ChunkBox| {
-        if let Some(data) = chunk.try_blocks_mut() {
-            data.skymap.fill(0);
-        }
-        chunk.mark_shiny();
-    };
-    let full_dark = |chunk: &mut ChunkBox| {
-        if !chunk.is_solid() {
-            let data = chunk.blocks_mut();
-            data.skymap.fill(CHUNK_SIZE as u8);
-        }
-    };
-    // Process chunk lighting from highest to lowest
-    let mut sortbuf = unsent.iter_mut().collect::<Vec<_>>();
-    sortbuf.sort_unstable_by_key(|(p, _c)| [p.coords.x, p.coords.y, -p.coords.z]);
-    let mut tmp_skymap = [0; (CHUNK_SIZE * CHUNK_SIZE) as usize];
-    let mut last_above = None;
-    for (&pos, chunk) in sortbuf {
-        if chunk.is_shiny() {
-            // Shiny chunks are _the_ source of skylight
-            full_light(chunk);
-        } else if chunk.is_solid() {
-            // Full darkness
-        } else {
-            // Get the chunk above
-            let mut above_pos = pos;
-            above_pos.coords.z += 1;
-            let above = if let Some((abpos, above)) = last_above {
-                if above_pos == abpos {
-                    Some(above)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-            .or_else(|| chunks.chunk_at(above_pos));
-            let above = match above {
-                Some(above) => above,
-                None => {
-                    println!("could not find above-chunk for {:?}", pos);
-                    continue;
-                }
-            };
-            // Special case homogeneous chunks
-            if above.is_homogeneous() && !above.is_shiny() {
-                full_dark(chunk);
-            } else if chunk.is_clear() {
-                if let Some(abdata) = above.blocks() {
-                    for idx in 0..(CHUNK_SIZE * CHUNK_SIZE) as usize {
-                        tmp_skymap[idx] = if abdata.skymap[idx] == 0 {
-                            0
-                        } else {
-                            CHUNK_SIZE as u8
-                        };
-                    }
-                    if tmp_skymap.iter().all(|z| *z == 0) {
-                        // Fully lighted
-                        chunk.mark_shiny();
-                    } else if tmp_skymap.iter().all(|z| *z != 0) {
-                        // Fully shadowed
-                    } else {
-                        // Partial shadow
-                        // Sad
-                        let data = chunk.blocks_mut();
-                        data.skymap = tmp_skymap;
-                    }
-                } else {
-                    // The above-is-homogeneous-and-dark case was already handled
-                    // The only option left is for it to be shiny
-                    full_light(chunk);
-                }
-            } else {
-                // Compute lighting for each column
-                let data = chunk.blocks_mut();
-                let has_light = |idx2d| {
-                    above
-                        .blocks()
-                        .map(|abdata| abdata.skymap[idx2d] == 0)
-                        .unwrap_or(true)
-                };
-                let mut col_idx = 0;
-                let mut idx_3d;
-                for y in 0..CHUNK_SIZE {
-                    for x in 0..CHUNK_SIZE {
-                        idx_3d = ((((CHUNK_SIZE - 1) << CHUNK_BITS) + y) << CHUNK_BITS) + x;
-                        data.skymap[col_idx] = if has_light(col_idx) {
-                            // TODO: Figure out portals
-                            let mut skyz = 0;
-                            for z in (0..CHUNK_SIZE as u8).rev() {
-                                if data.blocks[idx_3d as usize].is_solid(style) {
-                                    skyz = z;
-                                    break;
-                                }
-                                idx_3d -= CHUNK_SIZE * CHUNK_SIZE;
-                            }
-                            skyz
-                        } else {
-                            CHUNK_SIZE as u8
-                        };
-                        col_idx += 1;
-                    }
-                }
-            }
-        }
-        // Save this chunk as the above for the next chunk
-        last_above = Some((pos, chunk.as_ref()));
-    }
-    */
 }
 
-fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) -> Result<()> {
+fn gen_thread(mut gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) -> Result<()> {
     // Load Lua state and get all gen-related functions from it
     let lua = Lua::new();
     let mut world_info = None;
@@ -697,7 +590,7 @@ fn gen_thread(gen: GenState, info_send: Sender<Box<WorldInfo>>, cfg: GenConfig) 
             drop(chunks);
             {
                 let mut chunks_w = gen.chunks.write();
-                empty_chunk_buf(&mut chunks_w, &mut unsent);
+                empty_chunk_buf(&mut chunks_w, &mut unsent, &mut gen.entity);
             }
             chunks = gen.chunks.read();
             let now = Instant::now();

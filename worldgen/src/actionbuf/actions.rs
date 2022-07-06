@@ -54,7 +54,7 @@ action! {
         bd = [u, u + s2];
     }
     fn apply(pos, _, chunk) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         let p = u - pos;
         chunk.push_portal(PortalData {
             pos: [p.x as i16, p.y as i16, p.z as i16],
@@ -62,6 +62,21 @@ action! {
             jump: [jx, jy, jz],
             dim: jw,
         });
+    }
+}
+
+action! {
+    fn entity((x, y, z, raw): (f32, f32, f32, LuaBytes)) -> bd {
+        let raw = raw.bytes;
+        let pos = Vec3::new(x, y, z);
+        let ipos = Int3::from_f32(pos);
+        bd = [ipos, ipos + [1; 3]];
+    }
+    fn apply(cpos, _, chunk) {
+        let data = chunk.data_mut();
+        if data.push_entity(pos - cpos.to_f32(), &raw[..]).is_none() {
+            eprintln!("failed to add entity, entity data buffer is full");
+        }
     }
 }
 
@@ -79,7 +94,7 @@ action! {
         bd = [mn, mx];
     }
     fn apply(pos, [mn, mx], chunk) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         for z in mn.z..mx.z {
             for y in mn.y..mx.y {
                 // OPTIMIZE: Use `memset`
@@ -105,7 +120,7 @@ action! {
         bd = [mn, mx];
     }
     fn apply(pos, [mn, mx], chunk) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         for z in mn.z..mx.z {
             for y in mn.y..mx.y {
                 // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
@@ -136,7 +151,7 @@ action! {
         bd = [mn, mx];
     }
     fn apply(pos, [mn, mx], chunk) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         for z in mn.z..mx.z {
             for y in mn.y..mx.y {
                 // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
@@ -177,7 +192,7 @@ action! {
         bd = [mn, mx];
     }
     fn apply(pos, [mn, mx], chunk) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         let n = u1 - u0;
         let inv = n.mag_sq().recip();
         for z in mn.z..mx.z {
@@ -271,7 +286,7 @@ action! {
         let mn = mn - pos;
         let mx = mx - pos;
         let data = data.borrow_mut();
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         for z in mn.z..mx.z {
             for y in mn.y..mx.y {
                 for x in mn.x..mx.x {
@@ -321,7 +336,7 @@ action! {
         }
     }
     fn subsphere(pos, [mn, mx], chunk, u, r2) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         for z in mn.z..mx.z {
             for y in mn.y..mx.y {
                 // OPTIMIZE: Use sqrt and math to figure out exactly where does this row start and
@@ -366,7 +381,7 @@ action! {
         }).collect::<Vec<Vec3>>();
     }
     fn apply(pos, [mn, mx], chunk) {
-        let chunk = chunk.blocks_mut();
+        let chunk = chunk.data_mut();
         for az in mn.z..mx.z {
             for ay in mn.y..mx.y {
                 let mut x0 = f32::NEG_INFINITY;

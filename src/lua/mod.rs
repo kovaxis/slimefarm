@@ -1,5 +1,5 @@
 use crate::{
-    gen::GenConfig,
+    gen::{EntityEv, GenConfig},
     lua::gfx::{BufferRef, LuaDrawParams, ShaderRef, StaticUniform, UniformStorage},
     magicavox::VoxelModel,
     prelude::*,
@@ -9,6 +9,7 @@ use common::{lua::LuaValueStatic, lua_assert, lua_bail, lua_func, lua_lib, lua_t
 use notify::{DebouncedEvent as WatcherEvent, Watcher as _};
 use rand_distr::StandardNormal;
 
+mod binpack;
 pub(crate) mod gfx;
 
 #[derive(Clone)]
@@ -399,6 +400,43 @@ lua_type! {TerrainRef, lua, this,
         for i in idx + 1 ..= out.raw_len() as usize {
             out.raw_set(i, LuaValue::Nil)?;
         }
+    }
+
+    fn entity_event() {
+        let this = this.rc.borrow();
+        match this.pop_entity_event() {
+            Some(ev) => match ev {
+                EntityEv::Spawn { id, pos, data } => {
+                    (
+                        "spawn".to_lua(lua)?,
+                        LuaValue::Integer(id as i64),
+                        LuaWorldPos {
+                            pos: Cell::new(pos),
+                        }.to_lua(lua)?,
+                        LuaValue::String(lua.create_string(&data)?),
+                    )
+                }
+                EntityEv::Despawn { id } => {
+                    (
+                        "despawn".to_lua(lua)?,
+                        LuaValue::Integer(id as i64),
+                        LuaValue::Nil,
+                        LuaValue::Nil,
+                    )
+                }
+            }
+            None => (
+                LuaValue::Nil,
+                LuaValue::Nil,
+                LuaValue::Nil,
+                LuaValue::Nil,
+            ),
+        }
+    }
+
+    fn entity_id() {
+        let mut this = this.rc.borrow_mut();
+        this.new_entity_id() as i64
     }
 }
 
@@ -1047,6 +1085,32 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
             "buffer",
             lua_func!(lua, state, fn(()) {
                 LuaStringBuf::default()
+            }),
+        )
+        .unwrap();
+    string
+        .set(
+            "binpack",
+            lua_func!(lua, state, fn((fmt, val): (LuaString, LuaValue)) {
+                thread_local! {
+                    static BUF: Cell<Vec<u8>> = Cell::new(Vec::new());
+                }
+                BUF.with(|buf| -> LuaResult<LuaString> {
+                    let mut out = buf.take();
+                    out.clear();
+                    binpack::pack(lua, fmt.as_bytes(), val, &mut out)?;
+                    let bin = lua.create_string(&out[..])?;
+                    buf.replace(out);
+                    Ok(bin)
+                })?
+            }),
+        )
+        .unwrap();
+    string
+        .set(
+            "binunpack",
+            lua_func!(lua, state, fn((fmt, bin): (LuaString, LuaString)) {
+                binpack::unpack(lua, fmt.as_bytes(), bin.as_bytes())?
             }),
         )
         .unwrap();

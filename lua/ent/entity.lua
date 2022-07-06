@@ -40,6 +40,11 @@ function Entity:new()
     assert(self.anim)
 end
 
+function Entity.create(cl, proto, pos)
+    proto.pos = pos
+    return cl(proto)
+end
+
 function Entity:pretick(world)
     --Apply friction
     if self.on_ground and self.vel_z < 0 then

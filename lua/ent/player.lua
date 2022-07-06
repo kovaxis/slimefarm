@@ -4,14 +4,21 @@ local class = require 'class'
 local input = require 'input'
 local util = require 'util'
 local Humanoid = require 'ent.humanoid'
+local entreg = require 'ent.reg'
 
 local Player, super = class{ super = Humanoid }
 
 Player:set_bbox(10/8, 15/8)
 Player.model = voxel.models.player
-Player.max_hp = 10000000
+Player.max_hp = 1000
 
 Player.atk_lounge = 0.1
+
+entreg.register{
+    name = 'Player',
+    class = Player,
+    fmt = '{hp=f4}',
+}
 
 local controls = {
     forward = 'w',
@@ -37,7 +44,7 @@ function Player:tick(world)
     do
         local buf = world.relpos_buf
         local baserad = math.max(self.rad_x, self.rad_y, self.rad_z) + 20
-        for i, ent in ipairs(world.entities) do
+        for i, ent in ipairs(world.ent_list) do
             if ent.on_player_collision then
                 local rad = baserad + math.max(ent.rad_x, ent.rad_y, ent.rad_z)
                 --Get approximate relative position

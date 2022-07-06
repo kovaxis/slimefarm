@@ -5,12 +5,17 @@ local Mesh = require 'mesh'
 local input = require 'input'
 local Sprite = require 'sprite'
 local voxel = require 'voxel'
+local entreg = require 'ent.reg'
+
+local Player = require 'ent.player'
+local slimes = require 'ent.slimes'
 
 local World = class{}
 
 function World:new()
     self.tick_count = 0
-    self.entities = {}
+    self.ent_list = {}
+    self.ent_map = {}
 
     self.shaders = {
         terrain = util.Shader{
@@ -141,6 +146,14 @@ function World:new()
     self.mouse_y = 0
 end
 
+function World:add_entity(ent)
+    if not ent.id then
+        ent.id = self.terrain:entity_id()
+    end
+    table.insert(self.ent_list, ent)
+    self.ent_map[ent.id] = ent
+end
+
 function World:tick()
     --Check whether terrain file changed
     if self.worldgen_watcher:changed() then
@@ -151,19 +164,40 @@ function World:tick()
     --Check whether voxel models changed
     voxel.check_reload()
 
+    --Spawn/despawn entities
+    while true do
+        local ev, id, pos, data = self.terrain:entity_event()
+        if ev == 'spawn' then
+            local ent = entreg.instantiate(pos, data)
+            if ent then
+                ent.id = id
+                self:add_entity(ent)
+            end
+        elseif ev == 'despawn' then
+            local ent = self.ent_map[id]
+            if ent then
+                ent.remove = true
+            end
+        else
+            break
+        end
+    end
+
     --Tick entities
     self.cam_mov_x, self.cam_mov_y, self.cam_mov_z = 0, 0, 0
-    for _, ent in ipairs(self.entities) do
+    for _, ent in ipairs(self.ent_list) do
         ent:pretick(self)
         ent:tick(self)
     end
 
     --Remove dead entities
     do
-        local ents, i = self.entities, 1
+        local ents, i = self.ent_list, 1
         while i <= #ents do
-            if ents[i].remove then
-                ents[i], ents[#ents] = ents[#ents], ents[i]
+            local ent = ents[i]
+            if ent.remove then
+                ents[i], ents[#ents] = ents[#ents], ent
+                self.ent_map[ent.id] = nil
                 ents[#ents] = nil
             else
                 i = i + 1
@@ -227,6 +261,7 @@ function World:load_terrain()
             args = {{
                 seed = 6813264,
                 kind = 'gen.plainsgen',
+                entspecs = entreg.get_specs(),
             }},
         },
         mesher = voxel.mesher_cfg,
@@ -444,7 +479,7 @@ function World:subdraw()
     --Draw entities
     local entcopies = frame.entcopy_buf
     frame.params_world:set_stencil_ref(depth)
-    for _, ent in ipairs(self.entities) do
+    for _, ent in ipairs(self.ent_list) do
         local movx, movy, movz = ent.mov_x, ent.mov_y, ent.mov_z
         entpos_buf:copy_from(ent.pos)
         entpos_buf:move_box(self.terrain, movx * frame.s, movy * frame.s, movz * frame.s, 0.1, 0.1, 0.1) -- TODO: Replace with a raycast

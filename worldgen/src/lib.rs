@@ -195,7 +195,7 @@ impl HeightMap {
             chunk.make_homogeneous(false, k.ground, 0, chunk.light_mode());
             return;
         }
-        let blocks = chunk.blocks_mut();
+        let blocks = chunk.data_mut();
         let mut idx_3d = 0;
         for z in 0..CHUNK_SIZE {
             let mut idx_2d = 0;

@@ -10,6 +10,7 @@ pub mod prelude {
         arena::{Box as ArenaBox, BoxUninit as ArenaBoxUninit},
         arr, bit_array,
         ivec::{Int2, Int3},
+        lua::LuaBytes,
         slotmap::{SlotId, SlotMap},
         terrain::{
             BlockData, BlockPos, BlockStyle, BlockTexture, ChunkArc, ChunkBox, ChunkData, ChunkPos,

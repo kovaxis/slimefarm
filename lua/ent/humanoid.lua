@@ -187,7 +187,7 @@ function Humanoid:tick(world)
         local lx, ly = self.watk_x, self.watk_y
         self.atk_dx, self.atk_dy = lx * self.atk_lounge, ly * self.atk_lounge
         -- Make damage
-        for i, ent in ipairs(world.entities) do
+        for i, ent in ipairs(world.ent_list) do
             if ent ~= self and ent.hp then
                 local w, h = math.max(ent.rad_x, ent.rad_y), ent.rad_z
                 local buf = world.relpos_buf

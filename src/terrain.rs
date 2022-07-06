@@ -2,7 +2,7 @@ use std::f64::INFINITY;
 
 use crate::{
     chunkmesh::{MesherCfg, MesherHandle},
-    gen::{GenArea, GenConfig},
+    gen::{EntityEv, GenArea, GenConfig},
     lua::gfx::{BufferRef, ShaderRef},
     mesh::RawBufPackage,
     prelude::*,
@@ -180,7 +180,7 @@ impl ChunkStorage {
                     }
                 }
                 let chunk = s.chunks.chunk_at(chunk_pos);
-                if let Some(data) = chunk.and_then(|c| c.blocks()) {
+                if let Some(data) = chunk.and_then(|c| c.data()) {
                     for portal in data.portals() {
                         let portal_center = portal.get_center();
                         if !portal_center.is_within(Int3::splat(CHUNK_SIZE)) {
@@ -247,14 +247,16 @@ impl ChunkStorage {
         })
     }
 
-    pub fn maybe_gc(&mut self) {
-        if self.last_gc.elapsed() > self.gc_interval {
-            let old = self.chunks.map.len();
-            self.gc();
-            let new = self.chunks.map.len();
-            println!("reclaimed {}/{} chunks", old - new, old);
+    pub fn should_gc(&mut self) -> bool {
+        let gc = self.last_gc.elapsed() > self.gc_interval;
+        if gc {
             self.last_gc = Instant::now();
         }
+        gc
+    }
+
+    pub fn count(&self) -> usize {
+        self.chunks.map.len()
     }
 }
 impl ops::Deref for ChunkStorage {
@@ -457,6 +459,8 @@ pub(crate) struct Terrain {
     pub light_linear: bool,
     pub color_linear: bool,
     pub relative_map: RefCell<HashMap<ChunkPos, Int3>>,
+    next_entity_id: u64,
+    entity_id_stride: u64,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
     tmp_seenbuf: RefCell<HashMap<ChunkPos, (f32, Int3)>>,
     tmp_seenbuf_simple: RefCell<HashSet<Int4>>,
@@ -478,6 +482,8 @@ impl Terrain {
             light_linear: true,
             color_linear: false,
             relative_map: default(),
+            next_entity_id: rand::random::<u64>() | 1,
+            entity_id_stride: rand::random::<u64>() & (!1),
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
             tmp_seenbuf_simple: default(),
@@ -1275,7 +1281,7 @@ impl Terrain {
                             Some(cnk) => cnk,
                             None => continue,
                         };
-                        let chunk = match chunk.blocks() {
+                        let chunk = match chunk.data() {
                             Some(chunk) => chunk,
                             None => continue,
                         };
@@ -1313,6 +1319,16 @@ impl Terrain {
                 }
             }
         }
+    }
+
+    pub fn pop_entity_event(&self) -> Option<EntityEv> {
+        self.generator.entity_evs.try_recv().ok()
+    }
+
+    pub fn new_entity_id(&mut self) -> u64 {
+        let id = self.next_entity_id;
+        self.next_entity_id = self.next_entity_id.wrapping_add(self.entity_id_stride);
+        id
     }
 }
 

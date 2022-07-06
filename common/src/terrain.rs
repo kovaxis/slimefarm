@@ -18,6 +18,9 @@ pub type ChunkSizedInt = u32;
 /// Maximum amount of portals that can touch a chunk.
 pub const MAX_CHUNK_PORTALS: usize = 256;
 
+/// Maximum bytes of entity data per chunk.
+pub const MAX_ENTITY_BYTES: usize = 2048;
+
 /// A 2D slice (or loaf) of an arbitrary type.
 pub type LoafBox<T> = crate::arena::Box<[T; (CHUNK_SIZE * CHUNK_SIZE) as usize]>;
 
@@ -116,22 +119,22 @@ impl<'a> ChunkRef<'a> {
     }
 
     #[inline]
-    pub unsafe fn blocks_unchecked(self) -> &'a ChunkData {
+    pub unsafe fn data_uncheckeed(self) -> &'a ChunkData {
         &*((self.raw() & !Self::MASK) as *const ChunkData)
     }
 
     #[inline]
-    pub fn blocks(self) -> Option<&'a ChunkData> {
+    pub fn data(self) -> Option<&'a ChunkData> {
         if self.is_homogeneous() {
             None
         } else {
-            unsafe { Some(self.blocks_unchecked()) }
+            unsafe { Some(self.data_uncheckeed()) }
         }
     }
 
     #[inline]
     pub fn sub_get(self, pos: Int3) -> BlockData {
-        if let Some(blocks) = self.blocks() {
+        if let Some(blocks) = self.data() {
             blocks.sub_get(pos)
         } else {
             self.homogeneous_block()
@@ -140,7 +143,7 @@ impl<'a> ChunkRef<'a> {
 
     #[inline]
     pub fn sub_portal_at(self, pos: Int3, axis: usize) -> Option<&'a PortalData> {
-        if let Some(blocks) = self.blocks() {
+        if let Some(blocks) = self.data() {
             blocks.sub_portal_at(pos, axis)
         } else {
             None
@@ -149,7 +152,7 @@ impl<'a> ChunkRef<'a> {
 
     #[inline]
     pub fn light_mode(self) -> u8 {
-        if let Some(data) = self.blocks() {
+        if let Some(data) = self.data() {
             data.light_mode
         } else {
             self.homogeneous_lightmode()
@@ -158,7 +161,7 @@ impl<'a> ChunkRef<'a> {
 
     #[inline]
     pub fn sub_skylight_idx(self, idx: usize) -> u8 {
-        if let Some(data) = self.blocks() {
+        if let Some(data) = self.data() {
             data.skylight[idx]
         } else {
             self.homogeneous_skylight()
@@ -202,14 +205,14 @@ impl<'a> ChunkRef<'a> {
             ChunkBox { ptr: self.ptr }
         } else {
             let mut uninit = ArenaBoxUninit::<ChunkData>::new();
-            let blockmem = unsafe {
-                ptr::copy_nonoverlapping(self.blocks_unchecked(), uninit.as_mut().as_mut_ptr(), 1);
+            let datamem = unsafe {
+                ptr::copy_nonoverlapping(self.data_uncheckeed(), uninit.as_mut().as_mut_ptr(), 1);
                 ArenaBox::into_raw(uninit.assume_init())
             };
             unsafe {
                 ChunkBox {
                     ptr: NonNull::new_unchecked(
-                        (blockmem.as_ptr() as usize | (self.raw() & Self::MASK)) as *mut ChunkData,
+                        (datamem.as_ptr() as usize | (self.raw() & Self::MASK)) as *mut ChunkData,
                     ),
                 }
             }
@@ -264,9 +267,9 @@ impl fmt::Debug for ChunkBox {
     }
 }
 impl ChunkBox {
-    unsafe fn new_raw_nonhomogeneous(blockmem: NonNull<ChunkData>, tags: usize) -> Self {
+    unsafe fn new_raw_nonhomogeneous(datamem: NonNull<ChunkData>, tags: usize) -> Self {
         Self {
-            ptr: NonNull::new_unchecked((blockmem.as_ptr() as usize | tags) as *mut ChunkData),
+            ptr: NonNull::new_unchecked((datamem.as_ptr() as usize | tags) as *mut ChunkData),
         }
     }
 
@@ -276,6 +279,7 @@ impl ChunkBox {
     pub unsafe fn new_uninit() -> Self {
         let mut blockmem = ArenaBox::into_raw(ArenaBoxUninit::<ChunkData>::new().assume_init());
         blockmem.as_mut().portal_count = 0;
+        blockmem.as_mut().entity_len = 0;
         ChunkBox::new_raw_nonhomogeneous(blockmem, 0)
     }
 
@@ -314,7 +318,7 @@ impl ChunkBox {
         }
     }
 
-    pub unsafe fn blocks_mut_unchecked(&mut self) -> &mut ChunkData {
+    pub unsafe fn data_mut_unchecked(&mut self) -> &mut ChunkData {
         &mut *((self.ptr.as_ptr() as usize & !ChunkRef::MASK) as *mut ChunkData)
     }
 
@@ -322,7 +326,7 @@ impl ChunkBox {
     /// If there is no associated memory, this method will allocate and fill with the homogeneous
     /// block, according to the current state.
     #[inline]
-    pub fn blocks_mut(&mut self) -> &mut ChunkData {
+    pub fn data_mut(&mut self) -> &mut ChunkData {
         if self.is_homogeneous() {
             let shinethrough = self.homogeneous_shinethrough();
             let block = self.homogeneous_block();
@@ -330,26 +334,26 @@ impl ChunkBox {
             let lightmode = self.homogeneous_lightmode();
             unsafe {
                 *self = ChunkBox::new_uninit();
-                ptr::write_bytes(&mut self.blocks_mut_unchecked().blocks, block.data, 1);
-                ptr::write_bytes(&mut self.blocks_mut_unchecked().skylight, skylight, 1);
+                ptr::write_bytes(&mut self.data_mut_unchecked().blocks, block.data, 1);
+                ptr::write_bytes(&mut self.data_mut_unchecked().skylight, skylight, 1);
                 ptr::write_bytes(
-                    &mut self.blocks_mut_unchecked().shinethrough,
+                    &mut self.data_mut_unchecked().shinethrough,
                     if shinethrough { 0xff } else { 0x00 },
                     1,
                 );
-                self.blocks_mut_unchecked().light_mode = lightmode;
+                self.data_mut_unchecked().light_mode = lightmode;
             }
         }
-        unsafe { self.blocks_mut_unchecked() }
+        unsafe { self.data_mut_unchecked() }
     }
 
     /// Gets the inner blocks if there is memory associated to this chunk box.
     #[inline]
-    pub fn try_blocks_mut(&mut self) -> Option<&mut ChunkData> {
+    pub fn try_data_mut(&mut self) -> Option<&mut ChunkData> {
         if self.is_homogeneous() {
             None
         } else {
-            unsafe { Some(self.blocks_mut_unchecked()) }
+            unsafe { Some(self.data_mut_unchecked()) }
         }
     }
 
@@ -357,9 +361,9 @@ impl ChunkBox {
     #[inline]
     fn take_blocks(&mut self, new_box: ChunkBox) -> Option<ArenaBox<ChunkData>> {
         unsafe {
-            let out = if let Some(blocks) = self.try_blocks_mut() {
+            let out = if let Some(data) = self.try_data_mut() {
                 Some(ArenaBox::from_raw(NonNull::new_unchecked(
-                    blocks as *mut ChunkData,
+                    data as *mut ChunkData,
                 )))
             } else {
                 None
@@ -388,8 +392,8 @@ impl ChunkBox {
     /// Check if all of the blocks are of the same type, and drop the data altogether and mark with
     /// a tag in that case.
     #[inline]
-    pub fn try_drop_blocks(&mut self) {
-        if let Some(data) = self.blocks() {
+    pub fn try_drop_data(&mut self) {
+        if let Some(data) = self.data() {
             if data.portal_count != 0 {
                 // Portals make a chunk nonhomogeneous
                 return;
@@ -417,7 +421,7 @@ impl ChunkBox {
 impl Drop for ChunkBox {
     fn drop(&mut self) {
         unsafe {
-            if let Some(blocks) = self.try_blocks_mut() {
+            if let Some(blocks) = self.try_data_mut() {
                 drop(ArenaBox::from_raw(NonNull::from(blocks)));
             }
         }
@@ -431,7 +435,7 @@ pub struct ChunkArc {
 }
 impl ChunkArc {
     pub fn new(chunk: ChunkBox) -> Self {
-        if let Some(data) = chunk.blocks() {
+        if let Some(data) = chunk.data() {
             data.ref_count.store(1);
         }
         Self {
@@ -454,7 +458,7 @@ impl ops::Deref for ChunkArc {
 }
 impl ops::Drop for ChunkArc {
     fn drop(&mut self) {
-        if let Some(data) = self.chunk.blocks() {
+        if let Some(data) = self.chunk.data() {
             if data.ref_count.fetch_sub(1) == 1 {
                 // Last reference to the `ChunkBox`
                 unsafe {
@@ -466,7 +470,7 @@ impl ops::Drop for ChunkArc {
 }
 impl Clone for ChunkArc {
     fn clone(&self) -> Self {
-        if let Some(data) = self.chunk.blocks() {
+        if let Some(data) = self.chunk.data() {
             data.ref_count.fetch_add(1);
         }
         unsafe {
@@ -614,6 +618,12 @@ pub struct ChunkData {
     pub portals: [PortalData; MAX_CHUNK_PORTALS],
     /// The amount of portals in the portal buffer.
     pub portal_count: u32,
+    /// Landmarks in this chunk.
+    /// These usually correspond to entities.
+    /// Each entity consists of a 2-byte length field followed by entity data.
+    pub entity_data: [u8; MAX_ENTITY_BYTES],
+    /// Length of the entity buffer.
+    pub entity_len: u16,
     /// A hidden reference count field for use in chunk reference counting.
     ref_count: AtomicCell<u32>,
 }
@@ -626,6 +636,8 @@ impl Clone for ChunkData {
             shinethrough: self.shinethrough,
             portals: self.portals,
             portal_count: self.portal_count,
+            entity_data: self.entity_data,
+            entity_len: self.entity_len,
             ref_count: AtomicCell::new(0),
         }
     }
@@ -682,6 +694,60 @@ impl ChunkData {
         );
         self.portals[self.portal_count as usize] = portal;
         self.portal_count += 1;
+    }
+
+    /// Add an entity prototype to the end of the entity buffer.
+    ///
+    /// `dpos` is the entity position relative to the chunk corner.
+    /// It must hold that `0.0 <= dpos[k] < 32.0` for `k` in 0..3
+    ///
+    /// `raw` is a raw bytestring passed as-is to lua as an entity spawn event when the chunk is
+    /// loaded.
+    ///
+    /// Returns `None` if there is no space in the entity buffer for the new entity.
+    #[inline]
+    pub fn push_entity(&mut self, dpos: Vec3, raw: &[u8]) -> Option<()> {
+        let old_len = self.entity_len as usize;
+        let new_len = old_len + raw.len() + 2 + 6;
+        if new_len > self.entity_data.len() {
+            return None;
+        }
+
+        let dpos = dpos * 256.;
+        let dpos = [dpos.x as u16, dpos.y as u16, dpos.z as u16];
+
+        let data = &mut self.entity_data;
+        data[old_len..old_len + 2].copy_from_slice(&(raw.len() as u16).to_le_bytes());
+        data[old_len + 2..old_len + 4].copy_from_slice(&dpos[0].to_le_bytes());
+        data[old_len + 4..old_len + 6].copy_from_slice(&dpos[1].to_le_bytes());
+        data[old_len + 6..old_len + 8].copy_from_slice(&dpos[2].to_le_bytes());
+        data[old_len + 8..new_len].copy_from_slice(raw);
+        self.entity_len = new_len as u16;
+        Some(())
+    }
+
+    /// Get the next entity at index `idx`.
+    /// The first call to `next_entity` should start with `idx = 0`, and afterwards `next_entity`
+    /// will advance the index automatically.
+    ///
+    /// Returns a pair of entity position relative to the chunk corner and a raw entity prototype.
+    ///
+    /// Returns `None` if there is no next entity, leaving the index untouched.
+    #[inline]
+    pub fn next_entity(&self, idx: &mut usize) -> Option<(Vec3, &[u8])> {
+        let i = *idx;
+        if i + 2 + 6 > self.entity_len as usize {
+            return None;
+        }
+
+        let data = &self.entity_data;
+        let len = u16::from_le_bytes([data[i + 0], data[i + 1]]) as usize;
+        let dx = u16::from_le_bytes([data[i + 2], data[i + 3]]) as f32;
+        let dy = u16::from_le_bytes([data[i + 4], data[i + 5]]) as f32;
+        let dz = u16::from_le_bytes([data[i + 6], data[i + 7]]) as f32;
+        let dpos = Vec3::new(dx, dy, dz) * (1. / 256.);
+        *idx = i + 8 + len;
+        Some((dpos, &data[i + 8..i + 8 + len]))
     }
 
     /// Look through the portals in this chunk and find one at the given coordinates and
@@ -802,6 +868,20 @@ where
                 Ok(&mut entry.insert(GridKeeperSlot::new(&self.epoch, f()?)).item)
             }
         }
+    }
+
+    pub fn gc_with<F>(&mut self, mut finalize: F)
+    where
+        F: FnMut(&K, &mut T),
+    {
+        let cutoff = now_u32(&self.epoch).saturating_sub(self.keepalive);
+        self.map.retain(|k, t| {
+            let keep = t.last_use.load(std::sync::atomic::Ordering::Relaxed) >= cutoff;
+            if !keep {
+                finalize(k, &mut t.item);
+            }
+            keep
+        })
     }
 
     pub fn gc(&mut self) {

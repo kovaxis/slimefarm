@@ -2,6 +2,7 @@
 local native = require 'gen.native'
 local blocks = require 'gen.blocks'
 local lightmodes = require 'gen.lightmodes'
+local spawn = require 'gen.spawn'
 
 local plainsgen = {}
 
@@ -247,8 +248,21 @@ do
 
         bbuf:blobs(leaves, blocks['base.leaf'], leaf_join)
     end
-    local function rock(pos)
+    local function rock(pos, sx, sy)
         bbuf:rock(pos:x(), pos:y(), pos:z() + s * 4, s * 16, rng:integer(1000000), 16, 0.4, blocks['base.stone'])
+        
+        local ty
+        if sx == 0 and sy == 0 then
+            ty = 'Player'
+        elseif rng:uniform() < 0.5 then
+            ty = 'GreenSlime'
+        else
+            ty = 'RedSlime'
+        end
+        bbuf:entity(pos:x(), pos:y(), pos:z() + s * 4 + s * 16 * (1.4), spawn.serialize {
+            ty = ty,
+            hp = rng:uniform(100, 1000),
+        })
     end
     function genstruct(rx, ry, sx, sy)
         local bx, by = math.floor(rx), math.floor(ry)
@@ -257,7 +271,7 @@ do
         bbuf:reset(bx, by, bz)
         rng:reseed(math.hash(gen.seed, "plains_tree", sx, sy))
         --tree(math.vec3(fx, fy, 0))
-        rock(math.vec3(fx, fy, 0))
+        rock(math.vec3(fx, fy, 0), sx, sy)
         return bbuf
     end
     structs = native.gridbuf_2d {

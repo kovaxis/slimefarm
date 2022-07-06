@@ -175,7 +175,9 @@ impl MesherState {
         // Make mesh
         time!(start mesh);
         self.mesher.make_chunk_mesh(pos, chunks, chunks_store)?;
-        time!(store mesh self.shared.avg_mesh_time);
+        if !self.mesher.mesh.indices.is_empty() {
+            time!(store mesh self.shared.avg_mesh_time);
+        }
 
         time!(start upload);
         // Upload mesh to GPU
@@ -216,7 +218,9 @@ impl MesherState {
             let tex = RawTexturePackage::pack(tex.into_any());
             Some(tex)
         };
-        time!(store upload self.shared.avg_upload_time);
+        if !mesh.indices.is_empty() {
+            time!(store upload self.shared.avg_upload_time);
+        }
 
         // Package it all up
         Some(ChunkMeshPkg {
@@ -1165,7 +1169,7 @@ impl<D: MesherKind> Mesher2<D> {
 impl Mesher2<TerrainMesherKind> {
     fn fetch_chunk(&mut self, chunk: ChunkRef, from: Int3, to: Int3, size: Int3) {
         let mut to_idx = ((to.z * BBUF_SIZE) + to.y) * BBUF_SIZE + to.x;
-        if let Some(chunk) = chunk.blocks() {
+        if let Some(chunk) = chunk.data() {
             let mut from_idx = (((from.z << CHUNK_BITS) | from.y) << CHUNK_BITS) | from.x;
             for _z in 0..size.z {
                 for _y in 0..size.y {
@@ -1257,7 +1261,7 @@ impl Mesher2<TerrainMesherKind> {
         }
 
         // Initialize light spreader
-        if let Some(data) = near_chunks[13].blocks() {
+        if let Some(data) = near_chunks[13].data() {
             let mut base_pos = chunk_pos.chunk_to_block();
             base_pos.coords -= [MARGIN; 3];
             self.kind.light_spread.reset(base_pos, data);
