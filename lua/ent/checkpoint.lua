@@ -16,7 +16,10 @@ Checkpoint:set_bbox(2.5, 20/8)
 entreg.register {
     name = 'Checkpoint',
     class = Checkpoint,
-    fmt = '{visible=b,orient=u1}',
+    fmt = {
+        orient = 'u8',
+        hidden = {opt = 'bool'},
+    },
 }
 
 function Checkpoint:new()
@@ -30,7 +33,7 @@ function Checkpoint:tick(world)
 end
 
 function Checkpoint:draw(...)
-    if self.visible then
+    if not self.hidden then
         return super.draw(self, ...)
     end
 end

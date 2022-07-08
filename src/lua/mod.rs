@@ -1091,26 +1091,8 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
     string
         .set(
             "binpack",
-            lua_func!(lua, state, fn((fmt, val): (LuaString, LuaValue)) {
-                thread_local! {
-                    static BUF: Cell<Vec<u8>> = Cell::new(Vec::new());
-                }
-                BUF.with(|buf| -> LuaResult<LuaString> {
-                    let mut out = buf.take();
-                    out.clear();
-                    binpack::pack(lua, fmt.as_bytes(), val, &mut out)?;
-                    let bin = lua.create_string(&out[..])?;
-                    buf.replace(out);
-                    Ok(bin)
-                })?
-            }),
-        )
-        .unwrap();
-    string
-        .set(
-            "binunpack",
-            lua_func!(lua, state, fn((fmt, bin): (LuaString, LuaString)) {
-                binpack::unpack(lua, fmt.as_bytes(), bin.as_bytes())?
+            lua_func!(lua, state, fn(fmt: LuaValue) {
+                binpack::Binpack::create(fmt)?
             }),
         )
         .unwrap();

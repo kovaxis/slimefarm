@@ -285,7 +285,7 @@ function World:load_terrain()
             args = {{
                 seed = 6813264,
                 kind = 'gen.plainsgen',
-                entspecs = entreg.get_specs(),
+                entspecs = entreg.seal(),
             }},
         },
         mesher = voxel.mesher_cfg,

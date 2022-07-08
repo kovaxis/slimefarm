@@ -48,7 +48,9 @@ Green.model = voxel.models.green_slime
 entreg.register {
     name = 'GreenSlime',
     class = Green,
-    fmt = '{hp=f4}',
+    fmt = {
+        hp = {opt = 'f32'},
+    },
 }
 
 function Green:tick(world)
@@ -74,7 +76,9 @@ Red.model = voxel.models.red_slime
 entreg.register {
     name = 'RedSlime',
     class = Red,
-    fmt = '{hp=f4}',
+    fmt = {
+        hp = {opt = 'f32'},
+    },
 }
 
 function Red:tick(world)

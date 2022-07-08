@@ -253,21 +253,18 @@ do
         
         local r, ent = rng:uniform()
         if r < 0.1 then
-            ent = {
-                ty = 'Checkpoint',
-                visible = true,
+            ent = {'Checkpoint', {
                 orient = rng:integer(4),
-            }
+                hidden = true,
+            }}
         elseif r < 0.6 then
-            ent = {
-                ty = 'GreenSlime',
+            ent = {'GreenSlime', {
                 hp = rng:uniform(100, 1000),
-            }
+            }}
         else
-            ent = {
-                ty = 'RedSlime',
+            ent = {'RedSlime', {
                 hp = rng:uniform(100, 1000),
-            }
+            }}
         end
         bbuf:entity(pos:x(), pos:y(), pos:z() + s * 4 + s * 16 * (1.4), spawn.serialize(ent))
     end

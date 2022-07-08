@@ -3,19 +3,10 @@
 
 local spawn = {}
 
-local name2id = gen.k.entspecs.name2id
-local id2spec = gen.k.entspecs.id2spec
+local unpacker = string.binpack(gen.k.entspecs)
 
 function spawn.serialize(ent)
-    local typeid = name2id[ent.ty]
-    if not typeid then
-        error("unknown entity type '"..tostring(ent.ty).."'")
-    end
-    local fmt = id2spec[typeid]
-    return string.binpack(fmt, {
-        ty = typeid,
-        ent = ent,
-    })
+    return unpacker:pack(ent)
 end
 
 return spawn
