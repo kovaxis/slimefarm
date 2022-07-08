@@ -19,6 +19,7 @@ impl VoxelModel {
     pub fn find(&self, find: &[bool; 256]) -> [Vec<Int3>; 256] {
         let mut idx = 0;
         let mut out = arr![Vec::new(); 256];
+        assert!(find[1]);
         for z in 0..self.size.z {
             for y in 0..self.size.y {
                 for x in 0..self.size.x {
@@ -53,7 +54,7 @@ fn parse_model(
             (v.x as i32) < size.x && (v.y as i32) < size.y && (v.z as i32) < size.z,
             "voxel out of range"
         );
-        let i = v.i + 1;
+        let i = v.i.wrapping_add(1);
         data[(v.x as i32 + size.x * (v.y as i32 + size.y * v.z as i32)) as usize] = i;
     }
     Ok(VoxelModel {

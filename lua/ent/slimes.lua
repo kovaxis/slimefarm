@@ -35,7 +35,7 @@ end
 
 local Green = class{ super = Slimy }
 slimes.Green = Green
-Green:set_bbox(16/8, 11/8)
+Green:set_bbox(16/8, 11/8, 20/8)
 Green.view_dist = 15
 Green.max_hp = 600
 Green.jump_charge = 5
@@ -62,7 +62,7 @@ end
 
 local Red = class{ super = Slimy }
 slimes.Red = Red
-Red:set_bbox(14/8, 12/8)
+Red:set_bbox(14/8, 12/8, 16/8)
 Red.view_dist = 25
 Red.max_hp = 650
 Red.jump_hvel = 0.09

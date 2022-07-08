@@ -251,18 +251,25 @@ do
     local function rock(pos, sx, sy)
         bbuf:rock(pos:x(), pos:y(), pos:z() + s * 4, s * 16, rng:integer(1000000), 16, 0.4, blocks['base.stone'])
         
-        local ty
-        if sx == 0 and sy == 0 then
-            ty = 'Player'
-        elseif rng:uniform() < 0.5 then
-            ty = 'GreenSlime'
+        local r, ent = rng:uniform()
+        if r < 0.1 then
+            ent = {
+                ty = 'Checkpoint',
+                visible = true,
+                orient = rng:integer(4),
+            }
+        elseif r < 0.6 then
+            ent = {
+                ty = 'GreenSlime',
+                hp = rng:uniform(100, 1000),
+            }
         else
-            ty = 'RedSlime'
+            ent = {
+                ty = 'RedSlime',
+                hp = rng:uniform(100, 1000),
+            }
         end
-        bbuf:entity(pos:x(), pos:y(), pos:z() + s * 4 + s * 16 * (1.4), spawn.serialize {
-            ty = ty,
-            hp = rng:uniform(100, 1000),
-        })
+        bbuf:entity(pos:x(), pos:y(), pos:z() + s * 4 + s * 16 * (1.4), spawn.serialize(ent))
     end
     function genstruct(rx, ry, sx, sy)
         local bx, by = math.floor(rx), math.floor(ry)

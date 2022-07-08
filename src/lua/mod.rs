@@ -209,7 +209,7 @@ lua_type! {LuaWorldPos, lua, this,
         this.pos.set(other.get());
     }
 
-    mut fn r#move((terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
+    mut fn move((terrain, dx, dy, dz): (TerrainRef, f64, f64, f64)) {
         let terrain = terrain.rc.borrow();
         let mut pos = this.get();
         let (mv, crash) = if dx == 0. && dy == 0. {

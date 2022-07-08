@@ -28,9 +28,9 @@ function Entity:new()
     self.vel_y = 0
     self.vel_z = 0
     self.on_ground = false
-    self.visual_yaw = 0
     self.yaw_x, self.yaw_y = 0, 0
-    self.yaw = 0
+    self.yaw = self.yaw or 0
+    self.visual_yaw = self.visual_raw or self.yaw
 
     if self.model then
         self.anim = voxel.AnimState {
@@ -99,16 +99,16 @@ function Entity:draw(world)
     self.anim:draw(frame.dt, world.shaders.terrain, frame.params_world, 'mvp', frame.mvp_world)
 end
 
-function Entity:set_bbox(x, y, z)
-    if not y then
-        y = x
-    end
+function Entity:set_bbox(x, y, z, r)
     if not z then
-        y, z = x, y
+        x, y, z = x, x, y
     end
-    x, y, z = x/2, y/2, z/2
+    if not r then
+        x, y, z, r = x, x, y, z
+    end
+    x, y, z, r = x/2, y/2, z/2, r/2
     self.rad_x, self.rad_y, self.rad_z = x, y, z
-    self.draw_r = (x*x + y*y + z*z)^0.5
+    self.draw_r = r * 3^.5
 end
 
 return Entity

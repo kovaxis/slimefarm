@@ -8,17 +8,13 @@ local entreg = require 'ent.reg'
 
 local Player, super = class{ super = Humanoid }
 
-Player:set_bbox(10/8, 15/8)
+Player:set_bbox(10/8, 15/8, 24/8)
 Player.model = voxel.models.player
 Player.max_hp = 1000
 
 Player.atk_lounge = 0.1
 
-entreg.register{
-    name = 'Player',
-    class = Player,
-    fmt = '{hp=f4}',
-}
+Player.is_player = true
 
 local controls = {
     forward = 'w',
@@ -36,7 +32,6 @@ function Player:new()
     self.jump_was_down = false
     
     self.focus_height_lag = 0
-    self.is_player = true
 end
 
 function Player:tick(world)
@@ -116,17 +111,16 @@ function Player:tick(world)
     super.tick(self, world)
 
     --Move camera to point at player
-    do
-        local focus_height = 2 + self.focus_height_lag
-        local focus_dist = 8
-        local cam_wall_dist = 0.4
-        world.cam_pos:copy_from(self.pos)
-        world.cam_pos:move_box(world.terrain, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
-        world.cam_mov_x = world.cam_mov_x + self.mov_x
-        world.cam_mov_y = world.cam_mov_y + self.mov_y
-        world.cam_mov_z = world.cam_mov_z + self.mov_z
-        world.cam_rollback = focus_dist
-    end
+    world.ticks_without_player = 0
+    local focus_height = 2 + self.focus_height_lag
+    local focus_dist = 8
+    local cam_wall_dist = 0.4
+    world.cam_pos:copy_from(self.pos)
+    world.cam_pos:move_box(world.terrain, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+    world.cam_mov_x = world.cam_mov_x + self.mov_x
+    world.cam_mov_y = world.cam_mov_y + self.mov_y
+    world.cam_mov_z = world.cam_mov_z + self.mov_z
+    world.cam_rollback = focus_dist
 end
 
 function Player:apply_vel(world)
@@ -147,6 +141,28 @@ function Player:apply_vel(world)
     end
     self.on_ground = self.vel_z < 0 and cz
     self.mov_x, self.mov_y, self.mov_z = mx, my, mz
+end
+
+function Player.find_spawn_pos(world)
+    -- Find closest checkpoint
+    local mind2, spawn = 1 / 0
+    for i, ent in ipairs(world.ent_list) do
+        if ent.is_checkpoint then
+            local dx, dy, dz = world.terrain:to_relative(ent.pos)
+            local d2 = dx*dx + dy*dy + dz*dz
+            if d2 < mind2 then
+                mind2 = d2
+                spawn = ent
+            end
+        end
+    end
+
+    -- If there's a checkpoint in range, clone and return its position
+    if spawn then
+        local pos = spawn.pos:copy()
+        pos:move(world.terrain, 0, 0, -spawn.rad_z/2 + Player.rad_z/2 + 0.01)
+        return pos
+    end
 end
 
 return Player

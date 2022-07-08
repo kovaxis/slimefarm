@@ -6,9 +6,19 @@ local input = require 'input'
 local Sprite = require 'sprite'
 local voxel = require 'voxel'
 local entreg = require 'ent.reg'
-
 local Player = require 'ent.player'
-local slimes = require 'ent.slimes'
+
+-- Load entities here
+do
+    local entfiles = {
+        'player',
+        'slimes',
+        'checkpoint',
+    }
+    for i, name in ipairs(entfiles) do
+        require('ent.'..name)
+    end
+end
 
 local World = class{}
 
@@ -118,6 +128,9 @@ function World:new()
     self.cam_effective_y = 0
     self.cam_effective_z = 0
 
+    self.ticks_without_player = 1/0
+    self.player_respawn_time = 300
+
     self.day_cycle = 0.20
 
     self.fog_poll_next = os.clock()
@@ -182,6 +195,17 @@ function World:tick()
             break
         end
     end
+
+    --Respawn player
+    if self.ticks_without_player >= self.player_respawn_time then
+        local pos = Player.find_spawn_pos(self)
+        if pos then
+            self:add_entity(Player {
+                pos = pos,
+            })
+        end
+    end
+    self.ticks_without_player = self.ticks_without_player + 1
 
     --Tick entities
     self.cam_mov_x, self.cam_mov_y, self.cam_mov_z = 0, 0, 0

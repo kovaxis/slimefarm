@@ -10,28 +10,9 @@ setmetatable(_G, {
 
 local input = require 'input'
 local World = require 'world'
-local Player = require 'ent.player'
-local slimes = require 'ent.slimes'
 local voxel = require 'voxel'
 
 local world = World{}
---[[table.insert(world.entities, Player {
-    pos = system.world_pos(0, 0, 100, 0),
-})
-table.insert(world.entities, Slime {
-    pos = system.world_pos(0, 20, 100),
-})
-for x = -10, 10 do
-    local slime
-    if x % 2 == 0 then
-        slime = slimes.Green
-    else
-        slime = slimes.Red
-    end
-    table.insert(world.entities, slime {
-        pos = system.world_pos(x*10, 20, 100),
-    })
-end]]
 
 local has_focus = true
 while true do

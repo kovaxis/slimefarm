@@ -409,4 +409,66 @@ models.red_slime = {
     animations = { slimy.stretch },
 }
 
+models.flag = {
+    path = 'voxel/flag.vox',
+    rootbone = {
+        ref = 1,
+        name = 'base',
+        pos = {{1, 0, 0, -.5}, 'z+', 'y+'},
+        child = {
+            name = 'pole',
+            pos = {2, 'z+', 'y+'},
+            piece = 2,
+            children = {
+                {
+                    name = 'seg1',
+                    pos = {3, 'z+', 'y+'},
+                    piece = 3,
+                }, {
+                    name = 'seg2',
+                    pos = {4, 'z+', 'y+'},
+                    piece = 4,
+                }, {
+                    name = 'seg3',
+                    pos = {5, 'z+', 'y+'},
+                    piece = 5,
+                }, {
+                    name = 'seg4',
+                    pos = {6, 'z+', 'y+'},
+                    piece = 6,
+                }, {
+                    name = 'seg5',
+                    pos = {7, 'z+', 'y+'},
+                    piece = 7,
+                },
+            },
+        },
+    },
+    animations = {
+        {
+            name = 'wave',
+            new = function(self)
+                self.t = 0
+            end,
+            triggers = {
+                wave = function(ctx) return ctx:add('wave') end,
+            },
+            wave = function(self)
+                return 1
+            end,
+            draw = function(self, b, dt)
+                local wave_speed = 2
+                self.t = self.t + dt * wave_speed
+                local dx, t = 1, self.t
+                move(b.seg1, 1,  0, 0, .25*sin(t+0*dx),  0, 0, 0,  0, 0, 0)
+                move(b.seg2, 1,  0, 0, .75*sin(t+1*dx),  0, 0, 0,  0, 0, 0)
+                move(b.seg3, 1,  0, 0, .80*sin(t+2*dx),  0, 0, 0,  0, 0, 0)
+                move(b.seg4, 1,  0, 0, .80*sin(t+3*dx),  0, 0, 0,  0, 0, 0)
+                move(b.seg5, 1,  0, 0, .80*sin(t+4*dx),  0, 0, 0,  0, 0, 0)
+                return 1
+            end,
+        },
+    },
+}
+
 return models
