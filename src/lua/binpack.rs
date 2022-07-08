@@ -159,7 +159,7 @@ lua_type! {Binpack, lua, this,
         BUF.with(|buf| -> LuaResult<LuaString> {
             let mut out = buf.take();
             out.clear();
-            this.pack(lua, val, &mut out)?;
+            this.pack(lua, val, &mut out, true)?;
             let bin = lua.create_string(&out[..])?;
             buf.replace(out);
             Ok(bin)
@@ -182,6 +182,7 @@ impl Binpack {
         lua: LuaContext<'lua>,
         val: LuaValue<'lua>,
         out: &mut Vec<u8>,
+        last: bool,
     ) -> LuaResult<()> {
         use self::{Binpack::*, Intsize::*};
         match self {
@@ -222,30 +223,43 @@ impl Binpack {
             F64 => out.extend_from_slice(&f64::from_lua(val, lua)?.to_bits().to_le_bytes()),
             Option(fmt) => match val {
                 LuaValue::Nil => out.push(0u8),
-                val => {
-                    out.push(1u8);
-                    fmt.pack(lua, val, out)?;
-                }
+                val => match &**fmt {
+                    Binpack::Bool => {
+                        out.push(bool::from_lua(val, lua)? as u8 + 1);
+                    }
+                    fmt => {
+                        out.push(1u8);
+                        fmt.pack(lua, val, out, last)?;
+                    }
+                },
             },
             Struct { must, may } => {
                 let tab = LuaTable::from_lua(val, lua)?;
-                for (name, fmt) in must {
+                for (idx, (name, fmt)) in must.iter().enumerate() {
                     let subval = tab.raw_get(lua.create_string(name)?)?;
-                    fmt.pack(lua, subval, out)?;
+                    let sublast = last && (idx == must.len() - 1 && may.is_empty());
+                    fmt.pack(lua, subval, out, sublast)?;
                 }
                 if !may.is_empty() {
                     let int = Intsize::to_fit(may.len());
+                    let mut nxt = 0;
                     for (idx, (name, fmt)) in may.iter().enumerate() {
                         let subval = tab.raw_get(lua.create_string(name)?)?;
+                        let sublast = last && idx == may.len() - 1;
                         match subval {
                             LuaValue::Nil => {}
                             subval => {
-                                int.write(idx, out);
-                                fmt.pack(lua, subval, out)?;
+                                if !(nxt == idx && idx == may.len() - 1) {
+                                    int.write(idx, out);
+                                }
+                                fmt.pack(lua, subval, out, sublast)?;
+                                nxt = idx + 1;
                             }
                         }
                     }
-                    int.write(may.len(), out);
+                    if !last {
+                        int.write(may.len(), out);
+                    }
                 }
             }
             Enum { dense, sparse } => {
@@ -259,7 +273,7 @@ impl Binpack {
                 let (_, fmt) = &dense[id];
                 let int = Intsize::to_fit(dense.len() - 1);
                 int.write(id, out);
-                fmt.pack(lua, subval, out)?;
+                fmt.pack(lua, subval, out, last)?;
             }
         }
         Ok(())
@@ -303,10 +317,18 @@ impl Binpack {
             }
             F32 => LuaValue::Number(f32::from_bits(u32::from_le_bytes(expect_bytes(bin)?)) as f64),
             F64 => LuaValue::Number(f64::from_bits(u64::from_le_bytes(expect_bytes(bin)?))),
-            Option(fmt) => match expect_byte(bin)? {
-                0 => LuaValue::Nil,
-                1 => fmt.unpack(lua, bin)?,
-                _ => lua_bail!("invalid option tag"),
+            Option(fmt) => match &**fmt {
+                Binpack::Bool => match expect_byte(bin)? {
+                    0 => LuaValue::Nil,
+                    1 => LuaValue::Boolean(false),
+                    2 => LuaValue::Boolean(true),
+                    _ => lua_bail!("invalid option-bool tag"),
+                },
+                fmt => match expect_byte(bin)? {
+                    0 => LuaValue::Nil,
+                    1 => fmt.unpack(lua, bin)?,
+                    _ => lua_bail!("invalid option tag"),
+                },
             },
             Struct { must, may } => {
                 let tab = lua.create_table()?;
@@ -317,12 +339,22 @@ impl Binpack {
                 }
                 if !may.is_empty() {
                     let int = Intsize::to_fit(may.len());
+                    let mut nxt = 0;
                     loop {
-                        let tag = int.read(bin)?;
-                        lua_assert!(tag <= may.len(), "invalid struct field tag");
-                        if tag == may.len() {
+                        if bin.is_empty() {
                             break;
                         }
+                        let tag = if nxt == may.len() - 1 {
+                            may.len() - 1
+                        } else {
+                            let tag = int.read(bin)?;
+                            lua_assert!(tag <= may.len(), "invalid struct field tag");
+                            if tag == may.len() {
+                                break;
+                            }
+                            tag
+                        };
+                        nxt = tag + 1;
                         let (name, fmt) = &may[tag];
                         let name = lua.create_string(name)?;
                         let subval = fmt.unpack(lua, bin)?;

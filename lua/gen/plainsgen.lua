@@ -255,7 +255,6 @@ do
         if r < 0.1 then
             ent = {'Checkpoint', {
                 orient = rng:integer(4),
-                hidden = true,
             }}
         elseif r < 0.6 then
             ent = {'GreenSlime', {

@@ -713,7 +713,7 @@ impl ChunkData {
             return None;
         }
 
-        let dpos = dpos * 256.;
+        let dpos = dpos * (65536. / CHUNK_SIZE as f32);
         let dpos = [dpos.x as u16, dpos.y as u16, dpos.z as u16];
 
         let data = &mut self.entity_data;
@@ -745,7 +745,7 @@ impl ChunkData {
         let dx = u16::from_le_bytes([data[i + 2], data[i + 3]]) as f32;
         let dy = u16::from_le_bytes([data[i + 4], data[i + 5]]) as f32;
         let dz = u16::from_le_bytes([data[i + 6], data[i + 7]]) as f32;
-        let dpos = Vec3::new(dx, dy, dz) * (1. / 256.);
+        let dpos = Vec3::new(dx, dy, dz) * (CHUNK_SIZE as f32 / 65536.);
         *idx = i + 8 + len;
         Some((dpos, &data[i + 8..i + 8 + len]))
     }
