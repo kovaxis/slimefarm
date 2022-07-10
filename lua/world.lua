@@ -61,6 +61,7 @@ function World:new()
     self.worldgen_watcher = fs.watch(self.worldgen_path)
     self.showchunkgrid = false
     self.show_debug_stats = false
+    self.show_chunk_atlas = false
     self:load_terrain()
 
     self.font_size = 6
@@ -129,7 +130,9 @@ function World:new()
     self.cam_effective_z = 0
 
     self.ticks_without_player = 1/0
-    self.player_respawn_time = 300
+    self.player_id = nil
+    self.set_player_id = nil
+    self.player_respawn_time = 250
 
     self.day_cycle = 0.20
 
@@ -215,6 +218,8 @@ function World:tick()
         end
     end
     self.ticks_without_player = self.ticks_without_player + 1
+    self.player_id = self.set_player_id
+    self.set_player_id = nil
 
     --Tick entities
     self.cam_mov_x, self.cam_mov_y, self.cam_mov_z = 0, 0, 0
@@ -250,11 +255,26 @@ function World:tick()
     end
 
     --Bookkeep terrain
-    local time_limit = math.max(self.next_tick - os.clock() - 0.004, 0)
-    self.terrain:bookkeep(self.cam_pos)
+    do
+        local pos = self.cam_pos
+        local play = self.ent_map[self.player_id]
+        if play then
+            pos = play.pos
+        end
+        self.terrain:bookkeep(pos)
+    end
 
     --Advance tick count
     self.tick_count = self.tick_count + 1
+end
+
+function World:relative_player_pos(pos)
+    if self.ent_map[self.player_id] then
+        local dx, dy, dz = self.terrain:to_relative(pos)
+        return -dx, -dy, -dz
+    else
+        return 0/0, 0/0, 0/0
+    end
 end
 
 local last_tick = os.clock()
@@ -663,15 +683,16 @@ function World:draw()
     self.terrain:reset_draw_stats()
     self:subdraw()
 
-    --Draw HUD
+    --Draw on-screen text
     do
         local s = self.textbuf
         frame.mvp_hud:push()
-        frame.mvp_hud:translate(-frame.w + 4, frame.h - 16, 0)
+        frame.mvp_hud:translate(-frame.w + 4, frame.h - 4, 0)
         frame.mvp_hud:scale(self.font_size)
 
         s:clear()
         s:push("FPS: ", self.fps)
+        frame.mvp_hud:translate(0, -1.25, 0)
         self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
         
         if self.show_debug_stats then
@@ -729,8 +750,9 @@ function World:draw()
             s:clear()
             s:push("pos: ", math.floor(raw_x), ", ", math.floor(raw_y), ", ", math.floor(raw_z), " : ", math.floor(raw_w))
             self.font:draw(s, frame.mvp_hud, frame.params_hud, 1, 1, 1)
-            frame.mvp_hud:pop()
         end
+
+        frame.mvp_hud:pop()
     end
 
     --Draw crosshair
@@ -743,10 +765,35 @@ function World:draw()
         frame.mvp_hud:pop()
     end
 
+    --Draw healthbar
+    do
+        local play = self.ent_map[self.player_id]
+        local sprite, i = Sprite.sprites.overbars, 1
+        frame.mvp_hud:push()
+        frame.mvp_hud:translate(0, -frame.h + 4, 0)
+        frame.mvp_hud:scale(2*sprite.w, 2*sprite.h, 1)
+
+        if play then
+            frame.mvp_hud:push()
+            frame.mvp_hud:translate(-.5, .5, 0)
+            frame.mvp_hud:scale(play.hp / play.max_hp, 1, 1)
+            frame.mvp_hud:translate(.5, 0, 0)
+            sprite:draw(i+1, frame.mvp_hud, frame.params_hud)
+            frame.mvp_hud:pop()
+        end
+        
+        frame.mvp_hud:push()
+        frame.mvp_hud:translate(0, .5, 0)
+        sprite:draw(i, frame.mvp_hud, frame.params_hud)
+        frame.mvp_hud:pop()
+
+        frame.mvp_hud:pop()
+    end
+
     --DEBUG: Draw texture atlas of the current chunk
-    if true then
+    if self.show_chunk_atlas then
         local atlas
-        --atlas = self.terrain:atlas_at(self.cam_pos)
+        atlas = self.terrain:atlas_at(self.cam_pos)
         if atlas then
             atlas:set_mag('nearest')
             last_atlas = atlas
@@ -782,6 +829,8 @@ end
 function World:keydown(key)
     if key == 'f7' then
         self:update_showchunkgrid(not self.showchunkgrid)
+    elseif key == 'f9' then
+        self.show_chunk_atlas = not self.show_chunk_atlas
     elseif key == 'f3' then
         self.show_debug_stats = not self.show_debug_stats
     end

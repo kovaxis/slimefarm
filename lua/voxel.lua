@@ -8,7 +8,7 @@ voxel.mesher_cfg = {
     -- width is a fixed value, but height is only a maximum value
     atlas_size = {64, 1024},
     -- clear, normal, blocked, blocked, base
-    exposure_table = {64, 60, 40, 40, 0},
+    exposure_table = {64, 62, 40, 40, 0},
     -- offset into the light texture uv coordinates
     -- 0.5 is the only reasonable value apart from debug purposes
     light_uv_offset = 0.5,

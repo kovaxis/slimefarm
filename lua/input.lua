@@ -67,14 +67,13 @@ do
 	input.scancodes = scancodes
 end
 
-input.mouse_buttons = {
-	[0] = 'mouse_left',
-	[1] = 'mouse_right',
-	[2] = 'mouse_middle',
-	mouse_left = 0,
-	mouse_right = 1,
-	mouse_middle = 2,
-}
+input.mouse_buttons = {}
+for i = 0, 20 do
+	input.mouse_buttons[i] = 'm'..(i+1)
+end
+for i = 0, #input.mouse_buttons do
+	input.mouse_buttons[input.mouse_buttons[i]] = i
+end
 
 input.is_down = {}
 

@@ -48,12 +48,15 @@ while true do
         end
     elseif ev == 'click' then
         if has_focus then
-            local button, state = a, b
-            local name = input.mouse_buttons[button]
-            if name then
-                input.is_down[name] = state
+            local button, state = input.mouse_buttons[a], b
+            if button then
+                input.is_down[button] = state
+                if state then
+                    world:keydown(button)
+                else
+                    world:keyup(button)
+                end
             end
-            input.is_down[button] = state
         end
     elseif ev == 'update' then
         world:update()

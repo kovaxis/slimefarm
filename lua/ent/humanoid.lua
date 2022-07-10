@@ -20,11 +20,11 @@ Humanoid.jump_keepup_ticks = 14
 Humanoid.jump_cooldown_start = 20
 Humanoid.jump_cooldown_land = 0
 
-Humanoid.roll_pre = 5
-Humanoid.roll_immune = 25
+Humanoid.roll_pre = 7
+Humanoid.roll_immune = 22
 Humanoid.roll_duration = 37
 Humanoid.roll_cooldown_end = 5
-Humanoid.roll_speed = {0.17, 0.17, 0.10}
+Humanoid.roll_speed = {0.08, 0.17, 0.08}
 
 Humanoid.atk_combo = 3
 Humanoid.atk_duration = 18
@@ -33,11 +33,11 @@ Humanoid.atk_cooldown_end = 16
 Humanoid.atk_lounge = .2
 Humanoid.atk_lounge_decay = .85
 Humanoid.atk_hitbox_x = 3
-Humanoid.atk_hitbox_y = 3
-Humanoid.atk_hitbox_z = 2
+Humanoid.atk_hitbox_y = 1.5
+Humanoid.atk_hitbox_z = 2.5
 Humanoid.atk_damage = 20
 Humanoid.atk_knockback = 0.2
-Humanoid.atk_knockback_lift = 0.5
+Humanoid.atk_lift = 0.5
 
 function Humanoid:new()
     super.new(self)
@@ -192,7 +192,6 @@ function Humanoid:tick(world)
                 local w, h = math.max(ent.rad_x, ent.rad_y), ent.rad_z
                 local buf = world.relpos_buf
                 world.terrain:get_relative_positions(ent.pos, ent.rad_x, ent.rad_y, ent.rad_z, self.pos, buf)
-                local hit = false
                 for i = 1, #buf, 3 do
                     local hx, hy, hz = self.atk_hitbox_x, self.atk_hitbox_y, self.atk_hitbox_z
                     local dx, dy, dz = buf[i], buf[i+1], buf[i+2]
@@ -202,10 +201,7 @@ function Humanoid:tick(world)
                             and drt >= -hx/2 - w and drt <= hx/2 + w
                             and dz >= -hz/2 - h and dz <= hz/2 + h then
                         -- Hit this entity
-                        local kx, ky, kz = lx, ly, self.atk_knockback_lift
-                        local n = self.atk_knockback * (kx*kx + ky*ky + kz*kz)^-.5
-                        kx, ky, kz = kx*n, ky*n, kz*n
-                        ent:damage(self.atk_damage, kx, ky, kz)
+                        self:make_damage(ent, self.atk_damage, self.atk_knockback, self.atk_lift, lx, ly)
                         break
                     end
                 end

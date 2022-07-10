@@ -10,7 +10,8 @@ local Player, super = class{ super = Humanoid }
 
 Player:set_bbox(10/8, 15/8, 24/8)
 Player.model = voxel.models.player
-Player.max_hp = 1000
+Player.max_hp = 120
+Player.healthbar_dist = 0
 
 Player.atk_lounge = 0.1
 
@@ -22,8 +23,8 @@ local controls = {
     back = 's',
     right = 'd',
     jump = 'space',
-    roll = 'mouse_right',
-    atk = 'mouse_left',
+    atk = 'm1',
+    roll = 'm2',
 }
 
 function Player:new()
@@ -112,6 +113,7 @@ function Player:tick(world)
 
     --Move camera to point at player
     world.ticks_without_player = 0
+    world.set_player_id = self.id
     local focus_height = 2 + self.focus_height_lag
     local focus_dist = 8
     local cam_wall_dist = 0.4

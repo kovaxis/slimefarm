@@ -21,12 +21,12 @@ Slimy.jump_cooldown_start = 10
 Slimy.jump_cooldown_land = 60
 Slimy.jump_cooldown_fudge = 0.4
 
+-- The slime hitbox is a cylinder with diameter `atk_hitbox_xy` and height `atk_hitbox_z`
+Slimy.atk_hitbox_xy = 3
+Slimy.atk_hitbox_z = 1
 Slimy.atk_damage = 20
 Slimy.atk_knockback = 0.2
 Slimy.atk_lift = 0.5
-Slimy.atk_damage_fall = 40
-Slimy.atk_knockback_fall = 0.4
-Slimy.atk_lift_fall = 0.5
 Slimy.atk_cooldown_duration = 30
 
 function Slimy:new()
@@ -34,6 +34,7 @@ function Slimy:new()
 
     --Character control
     self.wx, self.wy = 0, 0
+    self.watk = false
     self.wjump = false
 
     --Attack mechanics
@@ -68,11 +69,6 @@ function Slimy:tick(world)
         end
     end
     self.yaw_x, self.yaw_y = wx, wy
-
-    --Reduce attack cooldown
-    if self.atk_cooldown > 0 then
-        self.atk_cooldown = self.atk_cooldown - 1
-    end
 
     --Jump
     if self.on_ground and self.vel_z < 0 and (self.jump_ticks < 0 or self.jump_ticks >= self.jump_charge) then
@@ -133,24 +129,34 @@ function Slimy:tick(world)
         self.anim:event('stretch', s)
     end
 
-    return super.tick(self, world)
-end
+    super.tick(self, world)
 
-function Slimy:on_player_collision(world, play, dx, dy, dz)
+    --Attack
+    if self.atk_cooldown <= 0 and self.on_ground and self.fall_height > 1.5 and self.watk then
+        --Attack
+        local ent = world.ent_map[world.player_id]
+        if ent then
+            if ent ~= self and ent.hp then
+                local w, h = math.max(ent.rad_x, ent.rad_y), ent.rad_z
+                local buf = world.relpos_buf
+                world.terrain:get_relative_positions(ent.pos, ent.rad_x, ent.rad_y, ent.rad_z, self.pos, buf)
+                for i = 1, #buf, 3 do
+                    local hxy, hz = self.atk_hitbox_xy, self.atk_hitbox_z
+                    local dx, dy, dz = buf[i], buf[i+1], buf[i+2]
+                    if dx*dx + dy*dy <= (hxy/2 + w)^2
+                            and dz >= -h and dz <= hz + h then
+                        -- Hit this entity
+                        self.atk_cooldown = self.atk_cooldown_duration
+                        self:make_damage(ent, self.atk_damage, self.atk_knockback, self.atk_lift, dx, dy)
+                        break
+                    end
+                end
+            end
+        end
+    end
     if self.atk_cooldown > 0 then
-        return
+        self.atk_cooldown = self.atk_cooldown - 1
     end
-    self.atk_cooldown = self.atk_cooldown_duration
-    local dmg, knock, lift = self.atk_damage, self.atk_knockback, self.atk_lift
-    if self.vel_z < 0 and dz > 0 then
-        dmg, knock, lift = self.atk_damage_fall, self.atk_knockback_fall, self.atk_lift_fall
-    end
-    local kx, ky, kz = -dx, -dy, lift
-    local n = (kx*kx + ky*ky)^-.5
-    kx, ky = n*kx, n*ky
-    n = knock * (kx*kx + ky*ky + kz*kz)^-.5
-    kx, ky, kz = kx * n, ky * n, kz * n
-    play:damage(dmg, kx, ky, kz)
 end
 
 return Slimy

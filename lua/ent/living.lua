@@ -14,6 +14,8 @@ Living.falldmg_minh = 10
 Living.falldmg_maxh = 100
 Living.falldmg_multiplier = 5
 
+Living.wander_dist = 50
+
 Living.dmg_anim_factor = 0.01
 Living.dmg_anim_linear = 1
 Living.healthbar_dist = 30
@@ -21,6 +23,10 @@ Living.healthbar_z = 1
 
 function Living:new()
     super.new(self)
+
+    self.acc_x = 0
+    self.acc_y = 0
+    self.acc_z = 0
 
     self.hp = self.hp or self.max_hp
     self.fall_height = 0
@@ -30,14 +36,27 @@ function Living:new()
     self.visual_dmg_b = 0
 end
 
+function Living:make_damage(target, dmg, knockback, lift, kx, ky)
+    --Normalize xy knockback
+    local n = (kx*kx + ky*ky)^-.5
+    kx, ky = n*kx, n*ky
+    --Apply lift and normalize again
+    local kz
+    kx, ky, kz = kx, ky, lift
+    n = knockback * (kx*kx + ky*ky + kz*kz)^-.5
+    kx, ky, kz = n*kx, n*ky, n*kz
+    --Deal damage with the calculated knockback
+    target:damage(dmg, kx, ky, kz)
+end
+
 function Living:damage(dmg, kx, ky, kz)
+    --Remove health
     self.hp = self.hp - dmg * self.armor
+    --Kill if no hp left
     if self.hp <= 0 then
         self.remove = true
     end
-    self.visual_dmg_r = 1
-    self.visual_dmg_g = 1
-    self.visual_dmg_b = 1
+    --Apply knockback
     kx = kx or 0
     ky = ky or 0
     kz = kz or 0
@@ -46,22 +65,37 @@ function Living:damage(dmg, kx, ky, kz)
     self.vel_x = self.vel_x + kx
     self.vel_y = self.vel_y + ky
     self.vel_z = self.vel_z + kz
+    --Start damage animation
+    self.visual_dmg_r = 1
+    self.visual_dmg_g = 1
+    self.visual_dmg_b = 1
+end
+
+function Living:pretick(world)
+    --Accumulate total traveled distance from spawn
+    self.acc_x = self.acc_x + self.mov_x
+    self.acc_y = self.acc_y + self.mov_y
+    self.acc_z = self.acc_z + self.mov_z
+
+    --Accumulate fall height
+    if self.mov_z >= 0 or self.on_ground then
+        self.fall_height = 0
+    else
+        self.fall_height = self.fall_height - self.mov_z
+    end
+
+    return super.pretick(self, world)
 end
 
 function Living:tick(world)
     super.tick(self, world)
 
+    --Deal fall damage
     if self.on_ground and self.fall_height > 0 then
         local dmg = math.floor((math.min(self.fall_height, self.falldmg_maxh) - self.falldmg_minh) * self.falldmg_multiplier)
         if dmg > 0 then
             self:damage(dmg)
         end
-    end
-
-    if self.mov_z >= 0 or self.on_ground then
-        self.fall_height = 0
-    else
-        self.fall_height = self.fall_height - self.mov_z
     end
 end
 
@@ -69,7 +103,7 @@ function Living:draw(world, dx, dy, dz)
     local frame = world.frame
 
     --Draw healthbar
-    if dx*dx + dy*dy + dz*dy < self.healthbar_dist * self.healthbar_dist then
+    if dx*dx + dy*dy + dz*dz < self.healthbar_dist * self.healthbar_dist then
         local x, y, z, w = frame.mvp_world:transform_vec4(0, 0, self.rad_z + self.healthbar_z, 1)
         if z > -w and z < w then
             local size = 0.07
