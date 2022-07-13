@@ -16,7 +16,7 @@ local reclaim = require 'gen.reclaim'
 gen.k = ...
 gen.seed = assert(gen.k.seed, "no seed!")
 
-local filler = require(gen.k.kind)
+local generator = require(gen.k.kind)
 
 blocks.register {
     name = 'base.air',
@@ -60,7 +60,7 @@ function gen.lightmodes()
 end
 
 function gen.chunk(x, y, z, w)
-    return filler.generate(x, y, z, w)
+    return generator.generate(x, y, z, w)
 end
 
 function gen.gc()

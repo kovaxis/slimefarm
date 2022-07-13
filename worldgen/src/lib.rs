@@ -122,6 +122,40 @@ lua_type! {BufGrid2, lua, this,
 }
 
 #[derive(Deserialize)]
+struct LuaNoise2dCfg {
+    seed: i64,
+    noise: Vec<(f64, f32)>,
+}
+
+struct LuaNoise2d {
+    noise: Noise2d,
+}
+impl LuaNoise2d {
+    fn new(k: LuaNoise2dCfg) -> Self {
+        Self {
+            noise: Noise2d::new(k.seed as u64, &k.noise),
+        }
+    }
+
+    fn noise_at(&mut self, pos: [f64; 2]) -> f32 {
+        let base = Int2::from_f64(pos);
+        let mut noise = [0.; 4];
+        self.noise
+            .noise_block(base.to_f64(), 1., 2, &mut noise, true);
+        let [ld, rd, lu, ru] = noise;
+        let [x, y] = [pos[0] - base.x as f64, pos[1] - base.y as f64];
+        let d = ld + (rd - ld) * x as f32;
+        let u = lu + (ru - lu) * x as f32;
+        d + (u - d) * y as f32
+    }
+}
+lua_type! {LuaNoise2d, lua, this,
+    mut fn noise_at((x, y): (f64, f64)) {
+        this.noise_at([x, y])
+    }
+}
+
+#[derive(Deserialize)]
 struct HeightMapCfg {
     seed: i64,
     noise: Vec<(f64, f32)>,
@@ -258,6 +292,11 @@ fn open_lib(lua: LuaContext) -> Result<LuaTable> {
                     chunk: mem::transmute(raw),
                 }
             }
+        }
+
+        fn noise2d(cfg: LuaValue) {
+            let cfg = rlua_serde::from_value(cfg).to_lua_err()?;
+            LuaNoise2d::new(cfg)
         }
 
         fn heightmap(cfg: LuaValue) {
