@@ -332,14 +332,34 @@ lua_type! {TerrainRef, lua, this,
         }else{None}
     }
 
+    fn add_particle((kind, pos, vx, vy, vz, r, rx, ry, rz): (u32, LuaWorldPos, f32, f32, f32, f32, f32, f32, f32)) {
+        let this = this.rc.borrow();
+        this.particles.borrow_mut().add(
+            kind,
+            pos.pos.get(),
+            Vec3::new(vx, vy, vz),
+            Rotor3::from_angle_plane(
+                r,
+                Bivec3::from_normalized_axis(Vec3::new(rx, ry, rz).normalized())
+            )
+        );
+    }
+
+    fn tick_particles(dt: f32) {
+        let this = this.rc.borrow();
+        this.particles.borrow_mut().tick(&*this, dt);
+    }
+
     fn draw((
         shader,
+        particle_shader,
         uniforms,
         params,
         mvp,
         camstack_raw,
         subdraw_callback
     ): (
+        ShaderRef,
         ShaderRef,
         LuaAnyUserData,
         LuaDrawParams,
@@ -366,6 +386,7 @@ lua_type! {TerrainRef, lua, this,
         };
         this.draw(
             &shader.program,
+            &particle_shader.program,
             &uniforms,
             camstack.origin(),
             &params.params,

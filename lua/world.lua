@@ -7,6 +7,7 @@ local Sprite = require 'sprite'
 local voxel = require 'voxel'
 local entreg = require 'ent.reg'
 local Player = require 'ent.player'
+local particles = require 'particles'
 
 -- Load entities here
 do
@@ -33,6 +34,11 @@ function World:new()
             fragment = 'terrain.frag',
             -- first 3 must be (in order) 'offset', 'color', 'light'
             uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle', 'tint'},
+        },
+        particle = util.Shader{
+            vertex = 'particle.vert',
+            fragment = 'particle.frag',
+            uniforms = {'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle', 'tint'},
         },
         portal = util.Shader{
             vertex = 'portal.vert',
@@ -157,6 +163,7 @@ function World:new()
     self.last_frame = os.clock()
 
     self.relpos_buf = {}
+    self.pos_buf = system.world_pos()
 
     self.mouse_x = 0
     self.mouse_y = 0
@@ -318,6 +325,7 @@ function World:load_terrain()
             }},
         },
         mesher = voxel.mesher_cfg,
+        particles = particles.get_particles(),
     }
     self.terrain:set_interpolation(false, true)
     --self.terrain:set_view_distance(32*12, 32*14)
@@ -526,7 +534,7 @@ function World:subdraw()
         self.shaders.terrain:set_matrix('mvp', frame.mvp_world)
         sky.colors(self.shaders.terrain, cycle)
         sky.lighting(self.shaders.terrain, cycle)
-        self.shaders.terrain:draw_terrain(self.terrain, frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
+        self.shaders.terrain:draw_terrain(self.terrain, self.shaders.particle, frame.params_world, frame.mvp_world, cam, self.subdraw_bound)
     end
     
     --Draw entities
@@ -677,6 +685,9 @@ function World:draw()
             self.fog_current = util.approach(self.fog_current, self.fog_target, 0.00001, 8, frame.dt)
         end
     end
+
+    --Move particles
+    self.terrain:tick_particles(frame.dt)
 
     --Draw terrain
     frame.portal_budget = 16

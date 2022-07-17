@@ -3,6 +3,20 @@ local class = require 'class'
 local util = require 'util'
 local Entity = require 'ent.entity'
 local Sprite = require 'sprite'
+local particles = require 'particles'
+
+particles.register {
+    name = 'living.death',
+    friction = .0001,
+    acc = {0, 0, -5},
+    rot_friction = .3,
+    color_interval = 1,
+    color = {{1, 1, 1}},
+    size_interval = .6,
+    size = {.2, 0},
+    physical_size = .2,
+    lifetime = .6,
+}
 
 local Living, super = class{ super = Entity }
 
@@ -21,6 +35,9 @@ Living.dmg_anim_linear = 1
 Living.healthbar_dist = 30
 Living.healthbar_z = 1
 
+Living.death_particle_n = 16
+Living.death_particle_id = particles.lookup 'living.death'
+
 function Living:new()
     super.new(self)
 
@@ -36,7 +53,7 @@ function Living:new()
     self.visual_dmg_b = 0
 end
 
-function Living:make_damage(target, dmg, knockback, lift, kx, ky)
+function Living:make_damage(world, target, dmg, knockback, lift, kx, ky)
     --Normalize xy knockback
     local n = (kx*kx + ky*ky)^-.5
     kx, ky = n*kx, n*ky
@@ -46,14 +63,22 @@ function Living:make_damage(target, dmg, knockback, lift, kx, ky)
     n = knockback * (kx*kx + ky*ky + kz*kz)^-.5
     kx, ky, kz = n*kx, n*ky, n*kz
     --Deal damage with the calculated knockback
-    target:damage(dmg, kx, ky, kz)
+    target:damage(world, dmg, kx, ky, kz)
 end
 
-function Living:damage(dmg, kx, ky, kz)
+function Living:damage(world, dmg, kx, ky, kz)
     --Remove health
     self.hp = self.hp - dmg * self.armor
     --Kill if no hp left
     if self.hp <= 0 then
+        --Spawn death particles
+        local id = self.death_particle_id
+        local n = self.death_particle_n - 1
+        for i = 0, n do
+            local dx, dy, dz = util.fib_point(i, n)
+            local m = 20
+            world.terrain:add_particle(id, self.pos, m*dx, m*dy, m*dz, 0, 1, 0, 0)
+        end
         self.remove = true
     end
     --Apply knockback
@@ -94,7 +119,7 @@ function Living:tick(world)
     if self.on_ground and self.fall_height > 0 then
         local dmg = math.floor((math.min(self.fall_height, self.falldmg_maxh) - self.falldmg_minh) * self.falldmg_multiplier)
         if dmg > 0 then
-            self:damage(dmg)
+            self:damage(world, dmg)
         end
     end
 end

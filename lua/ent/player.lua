@@ -5,6 +5,7 @@ local input = require 'input'
 local util = require 'util'
 local Humanoid = require 'ent.humanoid'
 local entreg = require 'ent.reg'
+local particles = require 'particles'
 
 local Player, super = class{ super = Humanoid }
 
@@ -104,6 +105,12 @@ function Player:tick(world)
         self.watk_x, self.watk_y = util.rotate_yaw(0, 1, world.cam_yaw)
     else
         self.watk_x, self.watk_y = 0, 0
+    end
+
+    if false and self.atk_ticks == 1 then
+        local vx, vy = world.rng:normal(-5, 5), world.rng:normal(-5, 5)
+        local rx, ry, rz = world.rng:normal(), world.rng:normal(), world.rng:normal()
+        world.terrain:add_particle(particles.lookup 'slime.attack', self.pos, vx, vy, 5, 6, rx, ry, rz)
     end
 
     --Smooth camera vertical jumps

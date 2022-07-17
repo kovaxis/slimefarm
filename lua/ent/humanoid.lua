@@ -201,7 +201,7 @@ function Humanoid:tick(world)
                             and drt >= -hx/2 - w and drt <= hx/2 + w
                             and dz >= -hz/2 - h and dz <= hz/2 + h then
                         -- Hit this entity
-                        self:make_damage(ent, self.atk_damage, self.atk_knockback, self.atk_lift, lx, ly)
+                        self:make_damage(world, ent, self.atk_damage, self.atk_knockback, self.atk_lift, lx, ly)
                         break
                     end
                 end

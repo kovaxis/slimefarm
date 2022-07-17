@@ -327,7 +327,7 @@ action! {
         let mut z = -r;
         sph(u, r);
         for _ in 0..n {
-            let rxy = (r*r - z * z).sqrt();
+            let rxy = (r * r - z * z).sqrt();
             let u = u + Vec3::new(theta.cos() * rxy, theta.sin() * rxy, z);
             let r = r0 + rng.gen::<f32>() * dr;
             sph(u, r);

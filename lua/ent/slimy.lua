@@ -4,6 +4,18 @@ local class = require 'class'
 local input = require 'input'
 local util = require 'util'
 local Living = require 'ent.living'
+local particles = require 'particles'
+
+particles.register {
+    name = 'slimy.attack',
+    acc = {0, 0, -30},
+    color_interval = 1,
+    color = {{.92, 0.15, .01}},
+    size_interval = 0.6,
+    size = {0.3, 0},
+    physical_size = 0.2,
+    lifetime = 0.4,
+}
 
 local Slimy, super = class{ super = Living }
 
@@ -28,6 +40,8 @@ Slimy.atk_damage = 20
 Slimy.atk_knockback = 0.2
 Slimy.atk_lift = 0.5
 Slimy.atk_cooldown_duration = 30
+Slimy.atk_particle = particles.lookup 'slimy.attack'
+Slimy.atk_particle_n = 8
 
 function Slimy:new()
     super.new(self)
@@ -134,6 +148,14 @@ function Slimy:tick(world)
     --Attack
     if self.atk_cooldown <= 0 and self.on_ground and self.fall_height > 1.5 and self.watk then
         --Attack
+        for i = 1, self.atk_particle_n do
+            local vx, vy = util.random_circle(world.rng)
+            local vz = 6
+            local m, r = 8, 1
+            world.pos_buf:copy_from(self.pos)
+            world.pos_buf:move_box(world.terrain, r*vx, r*vy, -self.rad_z, .2, .2, .2, true)
+            world.terrain:add_particle(self.atk_particle, world.pos_buf, m*vx, m*vy, vz, 0, 1, 0, 0)
+        end
         local ent = world.ent_map[world.player_id]
         if ent then
             if ent ~= self and ent.hp then
@@ -147,7 +169,7 @@ function Slimy:tick(world)
                             and dz >= -h and dz <= hz + h then
                         -- Hit this entity
                         self.atk_cooldown = self.atk_cooldown_duration
-                        self:make_damage(ent, self.atk_damage, self.atk_knockback, self.atk_lift, dx, dy)
+                        self:make_damage(world, ent, self.atk_damage, self.atk_knockback, self.atk_lift, dx, dy)
                         break
                     end
                 end

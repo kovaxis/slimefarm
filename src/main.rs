@@ -181,6 +181,7 @@ mod gen;
 mod lua;
 mod magicavox;
 mod mesh;
+mod particle;
 mod terrain;
 
 /// State shared by all threads.
@@ -221,6 +222,37 @@ implement_vertex!(SimpleVertex, pos normalize(false), normal normalize(true), co
 struct GpuBuffer<V: Copy, I: glium::index::Index = VertIdx> {
     vertex: VertexBuffer<V>,
     index: IndexBuffer<I>,
+}
+
+struct DynVertBuf<T: Copy> {
+    buf: VertexBuffer<T>,
+    len: usize,
+}
+impl<T: Copy + glium::vertex::Vertex> DynVertBuf<T> {
+    fn new(state: &Rc<State>) -> Self {
+        Self {
+            buf: VertexBuffer::empty_dynamic(&state.display, 16).unwrap(),
+            len: 0,
+        }
+    }
+
+    fn write(&mut self, state: &Rc<State>, vert: &[T]) {
+        if vert.is_empty() {
+            return;
+        }
+
+        // Write vertex data
+        if self.buf.len() < vert.len() {
+            self.buf = VertexBuffer::empty_dynamic(&state.display, vert.len().next_power_of_two())
+                .unwrap();
+        }
+        self.buf.slice(..vert.len()).unwrap().write(vert);
+        self.len = vert.len();
+    }
+
+    fn as_buf(&self) -> glium::vertex::VertexBufferSlice<T> {
+        self.buf.slice(0..self.len).unwrap()
+    }
 }
 
 /*

@@ -71,16 +71,15 @@ do
         end,
         generate = function(m)
             local b = biome:noise_at(m.bx, m.by)
-            print("rock biome noise = "..b.." "..m.bx..", "..m.by)
             if b < -1 and m.rng:uniform() < chance then
                 local s = m.rng:uniform(s[1], s[2])
                 local size = s * size
                 local lift = s * lift
                 m.bbuf:rock(m.fx, m.fy, m.fz + lift, size, m.rng:integer(1000000000), n, noisiness, block)
-                local ent = {'Checkpoint', {
-                    orient = m.rng:integer(4),
-                }}
                 if m.rng:uniform() < spawnchance then
+                    local ent = {'Checkpoint', {
+                        orient = m.rng:integer(4),
+                    }}
                     m.bbuf:entity(m.fx, m.fy, m.fz + lift + size * (2 + noisiness), spawn.serialize(ent))
                 end
             end

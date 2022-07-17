@@ -49,6 +49,25 @@ function util.pos_to_yaw(dx, dy)
     return math.atan(-dx, dy)
 end
 
+do
+    local phi = math.pi * (3 - 5^.5)
+    local sin, cos = math.sin, math.cos
+
+    -- returns the i-th point on a fibonacci unit sphere with (n+1) points.
+    -- i should be in the range [0, n] (both inclusive).
+    function util.fib_point(i, n)
+        local z = -1 + 2 / n * i
+        local rxy = (1 - z*z)^.5
+        local theta = i * phi
+        return rxy * cos(theta), rxy * sin(theta), z
+    end
+end
+
+function util.random_circle(rng)
+    local ang = rng:uniform(0, 2*math.pi)
+    return math.cos(ang), math.sin(ang)
+end
+
 function util.dot(x0, y0, z0, x1, y1, z1)
     return x0 * x1 + y0 * y1 + z0 * z1
 end
@@ -239,8 +258,8 @@ function util.Shader:draw(buf, draw_params)
     gfx.draw(buf, self.program, self.raw_uniforms, draw_params)
 end
 
-function util.Shader:draw_terrain(terr, draw_params, mvp, locate, subdraw)
-    terr:draw(self.program, self.raw_uniforms, draw_params, mvp, locate, subdraw)
+function util.Shader:draw_terrain(terr, particle_shader, draw_params, mvp, locate, subdraw)
+    terr:draw(self.program, particle_shader.program, self.raw_uniforms, draw_params, mvp, locate, subdraw)
 end
 
 function util.Shader:draw_voxel(voxel, draw_params)

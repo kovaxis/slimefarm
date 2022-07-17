@@ -85,8 +85,8 @@ entreg.register {
 }
 
 function Red:tick(world)
-    ai(self, world, self.view_dist)
-    self.watk = true
+    local d = ai(self, world, self.view_dist)
+    self.watk = (d < 10)
 
     return super.tick(self, world)
 end

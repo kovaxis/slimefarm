@@ -1,12 +1,6 @@
 use std::f64::INFINITY;
 
-use crate::{
-    chunkmesh::{MesherCfg, MesherHandle},
-    gen::{EntityEv, GenArea, GenConfig},
-    lua::gfx::{BufferRef, ShaderRef},
-    mesh::RawBufPackage,
-    prelude::*,
-};
+use crate::{chunkmesh::{MesherCfg, MesherHandle}, gen::{EntityEv, GenArea, GenConfig}, lua::gfx::{BufferRef, ShaderRef}, mesh::RawBufPackage, particle::{ParticleKindCfg, ParticleSystem}, prelude::*};
 use common::terrain::GridKeeper4;
 
 #[derive(Default)]
@@ -434,6 +428,7 @@ fn check_chunk_clip_planes(clip: &[Vec4; 5], chunk_center: Vec3) -> bool {
 #[derive(Deserialize)]
 pub struct TerrainCfg {
     mesher: MesherCfg,
+    particles: Vec<ParticleKindCfg>,
 }
 
 #[derive(Default)]
@@ -459,6 +454,7 @@ pub(crate) struct Terrain {
     pub light_linear: bool,
     pub color_linear: bool,
     pub relative_map: RefCell<HashMap<ChunkPos, Int3>>,
+    pub particles: RefCell<ParticleSystem>,
     next_entity_id: u64,
     entity_id_stride: u64,
     tmp_colbuf: RefCell<Vec<PortalPlane>>,
@@ -484,6 +480,13 @@ impl Terrain {
             relative_map: default(),
             next_entity_id: rand::random::<u64>() | 1,
             entity_id_stride: rand::random::<u64>() & (!1),
+            particles: RefCell::new({
+                let mut parts = ParticleSystem::new(state);
+                for kind in cfg.particles {
+                    parts.add_kind(kind.into_kind());
+                }
+                parts
+            }),
             tmp_colbuf: default(),
             tmp_seenbuf: default(),
             tmp_seenbuf_simple: default(),
@@ -513,7 +516,7 @@ impl Terrain {
             gen_radius: self.gen_radius,
         });
         //Reclaim old meshes
-        self.meshes.gc();
+        self.gc();
         //Lock communication buffer with chunk mesher
         let mut request = self.mesher.request().lock();
         //Receive buffers from mesher thread
@@ -723,6 +726,7 @@ impl Terrain {
     pub fn draw(
         &self,
         shader: &Program,
+        particle_shader: &Program,
         uniforms: &crate::lua::gfx::UniformStorage,
         origin: WorldPos,
         params: &DrawParameters,
@@ -751,23 +755,27 @@ impl Terrain {
             (center_chunk_f64[2] - origin.coords[2]) as f32,
         ]);
 
-        // Draw all visible chunks
+        // Draw all visible chunks and particles
         {
             use glium::uniforms::{
                 MagnifySamplerFilter as Magnify, MinifySamplerFilter as Minify, SamplerBehavior,
                 SamplerWrapFunction as Wrap,
             };
 
+            let mut particles = self.particles.borrow_mut();
+            particles.queue_start();
             let mut frame = frame.borrow_mut();
             let mut drawn = 0;
             let mut bytes_v = 0;
             let mut bytes_i = 0;
             let mut bytes_c = 0;
             self.iter_visible(origin.coords, &clip_planes, self.view_radius, |pos| {
-                let chunk = match self.meshes.get(ChunkPos {
+                let cpos = ChunkPos {
                     coords: pos,
                     dim: origin.dim,
-                }) {
+                };
+                particles.queue(cpos, origin);
+                let chunk = match self.meshes.get(cpos) {
                     Some(cnk) => cnk,
                     None => return Ok(()),
                 };
@@ -831,6 +839,7 @@ impl Terrain {
                 bytes_c += atlas.width() * atlas.height() * 4;
                 Ok(())
             })?;
+            particles.queue_draw(particle_shader, uniforms, params, &mut *frame);
             {
                 let mut st = self.draw_stats.borrow_mut();
                 st.drawnchunks += drawn;
@@ -1329,6 +1338,11 @@ impl Terrain {
         let id = self.next_entity_id;
         self.next_entity_id = self.next_entity_id.wrapping_add(self.entity_id_stride);
         id
+    }
+
+    pub fn gc(&mut self) {
+        self.meshes.gc();
+        self.particles.borrow_mut().gc();
     }
 }
 
