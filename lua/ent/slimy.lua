@@ -154,7 +154,7 @@ function Slimy:tick(world)
             local m, r = 8, 1
             world.pos_buf:copy_from(self.pos)
             world.pos_buf:move_box(world.terrain, r*vx, r*vy, -self.rad_z, .2, .2, .2, true)
-            world.terrain:add_particle(self.atk_particle, world.pos_buf, m*vx, m*vy, vz, 0, 1, 0, 0)
+            world.terrain:add_particle(self.atk_particle, world.pos_buf, m*vx, m*vy, vz, 0, 0, 0, 0)
         end
         local ent = world.ent_map[world.player_id]
         if ent then

@@ -7,9 +7,9 @@ local particles = require 'particles'
 
 particles.register {
     name = 'living.death',
-    friction = .0001,
+    friction = .001,
     acc = {0, 0, -5},
-    rot_friction = .3,
+    rot_friction = .15,
     color_interval = 1,
     color = {{1, 1, 1}},
     size_interval = .6,
@@ -35,8 +35,13 @@ Living.dmg_anim_linear = 1
 Living.healthbar_dist = 30
 Living.healthbar_z = 1
 
-Living.death_particle_n = 16
+Living.death_particle_n = 30
 Living.death_particle_id = particles.lookup 'living.death'
+Living.death_particle_vel_min = 10
+Living.death_particle_vel_max = 25
+Living.death_particle_rotvel = 10
+
+Living.group = 'enemy'
 
 function Living:new()
     super.new(self)
@@ -51,6 +56,11 @@ function Living:new()
     self.visual_dmg_r = 0
     self.visual_dmg_g = 0
     self.visual_dmg_b = 0
+end
+
+function Living:on_add(world)
+    world.ent_groups[self.group][self.id] = self
+    return super.on_add(self, world)
 end
 
 function Living:make_damage(world, target, dmg, knockback, lift, kx, ky)
@@ -75,11 +85,12 @@ function Living:damage(world, dmg, kx, ky, kz)
         local id = self.death_particle_id
         local n = self.death_particle_n - 1
         for i = 0, n do
-            local dx, dy, dz = util.fib_point(i, n)
-            local m = 20
-            world.terrain:add_particle(id, self.pos, m*dx, m*dy, m*dz, 0, 1, 0, 0)
+            local dx, dy, dz = util.fib_rand(i, n, world.rng, .2)
+            local rx, ry, rz = world.rng:normal(-1, 1), world.rng:normal(-1, 1), world.rng:normal(-1, 1)
+            local m = world.rng:normal(self.death_particle_vel_min, self.death_particle_vel_max)
+            world.terrain:add_particle(id, self.pos, m*dx, m*dy, m*dz, self.death_particle_rotvel, rx, ry, rz)
         end
-        self.remove = true
+        self.removing = true
     end
     --Apply knockback
     kx = kx or 0

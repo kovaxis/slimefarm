@@ -35,7 +35,16 @@ end
 
 -- rotates the given (x, y) vector around the z+ axis according to the given yaw.
 function util.rotate_yaw(x, y, yaw)
-    return x * math.cos(yaw) - y * math.sin(yaw), x * math.sin(yaw) + y * math.cos(yaw)
+    local c, s = math.cos(yaw), math.sin(yaw)
+    return x * c - y * s, x * s + y * c
+end
+
+-- rotates the given (x, y, z) vector around the x+ and z+ axes according to the given yaw and
+-- pitch.
+function util.rotate_yaw_pitch(x, y, z, yaw, pitch)
+    local cy, sy = math.cos(yaw), math.sin(yaw)
+    local cp, sp = math.cos(pitch), math.sin(pitch)
+    return cy * x - sy * cp * y + sy * sp * z, sy * x + cy * cp * y - cy * sp * z, sp * y + cp * z
 end
 
 -- computes the yaw that the given (x, y) vector points towards.
@@ -49,6 +58,10 @@ function util.pos_to_yaw(dx, dy)
     return math.atan(-dx, dy)
 end
 
+function util.pos_to_yaw_pitch(dx, dy, dz)
+    return math.atan(-dx, dy), math.atan(dz, (dx*dx + dy*dy)^.5)
+end
+
 do
     local phi = math.pi * (3 - 5^.5)
     local sin, cos = math.sin, math.cos
@@ -60,6 +73,18 @@ do
         local rxy = (1 - z*z)^.5
         local theta = i * phi
         return rxy * cos(theta), rxy * sin(theta), z
+    end
+
+    function util.fib_rand(i, n, rng, noise)
+        local z = -1 + 2 / n * i
+        local rxy = (1 - z*z)^.5
+        local theta = i * phi
+        local x, y = rxy * cos(theta), rxy * sin(theta)
+        x = x + rng:normal(-noise, noise)
+        y = y + rng:normal(-noise, noise)
+        z = z + rng:normal(-noise, noise)
+        local m = (x*x + y*y + z*z)^-.5
+        return m*x, m*y, m*z
     end
 end
 
@@ -76,8 +101,11 @@ function util.cross(x0, y0, z0, x1, y1, z1)
     return y0 * z1 - y1 * z0, z0 * x1 - x0 * z1, x0 * y1 - x1 * y0
 end
 
-function util.normalize(x, y, z)
+function util.normalize(x, y, z, n)
     local inv = (x * x + y * y + z * z) ^ -0.5
+    if n then
+        inv = inv * n
+    end
     return inv * x, inv * y, inv * z
 end
 

@@ -338,10 +338,14 @@ lua_type! {TerrainRef, lua, this,
             kind,
             pos.pos.get(),
             Vec3::new(vx, vy, vz),
-            Rotor3::from_angle_plane(
-                r,
-                Bivec3::from_normalized_axis(Vec3::new(rx, ry, rz).normalized())
-            )
+            if r == 0. {
+                Rotor3::identity()
+            } else {
+                Rotor3::from_angle_plane(
+                    r,
+                    Bivec3::from_normalized_axis(Vec3::new(rx, ry, rz).normalized())
+                )
+            }
         );
     }
 

@@ -15,8 +15,10 @@ Player.max_hp = 120
 Player.healthbar_dist = 0
 
 Player.atk_lounge = 0.1
+Player.atk_height = 12/8
 
 Player.is_player = true
+Player.group = 'ally'
 
 local controls = {
     forward = 'w',
@@ -100,17 +102,18 @@ function Player:tick(world)
     end
 
     --Attack
-    if input.is_down[controls.atk] then
-        --Attack in the direction of the camera
-        self.watk_x, self.watk_y = util.rotate_yaw(0, 1, world.cam_yaw)
+    if input.is_down[controls.atk] and self.atk_ticks < 0 and self.atk_cooldown <= 0 and self.roll_ticks < 0 then
+        --Raycast and shoot towards the landing point
+        local shoot_range = 350
+        local dx, dy, dz = util.rotate_yaw_pitch(0, shoot_range, 0, world.cam_yaw, world.cam_pitch)
+        local buf = world.pos_buf
+        buf:copy_from(world.real_cam_pos)
+        dx, dy, dz = buf:move_box(world.terrain, dx, dy, dz, .1, .1, .1)
+        dx, dy, dz = dx + world.real_cam_dx, dy + world.real_cam_dy, dz + world.real_cam_dz
+        dz = dz - (self.atk_height - self.rad_z)
+        self.watk_x, self.watk_y, self.watk_z = util.normalize(dx, dy, dz)
     else
-        self.watk_x, self.watk_y = 0, 0
-    end
-
-    if false and self.atk_ticks == 1 then
-        local vx, vy = world.rng:normal(-5, 5), world.rng:normal(-5, 5)
-        local rx, ry, rz = world.rng:normal(), world.rng:normal(), world.rng:normal()
-        world.terrain:add_particle(particles.lookup 'slime.attack', self.pos, vx, vy, 5, 6, rx, ry, rz)
+        self.watk_x, self.watk_y, self.watk_z = 0, 0, 0
     end
 
     --Smooth camera vertical jumps
@@ -125,10 +128,13 @@ function Player:tick(world)
     local focus_dist = 8
     local cam_wall_dist = 0.4
     world.cam_pos:copy_from(self.pos)
-    world.cam_pos:move_box(world.terrain, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+    local dx, dy, dz = world.cam_pos:move_box(world.terrain, 0, 0, focus_height, cam_wall_dist, cam_wall_dist, cam_wall_dist)
     world.cam_mov_x = world.cam_mov_x + self.mov_x
     world.cam_mov_y = world.cam_mov_y + self.mov_y
     world.cam_mov_z = world.cam_mov_z + self.mov_z
+    world.cam_dx = world.cam_dx + dx
+    world.cam_dy = world.cam_dy + dy
+    world.cam_dz = world.cam_dz + dz
     world.cam_rollback = focus_dist
 end
 

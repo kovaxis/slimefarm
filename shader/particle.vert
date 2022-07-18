@@ -24,6 +24,8 @@ smooth out vec3 v_pos;
 smooth out float v_dist;
 
 void main() {
+    float gamma = 2.2;
+
     // Compute the position in relative space (absolute orientation, but origin at the camera)
     vec4 posh = vec4(psize * (prot * pos) + ppos, 1);
 
@@ -45,7 +47,7 @@ void main() {
     vec3 normal = normalize((mv * normal).xyz);
 
     // Store the color
-    v_color = pcol;
+    v_color = pow(pcol, vec4(gamma));
 
     // Direction of the light rays
     vec3 l_dir = -sun_dir;

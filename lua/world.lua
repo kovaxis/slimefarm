@@ -27,6 +27,12 @@ function World:new()
     self.tick_count = 0
     self.ent_list = {}
     self.ent_map = {}
+    self.ent_groups = {
+        ally = setmetatable({}, { __mode = 'kv' }),
+        enemy = setmetatable({}, { __mode = 'kv' }),
+        ally_bullet = setmetatable({}, { __mode = 'kv' }),
+        enemy_bullet = setmetatable({}, { __mode = 'kv' }),
+    }
 
     self.shaders = {
         terrain = util.Shader{
@@ -131,9 +137,13 @@ function World:new()
     self.cam_rollback = 0
     self.cam_yaw = 0
     self.cam_pitch = 0
-    self.cam_effective_x = 0
-    self.cam_effective_y = 0
-    self.cam_effective_z = 0
+    self.cam_dx = 0
+    self.cam_dy = 0
+    self.cam_dz = 0
+    self.real_cam_pos = system.world_pos()
+    self.real_cam_dx = 0
+    self.real_cam_dy = 0
+    self.real_cam_dz = 0
 
     self.ticks_without_player = 1/0
     self.player_id = nil
@@ -175,6 +185,7 @@ function World:add_entity(ent)
     end
     table.insert(self.ent_list, ent)
     self.ent_map[ent.id] = ent
+    ent:on_add(self)
 end
 
 function World:tick()
@@ -187,7 +198,7 @@ function World:tick()
             -- Entity ids generated through logic have odd ids. Remove all terrain-associated
             -- entities as they will be respawned.
             if ent.id % 2 == 0 then
-                ent.remove = true
+                ent.removing = true
             end
         end
         self:load_terrain()
@@ -208,7 +219,7 @@ function World:tick()
         elseif ev == 'despawn' then
             local ent = self.ent_map[id]
             if ent then
-                ent.remove = true
+                ent.removing = true
             end
         else
             break
@@ -230,6 +241,7 @@ function World:tick()
 
     --Tick entities
     self.cam_mov_x, self.cam_mov_y, self.cam_mov_z = 0, 0, 0
+    self.cam_dx, self.cam_dy, self.cam_dz = 0, 0, 0
     for _, ent in ipairs(self.ent_list) do
         ent:pretick(self)
         ent:tick(self)
@@ -237,15 +249,13 @@ function World:tick()
 
     --Remove dead entities
     do
-        local ents, i = self.ent_list, 1
-        while i <= #ents do
+        local ents = self.ent_list
+        for i = #ents, 1, -1 do
             local ent = ents[i]
-            if ent.remove then
+            if ent.removing then
                 ents[i], ents[#ents] = ents[#ents], ent
                 self.ent_map[ent.id] = nil
                 ents[#ents] = nil
-            else
-                i = i + 1
             end
         end
     end
@@ -448,7 +458,6 @@ end
 -- Draw terrain within a frame or portal (the camera being a frame)
 local portalbuf = gfx.buffer_empty()
 local entpos_buf = system.world_pos()
-local campos_buf = system.world_pos()
 function World:subdraw()
     local frame = self.frame
     local cam = frame.cam_stack
@@ -544,8 +553,7 @@ function World:subdraw()
         local movx, movy, movz = ent.mov_x, ent.mov_y, ent.mov_z
         entpos_buf:copy_from(ent.pos)
         entpos_buf:move_box(self.terrain, movx * frame.s, movy * frame.s, movz * frame.s, 0.1, 0.1, 0.1) -- TODO: Replace with a raycast
-        cam:origin(campos_buf)
-        self.terrain:get_relative_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, campos_buf, entcopies)
+        self.terrain:get_relative_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, self.real_cam_pos, entcopies)
         for i = 1, #entcopies, 3 do
             local dx, dy, dz = entcopies[i], entcopies[i+1], entcopies[i+2]
             if cam:can_view(dx, dy, dz, ent.draw_r) then
@@ -622,8 +630,11 @@ function World:draw()
     local cam_yaw, cam_pitch
     do
         local movx, movy, movz = self.cam_mov_x * frame.s, self.cam_mov_y * frame.s, self.cam_mov_z * frame.s
-        campos_buf:copy_from(self.cam_pos)
-        campos_buf:move_box(self.terrain, movx, movy, movz, 0.1, 0.1, 0.1) --TODO: Replace with a raycast
+        self.real_cam_pos:copy_from(self.cam_pos)
+        local dx, dy, dz = self.real_cam_pos:move_box(self.terrain, movx, movy, movz, 0.1, 0.1, 0.1) --TODO: Replace with a raycast
+        self.real_cam_dx = self.cam_dx + dx
+        self.real_cam_dy = self.cam_dy + dy
+        self.real_cam_dz = self.cam_dz + dz
         cam_yaw = self.cam_yaw
         cam_pitch = self.cam_pitch
 
@@ -632,9 +643,10 @@ function World:draw()
         local dx = -math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dy = math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dz = math.sin(self.cam_pitch) * rollback
-        campos_buf:move_box(self.terrain, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
-        frame.cam_yaw = cam_yaw
-        frame.cam_pitch = cam_pitch
+        dx, dy, dz = self.real_cam_pos:move_box(self.terrain, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+        self.real_cam_dx = self.real_cam_dx + dx
+        self.real_cam_dy = self.real_cam_dy + dy
+        self.real_cam_dz = self.real_cam_dz + dz
     end
 
     --Setup model-view-projection matrix for world drawing
@@ -651,7 +663,7 @@ function World:draw()
         frame.invp_world:invert()
 
         -- Update initial drawing conditions
-        frame.cam_stack:reset(campos_buf, frame.mvp_world, nil, 0, 0, 0)
+        frame.cam_stack:reset(self.real_cam_pos, frame.mvp_world, nil, 0, 0, 0)
     end
 
     --Update fog distance
@@ -851,12 +863,14 @@ function World:keyup(key)
 
 end
 
+local mouse_sensitivity = 0.004
+
 function World:mousemove(dx, dy)
     -- under a right-handed coordinate system:
     -- rotation is counterclockwise around the Y axis, so looking to the right is negative rotation
-    self.cam_yaw = (self.cam_yaw - dx * 0.01) % (2*math.pi)
+    self.cam_yaw = (self.cam_yaw - dx * mouse_sensitivity) % (2*math.pi)
     -- rotation is counterclockwise around the X axis, so looking down is negative rotation
-    self.cam_pitch = self.cam_pitch - dy * 0.01
+    self.cam_pitch = self.cam_pitch - dy * mouse_sensitivity
     if self.cam_pitch < math.pi / -2 then
         self.cam_pitch = math.pi / -2
     elseif self.cam_pitch > math.pi / 2 then

@@ -471,4 +471,15 @@ models.flag = {
     },
 }
 
+models.firebolt = {
+    path = 'voxel/firebolt.vox',
+    rootbone = {
+        ref = 1,
+        name = 'base',
+        pos = {1, 'y+', 'z+'},
+        piece = 2,
+    },
+    animations = {},
+}
+
 return models

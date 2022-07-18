@@ -24,9 +24,9 @@ function Entity:new()
     self.mov_x = 0
     self.mov_y = 0
     self.mov_z = 0
-    self.vel_x = 0
-    self.vel_y = 0
-    self.vel_z = 0
+    self.vel_x = self.vel_x or 0
+    self.vel_y = self.vel_y or 0
+    self.vel_z = self.vel_z or 0
     self.on_ground = false
     self.yaw_x, self.yaw_y = 0, 0
     self.yaw = self.yaw or 0
@@ -38,6 +38,10 @@ function Entity:new()
         }
     end
     assert(self.anim)
+end
+
+function Entity:on_add(world)
+
 end
 
 function Entity.create(cl, proto, pos)
@@ -99,6 +103,10 @@ function Entity:draw(world)
     self.anim:draw(frame.dt, world.shaders.terrain, frame.params_world, 'mvp', frame.mvp_world)
 end
 
+-- overloads:
+-- set_bbox(size, visible_size)
+-- set_bbox(size_xy, size_z, visible_size)
+-- set_bbox(size_x, size_y, size_z, visible_size)
 function Entity:set_bbox(x, y, z, r)
     if not z then
         x, y, z = x, x, y

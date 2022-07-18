@@ -79,5 +79,4 @@ void main() {
 
 
     out_color = vec4(color, 1);
-    out_color = vec4(v_color.rgb, 1);
 }

@@ -4,6 +4,7 @@ local class = require 'class'
 local input = require 'input'
 local util = require 'util'
 local Living = require 'ent.living'
+local Firebolt = require 'ent.firebolt'
 
 local Humanoid, super = class{ super = Living }
 
@@ -26,18 +27,13 @@ Humanoid.roll_duration = 37
 Humanoid.roll_cooldown_end = 5
 Humanoid.roll_speed = {0.08, 0.17, 0.08}
 
-Humanoid.atk_combo = 3
 Humanoid.atk_duration = 18
-Humanoid.atk_follow_duration = 2
-Humanoid.atk_cooldown_end = 16
-Humanoid.atk_lounge = .2
-Humanoid.atk_lounge_decay = .85
-Humanoid.atk_hitbox_x = 3
-Humanoid.atk_hitbox_y = 1.5
-Humanoid.atk_hitbox_z = 2.5
+Humanoid.atk_cooldown_end = 40
 Humanoid.atk_damage = 20
 Humanoid.atk_knockback = 0.2
 Humanoid.atk_lift = 0.5
+Humanoid.atk_vel = .4
+Humanoid.atk_height = 0
 
 function Humanoid:new()
     super.new(self)
@@ -47,7 +43,7 @@ function Humanoid:new()
     self.wx, self.wy = 0, 0
     self.wjump, self.wjumpkeep = false, false
     self.wroll_x, self.wroll_y = 0, 0
-    self.watk_x, self.watk_y = 0, 0
+    self.watk_x, self.watk_y, self.watk_z = 0, 0, 0
 
     --Jumping mechanics
     self.jump_ticks = -1
@@ -62,9 +58,8 @@ function Humanoid:new()
 
     --Attack mechanics
     self.atk_ticks = -1
-    self.atk_index = 1
     self.atk_cooldown = 0
-    self.atk_dx, self.atk_dy = 0, 0
+    self.atk_dx, self.atk_dy, self.atk_dz = 0, 0, 0
 end
 
 function Humanoid:tick(world)
@@ -170,24 +165,31 @@ function Humanoid:tick(world)
     end
 
     --Attack
-    if (self.atk_ticks < 0 or (
-                self.atk_ticks >= self.atk_duration - self.atk_follow_duration
-                and self.atk_ticks < self.atk_duration
-                and self.atk_index < self.atk_combo
-            ))
-            and (self.watk_x ~= 0 or self.watk_y ~= 0) and self.roll_ticks < 0 and self.atk_cooldown <= 0 then
+    if self.atk_ticks < 0 and (self.watk_x ~= 0 or self.watk_y ~= 0 or self.watk_z ~= 0)
+            and self.roll_ticks < 0 and self.atk_cooldown <= 0 then
         -- Start attack
-        if self.atk_ticks >= self.atk_duration - self.atk_follow_duration then
-            self.atk_index = self.atk_index + 1
-        else
-            self.atk_index = 1
-        end
         self.atk_ticks = 0
         self.jump_ticks = -1
-        local lx, ly = self.watk_x, self.watk_y
-        self.atk_dx, self.atk_dy = lx * self.atk_lounge, ly * self.atk_lounge
+        local ax, ay, az = self.watk_x, self.watk_y, self.watk_z
+        self.atk_dx, self.atk_dy, self.atk_dz = ax, ay, az
+        -- Shoot
+        local pos = self.pos:copy()
+        pos:move(world.terrain, 0, 0, self.atk_height - self.rad_z, .1, .1, .1)
+        world:add_entity(Firebolt {
+            owner = self.id,
+            pos = pos,
+            vel_x = self.atk_vel * ax,
+            vel_y = self.atk_vel * ay,
+            vel_z = self.atk_vel * az,
+            group = 'ally_bullet',
+            target_group = 'enemy',
+            atk_damage = self.atk_damage,
+            atk_knockback = self.atk_knockback,
+            atk_lift = self.atk_lift,
+        })
+
         -- Make damage
-        for i, ent in ipairs(world.ent_list) do
+        --[[for i, ent in ipairs(world.ent_list) do
             if ent ~= self and ent.hp then
                 local w, h = math.max(ent.rad_x, ent.rad_y), ent.rad_z
                 local buf = world.relpos_buf
@@ -206,7 +208,7 @@ function Humanoid:tick(world)
                     end
                 end
             end
-        end
+        end]]
     end
     if self.atk_cooldown > 0 then
         self.atk_cooldown = self.atk_cooldown - 1
@@ -228,7 +230,7 @@ function Humanoid:tick(world)
         if self.atk_ticks >= self.atk_duration then
             self.anim:event('motion', 'atk', 0)
         else
-            self.anim:event('motion', 'atk', self.atk_index)
+            self.anim:event('motion', 'atk', 1)
         end
     elseif self.on_ground then
         if self.vel_x == 0 and self.vel_y == 0 then
