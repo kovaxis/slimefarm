@@ -33,6 +33,7 @@ Humanoid.atk_knockback = 0.2
 Humanoid.atk_lift = 0.5
 Humanoid.atk_vel = .5
 Humanoid.atk_height = 0
+Humanoid.atk_range = 60
 
 function Humanoid:new()
     super.new(self)
@@ -183,6 +184,7 @@ function Humanoid:tick(world)
             atk_damage = self.atk_damage,
             atk_knockback = self.atk_knockback,
             atk_lift = self.atk_lift,
+            range = self.atk_range,
         }, world)
 
         -- Make damage

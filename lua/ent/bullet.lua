@@ -15,7 +15,7 @@ Bullet.group = ''
 Bullet.target_group = ''
 
 Bullet.timeout = 10*64
-Bullet.range = 60
+Bullet.range = 0
 
 Bullet.death_particle_n = 6
 Bullet.death_particle_id = particles.lookup 'living.death'

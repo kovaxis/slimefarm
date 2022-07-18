@@ -40,6 +40,7 @@ Slimy.atk_damage = 20
 Slimy.atk_knockback = 0.2
 Slimy.atk_lift = 0.5
 Slimy.atk_cooldown_duration = 30
+Slimy.atk_range = 60
 
 function Slimy:new()
     super.new(self)
@@ -160,6 +161,7 @@ function Slimy:tick(world)
             atk_damage = self.atk_damage,
             atk_knockback = self.atk_knockback,
             atk_lift = self.atk_lift,
+            range = self.atk_range,
         })
         self.atk_cooldown = self.atk_cooldown_duration
 
