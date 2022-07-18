@@ -4,7 +4,6 @@ local class = require 'class'
 local input = require 'input'
 local util = require 'util'
 local Living = require 'ent.living'
-local Firebolt = require 'ent.firebolt'
 
 local Humanoid, super = class{ super = Living }
 
@@ -32,7 +31,7 @@ Humanoid.atk_cooldown_end = 40
 Humanoid.atk_damage = 20
 Humanoid.atk_knockback = 0.2
 Humanoid.atk_lift = 0.5
-Humanoid.atk_vel = .4
+Humanoid.atk_vel = .5
 Humanoid.atk_height = 0
 
 function Humanoid:new()
@@ -174,19 +173,17 @@ function Humanoid:tick(world)
         self.atk_dx, self.atk_dy, self.atk_dz = ax, ay, az
         -- Shoot
         local pos = self.pos:copy()
-        pos:move(world.terrain, 0, 0, self.atk_height - self.rad_z, .1, .1, .1)
-        world:add_entity(Firebolt {
+        pos:move(world.terrain, 0, 0, self.atk_height - self.rad_z)
+        self:shoot_bullet({
             owner = self.id,
             pos = pos,
             vel_x = self.atk_vel * ax,
             vel_y = self.atk_vel * ay,
             vel_z = self.atk_vel * az,
-            group = 'ally_bullet',
-            target_group = 'enemy',
             atk_damage = self.atk_damage,
             atk_knockback = self.atk_knockback,
             atk_lift = self.atk_lift,
-        })
+        }, world)
 
         -- Make damage
         --[[for i, ent in ipairs(world.ent_list) do
@@ -246,6 +243,10 @@ function Humanoid:tick(world)
     end
 
     return super.tick(self, world)
+end
+
+function Humanoid:shoot_bullet(bul, world)
+    world:add_entity(bul, world)
 end
 
 function Humanoid:apply_vel(world)

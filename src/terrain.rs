@@ -1,6 +1,13 @@
 use std::f64::INFINITY;
 
-use crate::{chunkmesh::{MesherCfg, MesherHandle}, gen::{EntityEv, GenArea, GenConfig}, lua::gfx::{BufferRef, ShaderRef}, mesh::RawBufPackage, particle::{ParticleKindCfg, ParticleSystem}, prelude::*};
+use crate::{
+    chunkmesh::{MesherCfg, MesherHandle},
+    gen::{EntityEv, GenArea, GenConfig},
+    lua::gfx::{BufferRef, ShaderRef},
+    mesh::RawBufPackage,
+    particle::{ParticleKindCfg, ParticleSystem},
+    prelude::*,
+};
 use common::terrain::GridKeeper4;
 
 #[derive(Default)]
@@ -454,6 +461,7 @@ pub(crate) struct Terrain {
     pub light_linear: bool,
     pub color_linear: bool,
     pub relative_map: RefCell<HashMap<ChunkPos, Int3>>,
+    pub relative_subblock: Cell<[f64; 3]>,
     pub particles: RefCell<ParticleSystem>,
     next_entity_id: u64,
     entity_id_stride: u64,
@@ -478,6 +486,7 @@ impl Terrain {
             light_linear: true,
             color_linear: false,
             relative_map: default(),
+            relative_subblock: default(),
             next_entity_id: rand::random::<u64>() | 1,
             entity_id_stride: rand::random::<u64>() & (!1),
             particles: RefCell::new({
@@ -509,7 +518,13 @@ impl Terrain {
         self.gen_radius = gen_radius;
     }
 
-    pub fn bookkeep(&mut self, center: BlockPos) {
+    pub fn bookkeep(&mut self, center_float: WorldPos) {
+        let center = center_float.block_pos();
+        self.relative_subblock.set([
+            center_float.coords[0] - center.coords[0] as f64,
+            center_float.coords[1] - center.coords[1] as f64,
+            center_float.coords[2] - center.coords[2] as f64,
+        ]);
         //Update generator genarea
         self.generator.set_gen_area(GenArea {
             center,
@@ -609,13 +624,24 @@ impl Terrain {
     /// Transform an absolute 4D position to a 3D position relative to the center of the last call
     /// to `bookkeep`.
     /// This takes into account portals.
-    pub fn to_relative_pos(&self, pos: BlockPos) -> Option<Int3> {
-        let chunkpos = pos.block_to_chunk();
-        let subchunk = pos.coords.lowbits(CHUNK_BITS);
-        self.relative_map
-            .borrow()
-            .get(&chunkpos)
-            .map(|&r| r + subchunk)
+    pub fn relative_to_player(&self, pos: WorldPos) -> Option<[f64; 3]> {
+        let blockpos = pos.block_pos();
+        let subblock = [
+            pos.coords[0] - blockpos.coords[0] as f64,
+            pos.coords[1] - blockpos.coords[1] as f64,
+            pos.coords[2] - blockpos.coords[2] as f64,
+        ];
+        let chunkpos = blockpos.block_to_chunk();
+        let subchunk = blockpos.coords.lowbits(CHUNK_BITS);
+        self.relative_map.borrow().get(&chunkpos).map(|&r| {
+            let rel_block = r + subchunk;
+            let origin_subblock = self.relative_subblock.get();
+            [
+                subblock[0] + rel_block[0] as f64 - origin_subblock[0],
+                subblock[1] + rel_block[1] as f64 - origin_subblock[1],
+                subblock[2] + rel_block[2] as f64 - origin_subblock[2],
+            ]
+        })
     }
 
     pub fn block_at(&self, pos: BlockPos) -> Option<BlockData> {

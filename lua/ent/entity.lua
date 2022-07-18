@@ -40,10 +40,6 @@ function Entity:new()
     assert(self.anim)
 end
 
-function Entity:on_add(world)
-
-end
-
 function Entity.create(cl, proto, pos)
     proto.pos = pos
     return cl(proto)
@@ -104,9 +100,9 @@ function Entity:draw(world)
 end
 
 -- overloads:
--- set_bbox(size, visible_size)
--- set_bbox(size_xy, size_z, visible_size)
--- set_bbox(size_x, size_y, size_z, visible_size)
+-- set_bbox(size, visible_radius)
+-- set_bbox(size_xy, size_z, visible_radius)
+-- set_bbox(size_x, size_y, size_z, visible_radius)
 function Entity:set_bbox(x, y, z, r)
     if not z then
         x, y, z = x, x, y
@@ -114,7 +110,7 @@ function Entity:set_bbox(x, y, z, r)
     if not r then
         x, y, z, r = x, x, y, z
     end
-    x, y, z, r = x/2, y/2, z/2, r/2
+    x, y, z = x/2, y/2, z/2
     self.rad_x, self.rad_y, self.rad_z = x, y, z
     self.draw_r = r * 3^.5
 end

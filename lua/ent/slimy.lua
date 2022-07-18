@@ -33,22 +33,20 @@ Slimy.jump_cooldown_start = 10
 Slimy.jump_cooldown_land = 60
 Slimy.jump_cooldown_fudge = 0.4
 
--- The slime hitbox is a cylinder with diameter `atk_hitbox_xy` and height `atk_hitbox_z`
-Slimy.atk_hitbox_xy = 3
-Slimy.atk_hitbox_z = 1
+Slimy.atk_bullet = 'should be a concrete bullet class'
+Slimy.atk_height = 0
+Slimy.atk_vel = .4
 Slimy.atk_damage = 20
 Slimy.atk_knockback = 0.2
 Slimy.atk_lift = 0.5
 Slimy.atk_cooldown_duration = 30
-Slimy.atk_particle = particles.lookup 'slimy.attack'
-Slimy.atk_particle_n = 8
 
 function Slimy:new()
     super.new(self)
 
     --Character control
     self.wx, self.wy = 0, 0
-    self.watk = false
+    self.watk_x, self.watk_y, self.watk_z = 0, 0, 0
     self.wjump = false
 
     --Attack mechanics
@@ -146,8 +144,26 @@ function Slimy:tick(world)
     super.tick(self, world)
 
     --Attack
-    if self.atk_cooldown <= 0 and self.on_ground and self.fall_height > 1.5 and self.watk then
-        --Attack
+    if self.atk_cooldown <= 0 and (self.watk_x ~= 0 or self.watk_y ~= 0 or self.watk_z ~= 0) then
+        --Shoot
+        local ax, ay, az = self.watk_x, self.watk_y, self.watk_z
+        local pos = self.pos:copy()
+        pos:move(world.terrain, 0, 0, self.atk_height - self.rad_z)
+        world:add_entity(self.atk_bullet {
+            owner = self.id,
+            pos = pos,
+            vel_x = self.atk_vel * ax,
+            vel_y = self.atk_vel * ay,
+            vel_z = self.atk_vel * az,
+            group = 'enemy_bullet',
+            target_group = 'ally',
+            atk_damage = self.atk_damage,
+            atk_knockback = self.atk_knockback,
+            atk_lift = self.atk_lift,
+        })
+        self.atk_cooldown = self.atk_cooldown_duration
+
+        --[[
         for i = 1, self.atk_particle_n do
             local vx, vy = util.random_circle(world.rng)
             local vz = 6
@@ -174,7 +190,7 @@ function Slimy:tick(world)
                     end
                 end
             end
-        end
+        end]]
     end
     if self.atk_cooldown > 0 then
         self.atk_cooldown = self.atk_cooldown - 1

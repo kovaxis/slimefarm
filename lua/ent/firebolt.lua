@@ -29,8 +29,8 @@ particles.register {
 local Firebolt, super = class { super = Bullet }
 
 Firebolt.model = voxel.models.firebolt
-Firebolt.atk_hitbox = 1.5
-Firebolt:set_bbox(4/8, 3)
+Firebolt.atk_hitbox = 6/8
+Firebolt:set_bbox(2/8, 13/8)
 
 Firebolt.particle_ids = { particles.lookup 'firebolt.fire1', particles.lookup 'firebolt.fire2' }
 Firebolt.particle_per_tick = 20 / 64

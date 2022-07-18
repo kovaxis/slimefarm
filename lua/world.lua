@@ -28,11 +28,18 @@ function World:new()
     self.ent_list = {}
     self.ent_map = {}
     self.ent_groups = {
-        ally = setmetatable({}, { __mode = 'kv' }),
-        enemy = setmetatable({}, { __mode = 'kv' }),
-        ally_bullet = setmetatable({}, { __mode = 'kv' }),
-        enemy_bullet = setmetatable({}, { __mode = 'kv' }),
+        ally = {},
+        enemy = {},
+        ally_bullet = {},
+        enemy_bullet = {},
+        spawnpoint = {},
     }
+    do
+        local meta = { __mode = 'kv' }
+        for name, group in pairs(self.ent_groups) do
+            setmetatable(group, meta)
+        end
+    end
 
     self.shaders = {
         terrain = util.Shader{
@@ -185,7 +192,9 @@ function World:add_entity(ent)
     end
     table.insert(self.ent_list, ent)
     self.ent_map[ent.id] = ent
-    ent:on_add(self)
+    if ent.group then
+        self.ent_groups[ent.group][ent.id] = ent
+    end
 end
 
 function World:tick()
@@ -286,9 +295,10 @@ function World:tick()
 end
 
 function World:relative_player_pos(pos)
-    if self.ent_map[self.player_id] then
-        local dx, dy, dz = self.terrain:to_relative(pos)
-        return -dx, -dy, -dz
+    local play = self.ent_map[self.player_id]
+    if play then
+        local dx, dy, dz = self.terrain:relative_to_player(pos)
+        return -dx, -dy, -dz, play
     else
         return 0/0, 0/0, 0/0
     end
@@ -329,7 +339,7 @@ function World:load_terrain()
         gen = {
             src = gen_main,
             args = {{
-                seed = 6813264,
+                seed = 6813265,
                 kind = 'gen.plainsgen',
                 entspecs = entreg.seal(),
             }},
@@ -458,6 +468,7 @@ end
 -- Draw terrain within a frame or portal (the camera being a frame)
 local portalbuf = gfx.buffer_empty()
 local entpos_buf = system.world_pos()
+local campos_buf = system.world_pos()
 function World:subdraw()
     local frame = self.frame
     local cam = frame.cam_stack
@@ -549,11 +560,12 @@ function World:subdraw()
     --Draw entities
     local entcopies = frame.entcopy_buf
     frame.params_world:set_stencil_ref(depth)
+    cam:origin(campos_buf)
     for _, ent in ipairs(self.ent_list) do
         local movx, movy, movz = ent.mov_x, ent.mov_y, ent.mov_z
         entpos_buf:copy_from(ent.pos)
         entpos_buf:move_box(self.terrain, movx * frame.s, movy * frame.s, movz * frame.s, 0.1, 0.1, 0.1) -- TODO: Replace with a raycast
-        self.terrain:get_relative_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, self.real_cam_pos, entcopies)
+        self.terrain:get_relative_positions(entpos_buf, ent.draw_r, ent.draw_r, ent.draw_r, campos_buf, entcopies)
         for i = 1, #entcopies, 3 do
             local dx, dy, dz = entcopies[i], entcopies[i+1], entcopies[i+2]
             if cam:can_view(dx, dy, dz, ent.draw_r) then
@@ -644,6 +656,8 @@ function World:draw()
         local dy = math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * rollback
         local dz = math.sin(self.cam_pitch) * rollback
         dx, dy, dz = self.real_cam_pos:move_box(self.terrain, -dx, -dy, -dz, cam_wall_dist, cam_wall_dist, cam_wall_dist)
+        frame.cam_yaw = cam_yaw
+        frame.cam_pitch = cam_pitch
         self.real_cam_dx = self.real_cam_dx + dx
         self.real_cam_dy = self.real_cam_dy + dy
         self.real_cam_dz = self.real_cam_dz + dz
@@ -794,18 +808,21 @@ function World:draw()
         local sprite, i = Sprite.sprites.overbars, 1
         frame.mvp_hud:push()
         frame.mvp_hud:translate(0, -frame.h + 4, 0)
-        frame.mvp_hud:scale(2*sprite.w, 2*sprite.h, 1)
-
+        frame.mvp_hud:scale(2, 2, 1)
+        
         if play then
             frame.mvp_hud:push()
-            frame.mvp_hud:translate(-.5, .5, 0)
+            frame.mvp_hud:translate(1 - sprite.w/2, 0, 0)
             frame.mvp_hud:scale(play.hp / play.max_hp, 1, 1)
-            frame.mvp_hud:translate(.5, 0, 0)
+            frame.mvp_hud:translate(-1, 0, 0)
+            frame.mvp_hud:scale(sprite.w, sprite.h, 1)
+            frame.mvp_hud:translate(.5, .5, 0)
             sprite:draw(i+1, frame.mvp_hud, frame.params_hud)
             frame.mvp_hud:pop()
         end
         
         frame.mvp_hud:push()
+        frame.mvp_hud:scale(sprite.w, sprite.h, 1)
         frame.mvp_hud:translate(0, .5, 0)
         sprite:draw(i, frame.mvp_hud, frame.params_hud)
         frame.mvp_hud:pop()

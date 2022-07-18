@@ -5,19 +5,6 @@ local Entity = require 'ent.entity'
 local Sprite = require 'sprite'
 local particles = require 'particles'
 
-particles.register {
-    name = 'living.death',
-    friction = .001,
-    acc = {0, 0, -5},
-    rot_friction = .15,
-    color_interval = 1,
-    color = {{1, 1, 1}},
-    size_interval = .6,
-    size = {.2, 0},
-    physical_size = .2,
-    lifetime = .6,
-}
-
 local Living, super = class{ super = Entity }
 
 Living.max_hp = 1
@@ -25,8 +12,8 @@ Living.knockback_resistance = 1
 Living.armor = 1
 
 Living.falldmg_minh = 10
-Living.falldmg_maxh = 100
-Living.falldmg_multiplier = 5
+Living.falldmg_maxh = 400
+Living.falldmg_multiplier = 3
 
 Living.wander_dist = 50
 
@@ -43,6 +30,23 @@ Living.death_particle_rotvel = 10
 
 Living.group = 'enemy'
 
+function Living.death_particle(kind)
+    kind.friction = kind.friction or .02
+    kind.acc = kind.acc or {0, 0, -5}
+    kind.rot_friction = kind.rot_friction or .15
+    kind.color_interval = kind.color_interval or 1
+    kind.color = kind.color or {{1, 1, 1}}
+    kind.size_interval = kind.size_interval or .6
+    kind.size = kind.size or {.3, 0}
+    kind.physical_size = kind.physical_size or .25
+    kind.lifetime = kind.lifetime or .6
+    return kind
+end
+
+particles.register(Living.death_particle {
+    name = 'living.death',
+})
+
 function Living:new()
     super.new(self)
 
@@ -58,11 +62,6 @@ function Living:new()
     self.visual_dmg_b = 0
 end
 
-function Living:on_add(world)
-    world.ent_groups[self.group][self.id] = self
-    return super.on_add(self, world)
-end
-
 function Living:make_damage(world, target, dmg, knockback, lift, kx, ky)
     --Normalize xy knockback
     local n = (kx*kx + ky*ky)^-.5
@@ -73,7 +72,7 @@ function Living:make_damage(world, target, dmg, knockback, lift, kx, ky)
     n = knockback * (kx*kx + ky*ky + kz*kz)^-.5
     kx, ky, kz = n*kx, n*ky, n*kz
     --Deal damage with the calculated knockback
-    target:damage(world, dmg, kx, ky, kz)
+    return target:damage(world, dmg, kx, ky, kz)
 end
 
 function Living:damage(world, dmg, kx, ky, kz)
@@ -105,6 +104,8 @@ function Living:damage(world, dmg, kx, ky, kz)
     self.visual_dmg_r = 1
     self.visual_dmg_g = 1
     self.visual_dmg_b = 1
+    
+    return dmg * self.armor
 end
 
 function Living:pretick(world)

@@ -6,18 +6,18 @@ local util = require 'util'
 local Humanoid = require 'ent.humanoid'
 local entreg = require 'ent.reg'
 local particles = require 'particles'
+local Firebolt = require 'ent.firebolt'
 
 local Player, super = class{ super = Humanoid }
 
-Player:set_bbox(10/8, 15/8, 24/8)
+Player:set_bbox(10/8, 15/8, 20/8)
 Player.model = voxel.models.player
-Player.max_hp = 120
+Player.max_hp = 4000
 Player.healthbar_dist = 0
 
 Player.atk_lounge = 0.1
 Player.atk_height = 12/8
 
-Player.is_player = true
 Player.group = 'ally'
 
 local controls = {
@@ -39,32 +39,6 @@ function Player:new()
 end
 
 function Player:tick(world)
-    --Check to see if colliding with entities
-    do
-        local buf = world.relpos_buf
-        local baserad = math.max(self.rad_x, self.rad_y, self.rad_z) + 20
-        for i, ent in ipairs(world.ent_list) do
-            if ent.on_player_collision then
-                local rad = baserad + math.max(ent.rad_x, ent.rad_y, ent.rad_z)
-                --Get approximate relative position
-                local dx, dy, dz = world.terrain:to_relative(ent.pos)
-                if dx*dx + dy*dy + dz*dz <= rad*rad then
-                    --Candidate to collision
-                    local rx, ry, rz = self.rad_x + ent.rad_x, self.rad_y + ent.rad_y, self.rad_z + ent.rad_z
-                    world.terrain:get_relative_positions(ent.pos, ent.rad_x, ent.rad_y, ent.rad_z, self.pos, buf)
-                    for i = 1, #buf, 3 do
-                        local dx, dy, dz = buf[i], buf[i+1], buf[i+2]
-                        if dx >= -rx and dx <= rx and dy >= -ry and dy <= ry and dz >= -rz and dz <= rz then
-                            --Collides with entity
-                            ent:on_player_collision(world, self, dx, dy, dz)
-                            break
-                        end
-                    end
-                end
-            end
-        end
-    end
-
     --Walk
     do
         local dx, dy = 0, 0
@@ -158,12 +132,21 @@ function Player:apply_vel(world)
     self.mov_x, self.mov_y, self.mov_z = mx, my, mz
 end
 
+function Player:shoot_bullet(bul, world)
+    bul.group = 'ally_bullet'
+    bul.target_group = 'enemy'
+    bul.atk_hitbox = 2
+    bul = Firebolt(bul)
+
+    return super.shoot_bullet(self, bul, world)
+end
+
 function Player.find_spawn_pos(world)
     -- Find closest checkpoint
     local mind2, spawn = 1 / 0
-    for i, ent in ipairs(world.ent_list) do
-        if ent.is_checkpoint then
-            local dx, dy, dz = world.terrain:to_relative(ent.pos)
+    for id, ent in pairs(world.ent_groups.spawnpoint) do
+        if ent.on_ground then
+            local dx, dy, dz = world.terrain:relative_to_player(ent.pos)
             local d2 = dx*dx + dy*dy + dz*dz
             if d2 < mind2 then
                 mind2 = d2

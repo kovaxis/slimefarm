@@ -24,7 +24,12 @@ end
 function particles.register(kind)
     assert(type(kind) == 'table', "kind must be a table")
     assert(type(kind.name) == 'string', "kind.name must be a name string")
-    assert(by_name[kind.name] == nil, "duplicate particle kinds with name '"..kind.name.."'")
+
+    local id = by_name[kind.name]
+    if not id then
+        id = get_id()
+    end
+    assert(type(list[id + 1]) ~= 'table', "duplicate particle kinds with name '"..kind.name.."'")
 
     for k, v in pairs(default) do
         if kind[k] == nil then
@@ -32,7 +37,6 @@ function particles.register(kind)
         end
     end
 
-    local id = get_id()
     kind.id = id
     by_name[kind.name] = id
     list[id + 1] = kind

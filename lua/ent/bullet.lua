@@ -14,7 +14,8 @@ Bullet.atk_lift = 0
 Bullet.group = ''
 Bullet.target_group = ''
 
-Bullet.timeout = 15*64
+Bullet.timeout = 10*64
+Bullet.range = 60
 
 Bullet.death_particle_n = 6
 Bullet.death_particle_id = particles.lookup 'living.death'
@@ -24,11 +25,9 @@ function Bullet:new()
     super.new(self)
 
     self.timeout = self.timeout
-end
-
-function Bullet:on_add(world)
-    world.ent_groups[self.group][self.id] = self
-    return super.on_add(world)
+    self.acc_x = 0
+    self.acc_y = 0
+    self.acc_z = 0
 end
 
 function Bullet:pretick(world)
@@ -55,7 +54,7 @@ function Bullet:tick(world)
     --Check for collisions with entities in the target group
     if owner then
         local buf = world.relpos_buf
-        local hitbox = self.atk_hitbox
+        local hitbox = self.atk_hitbox * .5
         local x1, y1, z1 = hitbox, hitbox, hitbox
         for id, ent in pairs(world.ent_groups[self.target_group]) do
             local rx, ry, rz = x1 + ent.rad_x, y1 + ent.rad_y, z1 + ent.rad_z
@@ -64,8 +63,9 @@ function Bullet:tick(world)
                 local dx, dy, dz = buf[i], buf[i+1], buf[i+2]
                 if dx >= -rx and dx <= rx and dy >= -ry and dy <= ry and dz >= -rz and dz <= rz then
                     --Collision: hurt entity
-                    owner:make_damage(world, ent, self.atk_damage, self.atk_knockback, self.atk_lift, self.vel_x, self.vel_y)
-                    self.removing = true
+                    if owner:make_damage(world, ent, self.atk_damage, self.atk_knockback, self.atk_lift, self.vel_x, self.vel_y) then
+                        self.removing = true
+                    end
                     break
                 end
             end
@@ -73,6 +73,19 @@ function Bullet:tick(world)
     end
 
     super.tick(self, world)
+
+    --Accumulate distance and destroy on rangeout
+    do
+        local dx, dy, dz = self.acc_x, self.acc_y, self.acc_z
+        dx = dx + self.mov_x
+        dy = dy + self.mov_y
+        dz = dz + self.mov_z
+        if dx * dx + dy * dy + dz * dz >= self.range * self.range then
+            death_anim = true
+            self.removing = true
+        end
+        self.acc_x, self.acc_y, self.acc_z = dx, dy, dz
+    end    
 
     --Destroy bullet on collision
     local dx, dy, dz = self.vel_x - self.mov_x, self.vel_y - self.mov_y, self.vel_z - self.mov_z

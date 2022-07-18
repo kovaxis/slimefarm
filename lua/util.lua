@@ -101,6 +101,14 @@ function util.cross(x0, y0, z0, x1, y1, z1)
     return y0 * z1 - y1 * z0, z0 * x1 - x0 * z1, x0 * y1 - x1 * y0
 end
 
+function util.normalize2d(x, y, n)
+    local inv = (x * x + y * y) ^ -.5
+    if n then
+        inv = inv * n
+    end
+    return inv * x, inv * y
+end
+
 function util.normalize(x, y, z, n)
     local inv = (x * x + y * y + z * z) ^ -0.5
     if n then

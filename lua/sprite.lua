@@ -15,7 +15,7 @@ function Sprite:new()
     assert(self.h)
     assert(self.path)
     self.texture = gfx.texture(system.image('../image/'..self.path))
-    self.texture:set_min('linear')
+    self.texture:set_min('nearest')
     self.texture:set_mag('nearest')
     self.full_w, self.full_h = self.texture:dimensions()
     self.pad_x = self.pad_x or 0

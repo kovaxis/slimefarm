@@ -252,20 +252,15 @@ impl TerrainRef {
 }
 lua_type! {TerrainRef, lua, this,
     fn bookkeep(pos: LuaWorldPos) {
-        this.rc.borrow_mut().bookkeep(pos.pos.get().block_pos());
+        this.rc.borrow_mut().bookkeep(pos.pos.get());
     }
 
-    fn to_relative(pos: LuaWorldPos) {
+    fn relative_to_player(pos: LuaWorldPos) {
         let pos = pos.pos.get();
-        let rel = this.rc.borrow().to_relative_pos(pos.block_pos());
+        let rel = this.rc.borrow().relative_to_player(pos);
         match rel {
             Some(rel) => {
-                let rel = rel.to_f64();
-                (
-                    rel[0] + pos.coords[0].fract(),
-                    rel[1] + pos.coords[1].fract(),
-                    rel[2] + pos.coords[2].fract(),
-                )
+                (rel[0], rel[1], rel[2])
             }
             None => (f64::NAN, f64::NAN, f64::NAN),
         }

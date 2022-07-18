@@ -9,7 +9,7 @@ local Checkpoint, super = class { super = Entity }
 
 Checkpoint.model = voxel.models.flag
 
-Checkpoint.is_checkpoint = true
+Checkpoint.group = 'spawnpoint'
 
 Checkpoint:set_bbox(2.5, 20/8)
 
