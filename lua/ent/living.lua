@@ -33,6 +33,12 @@ Living.dmg_anim_factor = 0.01
 Living.dmg_anim_linear = 1
 -- Distance to the camera before the healthbar is shown by default.
 Living.healthbar_dist = 30
+-- `healthbar_dist` but when the entity is at the center of the screen.
+Living.healthbar_extra_dist = 60
+-- Angle radius from the center of the screen to consider the entity to be at the center of the
+-- screen.
+-- Measured as the cosine of the angle.
+Living.healthbar_extra_angle = math.cos(math.rad(5))
 -- How much space between the top of the hitbox and the healthbar.
 Living.healthbar_z = 1
 
@@ -76,6 +82,7 @@ function Living:new()
 
     self.hp = self.hp or self.max_hp
     self.fall_height = 0
+    self.lock_healthbar = 0
 
     self.visual_dmg_r = 0
     self.visual_dmg_g = 0
@@ -92,10 +99,10 @@ function Living:make_damage(world, target, dmg, knockback, lift, kx, ky)
     n = knockback * (kx*kx + ky*ky + kz*kz)^-.5
     kx, ky, kz = n*kx, n*ky, n*kz
     --Deal damage with the calculated knockback
-    return target:damage(world, dmg, kx, ky, kz)
+    return target:damage(world, dmg, kx, ky, kz, self)
 end
 
-function Living:damage(world, dmg, kx, ky, kz)
+function Living:damage(world, dmg, kx, ky, kz, damager)
     --Remove health
     self.hp = self.hp - dmg * self.armor
     --Kill if no hp left
@@ -147,6 +154,11 @@ end
 function Living:tick(world)
     super.tick(self, world)
 
+    --Tick healthbar lock
+    if self.lock_healthbar > 0 then
+        self.lock_healthbar = self.lock_healthbar - 1
+    end
+
     --Deal fall damage
     if self.on_ground and self.fall_height > 0 then
         local dmg = math.floor((math.min(self.fall_height, self.falldmg_maxh) - self.falldmg_minh) * self.falldmg_multiplier)
@@ -160,7 +172,17 @@ function Living:draw(world, dx, dy, dz)
     local frame = world.frame
 
     --Draw healthbar
-    if dx*dx + dy*dy + dz*dz < self.healthbar_dist * self.healthbar_dist then
+    local draw_healthbar = self.lock_healthbar > 0
+    if not draw_healthbar then
+        local distsq = dx*dx + dy*dy + dz*dz
+        draw_healthbar = distsq < self.healthbar_dist * self.healthbar_dist
+        if not draw_healthbar and distsq < self.healthbar_extra_dist * self.healthbar_extra_dist then
+            local nx, ny, nz = util.rotate_yaw_pitch(0, 1, 0, world.cam_yaw, world.cam_pitch)
+            local x, y, z = util.normalize(dx, dy, dz)
+            draw_healthbar = (x*nx + y*ny + z*nz >= self.healthbar_extra_angle)
+        end
+    end
+    if draw_healthbar then
         local x, y, z, w = frame.mvp_world:transform_vec4(0, 0, self.rad_z + self.healthbar_z, 1)
         if z > -w and z < w then
             local size = 0.07

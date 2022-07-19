@@ -14,6 +14,8 @@ Player:set_bbox(10/8, 15/8, 20/8)
 Player.model = voxel.models.player
 Player.max_hp = 40
 Player.healthbar_dist = 0
+Player.healthbar_extra_dist = 0
+Player.healthbar_lock = 3*64
 Player.atk_height = 12/8
 
 Player.group = 'ally'
@@ -135,6 +137,21 @@ function Player:atk_shooter(bul, world)
     bul.target_group = 'enemy'
     bul.atk_hitbox = 2
     world:add_entity(Firebolt(bul))
+end
+
+function Player:make_damage(world, target, ...)
+    local dmg = super.make_damage(self, world, target, ...)
+    if dmg then
+        target.lock_healthbar = self.healthbar_lock
+    end
+    return dmg
+end
+
+function Player:damage(world, dmg, kx, ky, kz, damager)
+    if damager then
+        damager.lock_healthbar = self.healthbar_lock
+    end
+    return super.damage(self, world, dmg, kx, ky, kz, damager)
 end
 
 function Player.find_spawn_pos(world)

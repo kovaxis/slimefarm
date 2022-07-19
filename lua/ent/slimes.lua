@@ -28,9 +28,12 @@ local function wander(self, world)
 end
 
 local function find_player(self, world)
+    local range = self.target and self.view_dist or self.find_dist
     local dx, dy, dz, play = world:relative_player_pos(self.pos)
     local d = dx * dx + dy * dy + dz * dz
-    if d < self.view_dist * self.view_dist then
+    local found = d < range * range
+    self.target = found
+    if found then
         return d^.5, dx, dy, dz, play
     end
 end
@@ -38,7 +41,8 @@ end
 local Green = class{ super = Slimy }
 slimes.Green = Green
 Green:set_bbox(16/8, 11/8, 22/8)
-Green.view_dist = 15
+Green.view_dist = 50
+Green.find_dist = 20
 Green.max_hp = 100
 Green.jump_charge = 5
 Green.jump_hvel = 0.17
@@ -76,8 +80,10 @@ end
 local Red = class{ super = Slimy }
 slimes.Red = Red
 Red:set_bbox(14/8, 12/8, 16/8)
-Red.view_dist = 40
+Red.find_dist = 35
+Red.view_dist = 75
 Red.shoot_dist = 20
+
 Red.max_hp = 100
 Red.atk_shooter = Firebolt:shooter('enemy')
 Red.atk_height = 8/8
@@ -102,6 +108,20 @@ entreg.register {
         
     },
 }
+
+function Red:new()
+    super.new(self)
+
+    self.target = false
+end
+
+function Red:damage(world, dmg, kx, ky, kz, damager)
+    if damager and damager.id == world.player_id then
+        self.target = true
+    end
+
+    return super.damage(self, world, dmg, kx, ky, kz, damager)
+end
 
 function Red:tick(world)
     super.tick(self, world)
