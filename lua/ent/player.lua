@@ -78,8 +78,7 @@ function Player:tick(world)
     --Attack
     if input.is_down[controls.atk] and self.atk_ticks < 0 and self.atk_cooldown <= 0 and self.roll_ticks < 0 then
         --Raycast and shoot towards the landing point
-        local shoot_range = 350
-        local dx, dy, dz = util.rotate_yaw_pitch(0, shoot_range, 0, world.cam_yaw, world.cam_pitch)
+        local dx, dy, dz = util.rotate_yaw_pitch(0, self.atk_range, 0, world.cam_yaw, world.cam_pitch)
         local buf = world.pos_buf
         buf:copy_from(world.real_cam_pos)
         dx, dy, dz = buf:move_box(world.terrain, dx, dy, dz, .1, .1, .1)
