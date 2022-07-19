@@ -32,6 +32,17 @@ local function find_player(self, world)
     local dx, dy, dz, play = world:relative_player_pos(self.pos)
     local d = dx * dx + dy * dy + dz * dz
     local found = d < range * range
+    if not self.target and found then
+        local buf = world.pos_buf
+        buf:copy_from(self.pos)
+        buf:move(world.terrain, 0, 0, self.rad_z)
+        local mx, my, mz = buf:move_box(world.terrain, dx, dy, dz, .01, .01, .01)
+        mx, my, mz = math.abs(mx - dx), math.abs(my - dy), math.abs(mz - dz)
+        if mx > play.rad_x and my > play.rad_y and mz > play.rad_z then
+            --Not a line-of-sight view
+            found = false
+        end
+    end
     self.target = found
     if found then
         return d^.5, dx, dy, dz, play
@@ -132,13 +143,13 @@ function Red:tick(world)
         local diff = d - self.shoot_dist
         if diff < -3 then
             self.wx, self.wy = util.normalize2d(dx, dy, -1)
-            self.wjump = true
+            self.wjump, self.wjumpkeep = true, true
         elseif diff > 3 then
             self.wx, self.wy = util.normalize2d(dx, dy)
-            self.wjump = true
+            self.wjump, self.wjumpkeep = true, true
         else
             self.wx, self.wy = 0, 0
-            self.wjump = self.on_ground
+            self.wjump, self.wjumpkeep = self.on_ground, false
         end
         if not self.on_ground and self.vel_z <= 0 then
             --Adjust for shooting height
