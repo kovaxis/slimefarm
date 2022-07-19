@@ -1,3 +1,4 @@
+-- A world entity.
 
 local class = require 'class'
 local util = require 'util'
@@ -5,17 +6,27 @@ local voxel = require 'voxel'
 
 local Entity = class{}
 
+-- Radius of the physical hitbox.
 Entity.rad_x = 0
 Entity.rad_y = 0
 Entity.rad_z = 0
+
+-- Maximum radius of the visual model.
+-- Used for view-frustum-clipping and rendering across portals.
 Entity.draw_r = 0
 
+-- Gravitational acceleration.
 Entity.gravity = 0.025
+-- Velocity friction.
+-- A value of 1 means no friction.
 Entity.friction = 0.97
 
+-- Multiplicative yaw ease factor.
 Entity.yaw_anim_factor = 0.0004
+-- Linear yaw ease factor.
 Entity.yaw_anim_linear = 10
 
+-- Visual scale of the model (ie. how many blocks is a model cube).
 Entity.visual_scale = 1/8
 
 function Entity:new()

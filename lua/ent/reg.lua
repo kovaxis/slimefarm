@@ -1,6 +1,6 @@
--- A registry for entities, to allow the worldgen thread to refer to entities by name instead of
--- by entspec id.
--- Ids are also automatically assigned.
+-- A registry for entities, which assigns names to entities and allows the worldgen thread to refer
+-- to entity kinds by name and automatically convert these names to a numerical id which is
+-- converted back to a name and a class on the main thread side.
 
 local entreg = {}
 

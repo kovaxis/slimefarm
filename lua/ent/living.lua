@@ -1,3 +1,5 @@
+-- Living entities are any entity which has a lifebar.
+-- This may include plants and other non-moving, non-attacking entities.
 
 local class = require 'class'
 local util = require 'util'
@@ -7,27 +9,45 @@ local particles = require 'particles'
 
 local Living, super = class{ super = Entity }
 
+-- Maximum amount of health.
+-- The entity spawns by default with this amount of health.
 Living.max_hp = 1
+-- Resistance to knockback effects.
+-- Knockback is multiplied by this value.
 Living.knockback_resistance = 1
+-- Resistance to damage.
+-- Damage is multiplied by this value.
 Living.armor = 1
 
+-- Minimum fall height to apply fall damage.
 Living.falldmg_minh = 10
+-- "Terminal height"; falling over this amount of blocks yields the same damage as falling this
+-- amount of blocks.
 Living.falldmg_maxh = 400
+-- Damage per block fallen after the minimum fall height.
 Living.falldmg_multiplier = 3
 
-Living.wander_dist = 50
-
+-- Multiplicative decay factor to ease the damage animation.
 Living.dmg_anim_factor = 0.01
+-- Linear decay factor to ease the damage animation.
 Living.dmg_anim_linear = 1
+-- Distance to the camera before the healthbar is shown by default.
 Living.healthbar_dist = 30
+-- How much space between the top of the hitbox and the healthbar.
 Living.healthbar_z = 1
 
+-- How many particles to spawn at death.
 Living.death_particle_n = 30
+-- Which kind of particle to spawn at death.
 Living.death_particle_id = particles.lookup 'living.death'
+-- Minimum random speed of death particles.
 Living.death_particle_vel_min = 10
+-- Maximum random speed of death particles.
 Living.death_particle_vel_max = 25
+-- Initial rotational speed of death particles.
 Living.death_particle_rotvel = 10
 
+-- Which group to place this entity in.
 Living.group = 'enemy'
 
 function Living.death_particle(kind)

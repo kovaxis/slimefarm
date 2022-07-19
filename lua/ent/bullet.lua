@@ -6,19 +6,30 @@ local particles = require 'particles'
 
 local Bullet, super = class { super = Entity }
 
+-- Attack hitbox of the bullet.
 Bullet.atk_hitbox = 0
+-- Attack damage.
 Bullet.atk_damage = 0
+-- Attack knockback.
 Bullet.atk_knockback = 0
+-- Attack knockback lift.
 Bullet.atk_lift = 0
 
+-- Entity-group of the bullet itself.
 Bullet.group = ''
+-- Entity-group that the bullet hits.
 Bullet.target_group = ''
 
+-- Ticks before the bullet despawns.
 Bullet.timeout = 10*64
+-- Blocks travelled before the bullet despawns.
 Bullet.range = 0
 
+-- Amount of particles spawned at death (except when hitting an entity).
 Bullet.death_particle_n = 6
+-- Which particle to spawn at death.
 Bullet.death_particle_id = particles.lookup 'living.death'
+-- Initial velocity of the particles to spawn at death.
 Bullet.death_particle_vel = 20
 
 function Bullet:new()
@@ -28,6 +39,23 @@ function Bullet:new()
     self.acc_x = 0
     self.acc_y = 0
     self.acc_z = 0
+end
+
+function Bullet.shooter(cl, group, target_group)
+    if not target_group then
+        if group == 'ally' then
+            group = 'ally_bullet'
+            target_group = 'enemy'
+        elseif group == 'enemy' then
+            group = 'enemy_bullet'
+            target_group = 'ally'
+        end
+    end
+    return function(shooter, bul, world)
+        bul.group = group
+        bul.target_group = target_group
+        world:add_entity(cl(bul))
+    end
 end
 
 function Bullet:pretick(world)

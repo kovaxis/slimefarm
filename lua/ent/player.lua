@@ -12,10 +12,8 @@ local Player, super = class{ super = Humanoid }
 
 Player:set_bbox(10/8, 15/8, 20/8)
 Player.model = voxel.models.player
-Player.max_hp = 4000
+Player.max_hp = 40
 Player.healthbar_dist = 0
-
-Player.atk_lounge = 0.1
 Player.atk_height = 12/8
 
 Player.group = 'ally'
@@ -132,13 +130,11 @@ function Player:apply_vel(world)
     self.mov_x, self.mov_y, self.mov_z = mx, my, mz
 end
 
-function Player:shoot_bullet(bul, world)
+function Player:atk_shooter(bul, world)
     bul.group = 'ally_bullet'
     bul.target_group = 'enemy'
     bul.atk_hitbox = 2
-    bul = Firebolt(bul)
-
-    return super.shoot_bullet(self, bul, world)
+    world:add_entity(Firebolt(bul))
 end
 
 function Player.find_spawn_pos(world)

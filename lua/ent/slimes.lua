@@ -79,8 +79,10 @@ Red:set_bbox(14/8, 12/8, 16/8)
 Red.view_dist = 40
 Red.shoot_dist = 20
 Red.max_hp = 100
-Red.atk_bullet = Firebolt
+Red.atk_shooter = Firebolt:shooter('enemy')
 Red.atk_height = 8/8
+Red.atk_duration = 10
+Red.atk_cooldown_duration = 20
 Red.jump_hvel = 0.12
 Red.jump_vvel = 0.38
 Red.jump_keepup = 0.015
