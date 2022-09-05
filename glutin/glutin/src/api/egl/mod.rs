@@ -612,7 +612,7 @@ impl Context {
     }
 
     #[inline]
-    pub fn _swap_buffers_with_damage(&self, rects: &[Rect]) -> Result<(), ContextError> {
+    pub fn swap_buffers_with_damage(&self, rects: &[Rect]) -> Result<(), ContextError> {
         let egl = EGL.as_ref().unwrap();
 
         if !egl.SwapBuffersWithDamageKHR.is_loaded() {
@@ -655,7 +655,7 @@ impl Context {
     }
 
     #[inline]
-    pub fn _swap_buffers_with_damage_supported(&self) -> bool {
+    pub fn swap_buffers_with_damage_supported(&self) -> bool {
         let egl = EGL.as_ref().unwrap();
         egl.SwapBuffersWithDamageKHR.is_loaded()
     }

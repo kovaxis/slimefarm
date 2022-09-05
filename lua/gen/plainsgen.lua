@@ -40,7 +40,10 @@ blocks.register(genutil.texture {
 
 local heightmap = native.heightmap {
     seed = math.hash(gen.seed, "plains_heightmap"),
-    noise = genutil.perlin(256, 0.8, 3),
+    noise_lo = genutil.perlin(256, .6, 3),
+    noise_snap = genutil.perlin(256, 2.4, 3),
+    noise_snapoff = genutil.perlin(300, 2.4, 3),
+    noise_hi = genutil.perlin(200, 0.3, 3),
     offset = 0,
     scale = 32,
     ground = blocks.lookup 'base.grass',
@@ -51,6 +54,25 @@ local biome = native.noise2d {
     seed = math.hash(gen.seed, "plains_biome"),
     noise = genutil.perlin(256, 10, 3),
 }
+
+local checkpoints
+do
+    local lift = 20
+    checkpoints = Structs2d {
+        salt = 'plains_checkpoints',
+        spread = 256,
+        margin = 4,
+        get_z = function(m)
+            return heightmap:height_at(m.bx, m.by)
+        end,
+        generate = function(m)
+            local ent = {'Checkpoint', {
+                orient = m.rng:integer(4),
+            }}
+            m.bbuf:entity(m.fx, m.fy, m.fz + lift, spawn.serialize(ent))
+        end,
+    }
+end
 
 local rocks
 do
@@ -76,12 +98,6 @@ do
                 local size = s * size
                 local lift = s * lift
                 m.bbuf:rock(m.fx, m.fy, m.fz + lift, size, m.rng:integer(1000000000), n, noisiness, block)
-                if m.rng:uniform() < spawnchance then
-                    local ent = {'Checkpoint', {
-                        orient = m.rng:integer(4),
-                    }}
-                    m.bbuf:entity(m.fx, m.fy, m.fz + lift + size * (2 + noisiness), spawn.serialize(ent))
-                end
             end
         end,
     }
@@ -138,7 +154,7 @@ end
 local slimepack
 do
     local chance = .3
-    local nred = {2, 3}
+    local nred = {1, 3}
     local ngreen = {4, 8}
     local r = 10
     local extra_z = 4
@@ -164,7 +180,7 @@ do
                     }}
                     n = nred
                 end
-                n = m.rng:integer(n[1], n[2])
+                n = m.rng:integer(n[1], n[2]+1)
                 for i = 1, n do
                     local x = m.rng:normal(-r, r)
                     local y = m.rng:normal(-r, r)
@@ -174,49 +190,6 @@ do
         end,
     }
 end
-
---[[
-local structs, genstruct
-do
-    local bbuf = native.action_buf()
-    local rng = math.rng(0)
-    local leaves
-
-    local function rock(pos, sx, sy)
-        bbuf:rock(pos:x(), pos:y(), pos:z() + s * 4, s * 16, rng:integer(1000000), 16, 0.4, blocks['base.stone'])
-        
-        local r, ent = rng:uniform()
-        if r < 0.1 then
-            ent = {'Checkpoint', {
-                orient = rng:integer(4),
-            }}
-        elseif r < 0.6 then
-            ent = {'GreenSlime', {
-                hp = rng:uniform(100, 1000),
-            }}
-        else
-            ent = {'RedSlime', {
-                hp = rng:uniform(100, 1000),
-            }}
-        end
-        bbuf:entity(pos:x(), pos:y(), pos:z() + s * 4 + s * 16 * (1.4), spawn.serialize(ent))
-    end
-    function genstruct(rx, ry, sx, sy)
-        local bx, by = math.floor(rx), math.floor(ry)
-        local bz = heightmap:height_at(bx, by)
-        local fx, fy = rx - bx, ry - by
-        bbuf:reset(bx, by, bz)
-        rng:reseed(math.hash(gen.seed, "plains_tree", sx, sy))
-        --tree(math.vec3(fx, fy, 0))
-        rock(math.vec3(fx, fy, 0), sx, sy)
-        return bbuf
-    end
-    structs = native.gridbuf_2d {
-        seed = math.hash(gen.seed, "plains_structs"),
-        cell_size = math.floor(spread + .5),
-        margin = math.floor(margin + .5),
-    }
-end]]
 
 local lightconf = native.action_buf()
 lightconf:reset(0, 0, 0)
@@ -234,6 +207,7 @@ function plainsgen.generate(x, y, z, w)
     rocks:fill(x, y, z, chunk)
     trees:fill(x, y, z, chunk)
     slimepack:fill(x, y, z, chunk)
+    checkpoints:fill(x, y, z, chunk)
     lightconf:transfer(0, 0, 0, chunk)
     return chunk:into_raw()
 end

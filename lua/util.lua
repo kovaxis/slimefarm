@@ -257,10 +257,12 @@ end
 util.Shader = class{}
 
 function util.Shader:new()
-    assert(self.vertex)
-    assert(self.fragment)
+    assert(self.name)
+    self.vertex = self.vertex or (self.name..'.vert')
+    self.fragment = self.fragment or (self.name..'.frag')
     assert(self.uniforms)
     self.program = gfx.shader(
+        self.name,
         util.read_file('shader/'..self.vertex),
         util.read_file('shader/'..self.fragment)
     )

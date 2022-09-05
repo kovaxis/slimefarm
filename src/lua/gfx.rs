@@ -604,13 +604,75 @@ pub(crate) fn open_gfx_lib(state: &Rc<State>, lua: LuaContext) {
             .set(
                 "gfx",
                 lua_lib! {lua, state,
-                    fn shader((vertex, fragment): (String, String)) {
+                    fn shader((name, vertex, fragment): (LuaString, LuaString, LuaString)) {
                         let shader = program!{&state.display,
                             110 => {
-                                vertex: &*vertex,
-                                fragment: &*fragment,
+                                vertex: std::str::from_utf8(vertex.as_bytes()).to_lua_err()?,
+                                fragment: std::str::from_utf8(fragment.as_bytes()).to_lua_err()?,
                             }
-                        }.to_lua_err()?;
+                        };
+                        let shader = match shader {
+                            Ok(shader) => shader,
+                            Err(err) => {
+                                let name = std::str::from_utf8(name.as_bytes()).to_lua_err()?;
+                                println!("error compiling shader '{}':", name);
+                                use glium::program::{ProgramChooserCreationError::*, ProgramCreationError::*};
+                                match &err {
+                                    NoVersion => {
+                                        println!("unsupported glsl version. OpenGL context information:");
+                                        let c = &state.display;
+                                        println!("  OpenGL: {:?} ({})", c.get_opengl_version(), c.get_opengl_version_string());
+                                        macro_rules! raw_values {
+                                            (@$meth:ident $name:expr) => {
+                                                println!("  {}: {:?}", $name, c.$meth());
+                                            };
+                                            ($meth:ident $name:literal $($rest:tt)*) => {
+                                                raw_values!(@$meth $name);
+                                                raw_values!($($rest)*);
+                                            };
+                                            ($meth:ident $($rest:tt)*) => {
+                                                raw_values!(@$meth stringify!($meth));
+                                                raw_values!($($rest)*);
+                                            };
+                                            () => {};
+                                        }
+                                        raw_values! {
+                                            get_supported_glsl_version "guaranteed-supported GLSL"
+                                            get_opengl_vendor_string "OpenGL vendor"
+                                            get_opengl_renderer_string "OpenGL renderer"
+                                            is_debug
+                                            is_forward_compatible
+                                            get_opengl_profile "OpenGL profile"
+                                            is_robust
+                                            is_context_loss_possible
+                                            is_context_lost
+                                            get_release_behavior
+                                            get_free_video_memory
+                                        }
+                                    }
+                                    ProgramCreationError(err) => match err {
+                                        CompilationError(err, ty) => 
+                                            println!("error compiling {:?} shader: {}", ty, err),
+                                        LinkingError(err) => 
+                                            println!("error linking shaders into program: {}", err),
+                                        _ => println!("{:?} ({})", err, match err {
+                                            ShaderTypeNotSupported =>
+                                                "One of the requested shader types is not supported by the backend. Usually the case for geometry shaders.",
+                                            CompilationNotSupported =>
+                                                "The OpenGL implementation doesn’t provide a compiler.",
+                                            TransformFeedbackNotSupported =>
+                                                "You have requested transform feedback varyings, but transform feedback is not supported by the backend.",
+                                            PointSizeNotSupported =>
+                                                "You have requested point size setting from the shader, but it’s not supported by the backend.",
+                                            BinaryHeaderError =>
+                                                "The glium-specific binary header was not found or is corrupt.",
+                                            _ => "no description available"
+                                        }),
+                                    }
+                                }
+                                return Err(err).to_lua_err()
+                            }
+                        };
                         ShaderRef{program: Rc::new(shader)}
                     }
 

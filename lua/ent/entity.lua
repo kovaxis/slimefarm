@@ -56,6 +56,20 @@ function Entity.create(cl, proto, pos)
     return cl(proto)
 end
 
+function Entity:on_add(world)
+    world.ent_map[self.id] = self
+    if self.group then
+        world.ent_groups[self.group][self.id] = self
+    end
+end
+
+function Entity:on_remove(world)
+    world.ent_map[self.id] = nil
+    if self.group then
+        world.ent_groups[self.group][self.id] = nil
+    end
+end
+
 function Entity:pretick(world)
     --Apply friction
     if self.on_ground and self.vel_z < 0 then

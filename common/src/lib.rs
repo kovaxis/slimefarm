@@ -45,6 +45,7 @@ pub mod prelude {
         marker::PhantomData,
         mem::{self, MaybeUninit as Uninit},
         ops,
+        path::{Path, PathBuf},
         ptr::{self, NonNull},
         rc::Rc,
         result::Result as StdResult,

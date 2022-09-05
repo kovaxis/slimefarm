@@ -5,8 +5,7 @@ local util = require 'util'
 local Sprite = class{}
 
 Sprite.shader = util.Shader{
-    vertex = 'textured.vert',
-    fragment = 'textured.frag',
+    name = 'textured',
     uniforms = {'mvp', 'tex', 'tint'},
 }
 

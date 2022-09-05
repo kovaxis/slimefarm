@@ -1121,7 +1121,17 @@ pub(crate) fn modify_std_lib(state: &Arc<GlobalState>, lua: LuaContext) {
 fn load_native_lib<'a>(lua: LuaContext<'a>, path: &str) -> Result<LuaValue<'a>> {
     use libloading::{Library, Symbol};
     use std::ffi::OsString;
-    let path = libloading::library_filename(path);
+    let path = {
+        let path = Path::new(path);
+        let mut libpath = path.to_path_buf();
+        libpath.pop();
+        let mut filename = OsString::new();
+        filename.push(std::env::consts::DLL_PREFIX);
+        filename.push(path.file_name().unwrap_or("".as_ref()));
+        filename.push(std::env::consts::DLL_SUFFIX);
+        libpath.push(filename);
+        libpath
+    };
     unsafe {
         let lib = Library::new(path)?;
         let open: Symbol<unsafe extern "C" fn(LuaContext) -> Result<LuaValue>> =

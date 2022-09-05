@@ -158,7 +158,10 @@ lua_type! {LuaNoise2d, lua, this,
 #[derive(Deserialize)]
 struct HeightMapCfg {
     seed: i64,
-    noise: Vec<(f64, f32)>,
+    noise_hi: Vec<(f64, f32)>,
+    noise_lo: Vec<(f64, f32)>,
+    noise_snap: Vec<(f64, f32)>,
+    noise_snapoff: Vec<(f64, f32)>,
     offset: f32,
     scale: f32,
     ground: BlockData,
@@ -167,23 +170,37 @@ struct HeightMapCfg {
 
 struct HeightMap {
     cols: GridKeeper2<(i16, i16, LoafBox<i16>)>,
-    noise: Noise2d,
+    noise_hi: Noise2d,
+    noise_lo: Noise2d,
+    noise_snap: Noise2d,
+    noise_snapoff: Noise2d,
     k: HeightMapCfg,
 }
 impl HeightMap {
     fn new(k: HeightMapCfg) -> Self {
+        let mut i = 0;
+        let mut seed = || {
+            i += 1;
+            fxhash::hash64(&(k.seed, i))
+        };
         Self {
             cols: default(),
-            noise: Noise2d::new(k.seed as u64, &k.noise),
+            noise_hi: Noise2d::new(seed(), &k.noise_hi),
+            noise_lo: Noise2d::new(seed(), &k.noise_lo),
+            noise_snap: Noise2d::new(seed(), &k.noise_snap),
+            noise_snapoff: Noise2d::new(seed(), &k.noise_snapoff),
             k,
         }
     }
 
     fn gen_col(&mut self, pos: Int2) -> &(i16, i16, LoafBox<i16>) {
-        let noise = &self.noise;
+        let noise_hi = &self.noise_hi;
+        let noise_lo = &self.noise_lo;
+        let noise_snap = &self.noise_snap;
+        let noise_snapoff = &self.noise_snapoff;
         let k = &self.k;
         self.cols.or_insert(pos, || {
-            //Generate the height map for this chunk column
+            // Generate the height map for this chunk column
             let mut hmap: LoafBox<i16> = unsafe {
                 let mut hmap = common::arena::alloc();
                 ptr::write(
@@ -192,18 +209,71 @@ impl HeightMap {
                 );
                 hmap.assume_init()
             };
-            let mut noise_buf = [0.; (CHUNK_SIZE * CHUNK_SIZE) as usize];
-            noise.noise_block(
-                [(pos[0] * CHUNK_SIZE) as f64, (pos[1] * CHUNK_SIZE) as f64],
+            let corner = [(pos[0] * CHUNK_SIZE) as f64, (pos[1] * CHUNK_SIZE) as f64];
+            let mut noise1 = [0.; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+            let mut noise2 = [0.; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+            let mut noise3 = [0.; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+            // Start with low-frequency noise
+            noise_lo.noise_block(
+                corner,
                 CHUNK_SIZE as f64,
                 CHUNK_SIZE,
-                &mut noise_buf[..],
+                &mut noise1[..],
                 false,
             );
+            // Use noise_snap to determine how tightly to snap noise_lo to integer values
+            noise_snap.noise_block(
+                corner,
+                CHUNK_SIZE as f64,
+                CHUNK_SIZE,
+                &mut noise2[..],
+                false,
+            );
+            noise_snapoff.noise_block(
+                corner,
+                CHUNK_SIZE as f64,
+                CHUNK_SIZE,
+                &mut noise3[..],
+                false,
+            );
+            for (lo, (snap, off)) in noise1
+                .iter_mut()
+                .zip(noise2.iter().copied().zip(noise3.iter().copied()))
+            {
+                let w = if snap < -1. {
+                    0.
+                } else if snap > 1. {
+                    1.
+                } else {
+                    0.5 + snap * (0.75 - 0.25 * snap * snap)
+                };
+                let t = *lo + 0.25 * (1. + w) + off;
+                let k = t.floor();
+                let f = t - k;
+                let f = if f < 0.5 * (1. + w) {
+                    (1. - w) / (1. + w) * f
+                } else {
+                    1. - (1. + w) / (1. - w) * (1. - f)
+                };
+                *lo = k + f - off;
+            }
+            // Add high-frequency noise on top of the snapped low frequency noise
+            noise_hi.noise_block(
+                corner,
+                CHUNK_SIZE as f64,
+                CHUNK_SIZE,
+                &mut noise2[..],
+                false,
+            );
+            for (lo, hi) in noise1.iter_mut().zip(noise2.iter().copied()) {
+                *lo += hi;
+            }
+            // Convert float values to int values
+            // Also find out minimum and maximum height in chunk column
             let mut min = i16::max_value();
             let mut max = i16::min_value();
-            for (&noise, height) in noise_buf.iter().zip(hmap.iter_mut()) {
-                *height = (noise.mul_add(k.scale, k.offset)) as i16;
+            for (&noise, height) in noise1.iter().zip(hmap.iter_mut()) {
+                *height = noise.mul_add(k.scale, k.offset).floor() as i16;
                 min = min.min(*height);
                 max = max.max(*height);
             }

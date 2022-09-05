@@ -38,15 +38,15 @@ Animal.jump_cooldown_land = 0
 Animal.jump_cooldown_fudge = 0
 
 -- Up to this tick the animal is still vulnerable while rolling.
-Animal.roll_pre = 7
+Animal.roll_pre = 3
 -- Up to this tick (excluding pre) the animal is immune.
-Animal.roll_immune = 22
+Animal.roll_immune = 23
 -- Up to this tick (excluding pre and immune) the animal is vulnerable.
 Animal.roll_duration = 37
 -- Cooldown of the roll after finishing.
 Animal.roll_cooldown_duration = 5
 -- Roll movement speed in pre, immune and post phases.
-Animal.roll_speed = {0.08, 0.17, 0.08}
+Animal.roll_speed = {0.17, 0.18, 0.08}
 
 -- Duration of the attack sequence.
 Animal.atk_duration = 18

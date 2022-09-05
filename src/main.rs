@@ -332,7 +332,9 @@ fn main() {
         .with_resizable(true)
         .with_title("Slime Farm")
         .with_visible(true);
-    let cb = ContextBuilder::new().with_vsync(false);
+    let cb = ContextBuilder::new()
+        .with_gl_profile(glium::glutin::GlProfile::Compatibility)
+        .with_vsync(false);
     let display = Display::new(wb, cb, &evloop).expect("failed to initialize OpenGL");
 
     //Pack it all up

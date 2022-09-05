@@ -43,34 +43,28 @@ function World:new()
 
     self.shaders = {
         terrain = util.Shader{
-            vertex = 'terrain.vert',
-            fragment = 'terrain.frag',
+            name = 'terrain',
             -- first 3 must be (in order) 'offset', 'color', 'light'
             uniforms = {'offset', 'color', 'light', 'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle', 'tint'},
         },
         particle = util.Shader{
-            vertex = 'particle.vert',
-            fragment = 'particle.frag',
+            name = 'particle',
             uniforms = {'mvp', 'invp', 'nclip', 'clip', 'l_dir', 'ambience', 'diffuse', 'specular', 'fog', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle', 'tint'},
         },
         portal = util.Shader{
-            vertex = 'portal.vert',
-            fragment = 'portal.frag',
+            name = 'portal',
             uniforms = {'mvp', 'offset', 'nclip', 'clip'},
         },
         basic = util.Shader{
-            vertex = 'basic.vert',
-            fragment = 'basic.frag',
+            name = 'basic',
             uniforms = {'mvp', 'tint'},
         },
         skybox = util.Shader{
-            vertex = 'skybox.vert',
-            fragment = 'skybox.frag',
+            name = 'skybox',
             uniforms = {'mvp', 'offset', 'view', 'base', 'lowest', 'highest', 'sunrise', 'sun_dir', 'cycle'},
         },
         dbgchunk = util.Shader{
-            vertex = 'dbgchunk.vert',
-            fragment = 'dbgchunk.frag',
+            name = 'dbgchunk',
             uniforms = {'mvp', 'offset'},
         },
     }
@@ -191,10 +185,7 @@ function World:add_entity(ent)
         ent.id = self.terrain:entity_id()
     end
     table.insert(self.ent_list, ent)
-    self.ent_map[ent.id] = ent
-    if ent.group then
-        self.ent_groups[ent.group][ent.id] = ent
-    end
+    return ent:on_add(self)
 end
 
 function World:tick()
@@ -263,8 +254,8 @@ function World:tick()
             local ent = ents[i]
             if ent.removing then
                 ents[i], ents[#ents] = ents[#ents], ent
-                self.ent_map[ent.id] = nil
                 ents[#ents] = nil
+                ent:on_remove(self)
             end
         end
     end
@@ -339,7 +330,7 @@ function World:load_terrain()
         gen = {
             src = gen_main,
             args = {{
-                seed = 6813265,
+                seed = 6813266,
                 kind = 'gen.plainsgen',
                 entspecs = entreg.seal(),
             }},
